@@ -10,11 +10,12 @@
 #   - 一个 PR 最多 3 条。
 #
 # 若已发布 Release tarball，可取消下面 tarball 行的注释（资产名必须不带版本号）。
+# 本仓库已在 v1.0.0 Release 中附带 dsh-plugin-rea.tgz，故该行已启用。
 
 url: https://github.com/czcdr/dsh-plugin-rea
 name: czcdr/dsh-plugin-rea
 category: tools
 description:
-  en: 'Third-party adapter that registers the local REA (Reverse Engineer Anything) MCP server as native DeepSeek Harness tools, adding mcp__rea__* tools for binary, APK, web and runtime analysis through Ghidra.'
-  zh: '第三方适配插件：把本机 REA（Reverse Engineer Anything）的 MCP 服务器注册成 DeepSeek Harness 原生工具，通过 Ghidra 提供 mcp__rea__* 系列二进制、APK、网页与运行时分析能力。'
-# tarball: https://github.com/czcdr/dsh-plugin-rea/releases/latest/download/dsh-plugin-rea.tgz
+  en: 'Third-party adapter that registers the local REA (Reverse Engineer Anything) MCP server as native DeepSeek Harness tools, adding mcp__rea__* tools for native binary (Ghidra), APK, web and runtime analysis.'
+  zh: '第三方适配插件：把本机 REA（Reverse Engineer Anything）的 MCP 服务器注册成 DeepSeek Harness 原生工具，提供 mcp__rea__* 系列工具，覆盖原生二进制（Ghidra）、APK、网页与运行时分析。'
+tarball: https://github.com/czcdr/dsh-plugin-rea/releases/latest/download/dsh-plugin-rea.tgz
