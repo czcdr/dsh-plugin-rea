@@ -19,10 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-This repository is a third-party adapter for DeepSeek Harness. It contains no
-code from REA (https://github.com/morluto/rea, MIT, copyright its authors) and
-none from Ghidra (Apache License 2.0, copyright NSA). Both are separate
-projects that this plugin merely configures or invokes.
