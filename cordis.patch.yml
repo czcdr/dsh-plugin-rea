@@ -5,21 +5,28 @@
 # stdio server; the model then sees mcp__rea__<tool>.
 #
 # ---------------------------------------------------------------------------
-# TWO VALUES ARE MACHINE-SPECIFIC — edit them for your machine:
+# PORTABLE BY DEFAULT — this file carries no machine-specific path.
 #
-#   1. args[0]              full path to the rea CLI entry file.
-#                           Run:  npm root -g
-#                           then append:  \rea-agents\scripts\rea.mjs
-#                           (POSIX: <npm root -g>/rea-agents/scripts/rea.mjs)
+#   Prerequisite: `rea` must be reachable from the PATH the harness sees.
+#                 (`npm i -g rea-agents` puts it there.)
 #
-#   2. env.GHIDRA_INSTALL_DIR
-#                           the directory where Ghidra was extracted,
-#                           e.g. D:\ghidra\ghidra_12.1.4_PUBLIC
-#                           Leave it out only if you do not use Ghidra.
+#   Windows    : command: cmd.exe   args: ['/c', 'rea', 'mcp']   (as below)
+#   macOS/Linux: command: 'rea'     args: ['mcp']
+#                → see examples/cordis.patch.posix.yml
 #
-# `command: node` is resolved through PATH; point it at a full path (for
-# example D:\nodejs\node.exe) if node is not on the PATH the harness sees.
-# env.JAVA_HOME is optional — keep it when `java` is not on PATH.
+#   Analysis engines: REA reads GHIDRA_INSTALL_DIR from its environment.
+#     - Option 1 (recommended): set it as an OS-level environment variable,
+#       then start/restart the harness so the MCP child inherits it.
+#     - Option 2: put an `env:` block in the row —
+#       see examples/cordis.patch.with-env.yml.
+#     Without it, native analysis reports the engine as unavailable while every
+#     other REA capability keeps working. Static JavaScript/Electron and .NET
+#     analysis need no engine at all.
+#
+#   Only ONE row may use serverName: rea in a profile. To adapt this bundle for
+#   your machine without touching the upstream file, override `mcp-rea` from
+#   your profile's own cordis.patch.yml (id-targeted config override) — that
+#   file is never published.
 # ---------------------------------------------------------------------------
 
 - insert:
@@ -28,11 +35,9 @@
       config:
         serverName: rea
         transport: stdio
-        command: 'node'
+        command: 'cmd.exe'
         args:
-          - 'D:\dev\npm-global\node_modules\rea-agents\scripts\rea.mjs'
-          - mcp
-        env:
-          GHIDRA_INSTALL_DIR: 'D:\ghidra\ghidra_12.1.4_PUBLIC'
-          JAVA_HOME: 'F:\game\xbox'
+          - '/c'
+          - 'rea'
+          - 'mcp'
         failOnStartupError: false
