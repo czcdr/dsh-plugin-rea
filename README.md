@@ -1,6 +1,7 @@
 # dsh-plugin-rea
 
 [![awesome · DSH plugin](https://awesome-dsh-plugin.com/badge.svg)](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)
+[![npm version](https://img.shields.io/npm/v/dsh-plugin-rea?style=flat-square&color=cb3837)](https://www.npmjs.com/package/dsh-plugin-rea)
 
 把 **[REA — Reverse Engineer Anything](https://github.com/morluto/rea)** 接入 **DeepSeek Harness (dsh)**：
 一个**纯配置型 Cordis bundle**，复用官方 MCP 客户端插件 `@deepseek-ai/dsh-mcp-client`，
