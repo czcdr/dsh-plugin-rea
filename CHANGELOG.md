@@ -2,6 +2,14 @@
 
 本插件遵循语义化版本。版本号变化说明「配置组合」这层的变化，与 REA 自身的版本无关。
 
+## 1.0.3 — 2026-10-12
+
+仓库展示与发布范围调整，无行为变更。
+
+- 新增 `assets/screenshot-1.png`、`assets/screenshot-2.png` 与 `screenshots.json`（市场详情页展示用，
+  由 `assets/make-screenshots.ps1` 可复现生成）。
+- 维护记录改为**仅本机保留**（不再随仓库或 tarball 发布）。
+
 ## 1.0.2 — 2026-10-12
 
 文档补强，无行为变更。
