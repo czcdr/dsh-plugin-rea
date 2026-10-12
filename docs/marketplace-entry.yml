@@ -1,0 +1,20 @@
+# 投稿条目：awesome-dsh-plugin
+#
+# 用途：向 https://github.com/awesome-dsh-plugin/awesome-dsh-plugin 提交 PR 时，
+#       把下面的内容保存为 data/plugins/czcdr__dsh-plugin-rea.yml（一个文件即全部投稿）。
+# 规则要点（见该仓库 contributing.md）：
+#   - 仓库需声明 dsh.bundle（本仓库已声明）；
+#   - 仓库创建需满 1 天；
+#   - 仓库需带 dsh-plugin topic；
+#   - 描述必须属实，且不含营销词；
+#   - 一个 PR 最多 3 条。
+#
+# 若已发布 Release tarball，可取消下面 tarball 行的注释（资产名必须不带版本号）。
+
+url: https://github.com/czcdr/dsh-plugin-rea
+name: czcdr/dsh-plugin-rea
+category: tools
+description:
+  en: 'Third-party adapter that registers the local REA (Reverse Engineer Anything) MCP server as native DeepSeek Harness tools, adding mcp__rea__* tools for binary, APK, web and runtime analysis through Ghidra.'
+  zh: '第三方适配插件：把本机 REA（Reverse Engineer Anything）的 MCP 服务器注册成 DeepSeek Harness 原生工具，通过 Ghidra 提供 mcp__rea__* 系列二进制、APK、网页与运行时分析能力。'
+# tarball: https://github.com/czcdr/dsh-plugin-rea/releases/latest/download/dsh-plugin-rea.tgz
