@@ -13,3 +13,6 @@ pnpm-debug.log*
 
 # Local overrides: keep your machine-specific paths out of git
 cordis.patch.local.yml
+
+# Local-only maintenance record — never publish this file
+docs/project-notes.md
