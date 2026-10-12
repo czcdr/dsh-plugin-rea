@@ -2,6 +2,26 @@
 
 本插件遵循语义化版本。版本号变化说明「配置组合」这层的变化，与 REA 自身的版本无关。
 
+## 1.0.4 — 2026-10-13
+
+按外部评审修订：发布物不再携带任何机器相关路径。
+
+- **发布用的那一行改为可移植**：Windows 用 `cmd.exe /c rea mcp`（走 PATH），macOS/Linux 用
+  `command: rea` + `args: ['mcp']`；`cordis.patch.yml` 里**不再出现** `D:\...` 之类的绝对路径。
+- **新增 `examples/`**：`cordis.patch.posix.yml`（POSIX 变体）、`cordis.patch.with-env.yml`（需要为
+  MCP 子进程固定引擎环境时的写法）。
+- **机器相关值改放本机 profile 覆盖**（`id: mcp-rea` 的 id-targeted config override）。README 两个
+  语言版本都补了这一工作流；profile 覆盖永不随插件发布。
+- **`check-updates.ps1` 重写**：Node engines 判断改为按 `^`/`~`/`>=` 逐项匹配（此前 Node 26+ 会误报，
+  且 `[version]'6.5.0-rc.1'` 会抛异常）；node/rea/npm 不在 PATH 时有降级路径；profile 结构访问加防御；
+  识别本机 profile 是否覆盖了 `mcp-rea`。
+- **`files` 白名单补齐** `screenshots.json`、`assets/`、`examples/`（npm 包里也带上展示图与示例）。
+- **`package.json` description 缩短**（npm 列表页会截断长描述）。
+- **新增 CI**：`.github/workflows/validate.yml` 校验 manifest/JSON/YAML，并**守住"发布物不得含机器
+  绝对路径"**这条约束；`.github/workflows/release.yml` 在发 Release 时自动打包成版本无关资产名并上传，
+  另含（默认关闭的）npm Trusted Publishing 发布任务。
+- **README 顶部去掉 awesome 徽章**：本插件尚未被该列表收录，收录后再加回。
+
 ## 1.0.3 — 2026-10-12
 
 仓库展示与发布范围调整，无行为变更。
