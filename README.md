@@ -13,10 +13,11 @@
 > - 上游文档：<https://github.com/morluto/rea#what-you-can-analyze> · [中文](https://github.com/morluto/rea/blob/main/README_zh.md#可以分析什么) · 站点 <https://rea.tools/>
 > - 上游 npm 包：`rea-agents`
 > - 本插件仓库：**<https://github.com/czcdr/dsh-plugin-rea>**
-> - 项目记录（发布状态/维护决策/待办）：[docs/project-notes.md](docs/project-notes.md)
 > - 问题反馈：REA 本身的问题请提到上游；本插件的问题提到 [本仓库 Issues](https://github.com/czcdr/dsh-plugin-rea/issues)。
 
 ---
+
+![dsh-plugin-rea：会话经官方 MCP 客户端行调用本机 rea mcp，再把 Evidence 带回会话](assets/screenshot-1.png)
 
 ## English
 
