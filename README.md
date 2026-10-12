@@ -86,12 +86,20 @@ sets `failOnStartupError: false` so a missing REA never blocks harness startup. 
 processes, write files and access the network — DSH's permission policy applies. Analyse only
 artifacts you are authorized to inspect.
 
-**Upstream updates.** REA ships its own updater — run `rea update` (or `npm i -g rea-agents@latest`).
-Its `bin` entry (`scripts/rea.mjs`) is stable across releases, so upgrading REA needs no change here.
-Ghidra is version-gated by REA (12.1.x today), so upgrade REA first and check that it accepts the
-newer Ghidra. A harness upgrade may change the MCP client's config schema — inspect the row with
-`Config.listConfigs name=@deepseek-ai/dsh-mcp-client` and adjust the field names.
-`check-updates.ps1` (Windows PowerShell) reports all of this.
+**Updating — two independent things, and both are manual.**
+
+- **This plugin** never updates itself. When this repository has a newer revision, install it again
+  through the plugin manager (`add github:czcdr/dsh-plugin-rea`), or re-point / overwrite your local
+  `file:` checkout and let it reload. Updating REA below does **not** update this plugin, and updating
+  this plugin does not touch REA.
+- **Upstream REA**: update it with `npm i -g rea-agents@latest`. Its `bin` entry
+  (`scripts/rea.mjs`) is stable across releases, so this needs no change here.
+- **Ghidra** is version-gated by REA (12.1.x today): update REA first, then check that it accepts a
+  newer Ghidra.
+- **DeepSeek Harness**: a harness upgrade may change the MCP client's config schema — inspect the row
+  with `Config.listConfigs name=@deepseek-ai/dsh-mcp-client` and adjust the field names.
+
+`check-updates.ps1` (Windows PowerShell) reports the state of all four at once.
 
 **License.** MIT (this adapter). REA is MIT and owned by its authors; Ghidra is Apache-2.0 and owned
 by the NSA. No upstream code is redistributed here.
@@ -152,11 +160,18 @@ dsh plugin --profile <profile> add github:czcdr/dsh-plugin-rea
 `failOnStartupError: false`，因此 REA 缺失也不会阻塞 harness 启动。部分 REA 工具会启动进程、
 写文件、访问网络，按 DSH 的权限策略执行。请仅分析你已获得授权的目标。
 
-**上游更新怎么办。** REA 自带更新命令：`rea update`（等价于 `npm i -g rea-agents@latest`）。
-它的 `bin` 入口（`scripts/rea.mjs`）跨版本稳定，所以升级 REA 后本插件**无需改动**。
-Ghidra 受 REA 版本门槛限制（当前 12.1.x），顺序必须是先升 REA、确认它接受新版 Ghidra 再升级。
-harness 升级可能改变 MCP 客户端配置结构，用 `Config.listConfigs name=@deepseek-ai/dsh-mcp-client`
-看该行 schema 并调整字段名。`check-updates.ps1`（Windows PowerShell）会把上述四类检查一次跑完。
+**更新：两件事，且都要手动。**
+
+- **本插件**不会自动更新。本仓库有新版本时，用插件管理器再安装一次
+  （`add github:czcdr/dsh-plugin-rea`），或覆盖/重新指向本地 `file:` 目录后等它重载。
+  下面更新 REA **不会**更新本插件，反过来也一样。
+- **上游 REA**：用 `npm i -g rea-agents@latest` 更新。它的 `bin` 入口（`scripts/rea.mjs`）
+  跨版本稳定，所以本插件无需改动。
+- **Ghidra**：受 REA 版本门槛限制（当前 12.1.x），先升 REA，再确认它接受新版 Ghidra。
+- **DeepSeek Harness**：升级可能改变 MCP 客户端配置结构，用
+  `Config.listConfigs name=@deepseek-ai/dsh-mcp-client` 看该行 schema 并调整字段名。
+
+`check-updates.ps1`（Windows PowerShell）会把上述四项一次跑完。
 
 **许可。** 本适配器为 MIT；REA 为 MIT，版权归其作者；Ghidra 为 Apache-2.0，版权归 NSA。
 本仓库不再分发上游代码。
