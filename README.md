@@ -13,6 +13,7 @@
 > - 上游文档：<https://github.com/morluto/rea#what-you-can-analyze> · [中文](https://github.com/morluto/rea/blob/main/README_zh.md#可以分析什么) · 站点 <https://rea.tools/>
 > - 上游 npm 包：`rea-agents`
 > - 本插件仓库：**<https://github.com/czcdr/dsh-plugin-rea>**
+> - 项目记录（发布状态/维护决策/待办）：[docs/project-notes.md](docs/project-notes.md)
 > - 问题反馈：REA 本身的问题请提到上游；本插件的问题提到 [本仓库 Issues](https://github.com/czcdr/dsh-plugin-rea/issues)。
 
 ---
@@ -40,6 +41,22 @@ and saved network captures.
 **What this plugin adds.** Exactly two things: it registers that MCP server into DSH's tool layer
 under the `mcp__rea__*` names, and it scopes the engine environment variables (`GHIDRA_INSTALL_DIR`,
 `JAVA_HOME`) to that MCP child process instead of the whole harness.
+
+**What it can and cannot do.** The analysis is upstream's; this section only restates upstream's own
+contract so expectations are right.
+
+- **It cannot recover complete source code.** For native binaries upstream returns *pseudocode and
+  assembly*, for Android APKs *decompiled methods*, for JEB units *pseudocode*, and for
+  JavaScript/Electron *modules and their relations*. Upstream's tool contract states the pseudocode
+  "is decompiler output, not original source and not text-equivalent" to another provider's output.
+- Not recoverable in practice: original identifier names, types, comments, macros and template
+  expansion, build scripts and assets. Optimisation (inlining, reordering), symbol stripping,
+  obfuscation, packing and VM protection only make the output worse.
+- Every result carries **confidence and limitations** (`observed` / `derived` / `inferred`, plus an
+  explicit limitations list). Read them as evidence, never as recovered source.
+- Good for: understanding behaviour, locating an implementation, interoperability and compatible
+  re-implementation, security review, migration reference. To obtain actual source code, use the
+  legitimate route — the upstream repository, vendor authorisation, or the vendor's own SDK.
 
 **Verified against** (author's machine, 2026-10-12):
 
@@ -86,12 +103,12 @@ sets `failOnStartupError: false` so a missing REA never blocks harness startup. 
 processes, write files and access the network — DSH's permission policy applies. Analyse only
 artifacts you are authorized to inspect.
 
-**Updating — two independent things, and both are manual.**
+**Updating — two independent things, both manual.**
 
-- **This plugin** never updates itself. When this repository has a newer revision, install it again
-  through the plugin manager (`add github:czcdr/dsh-plugin-rea`), or re-point / overwrite your local
-  `file:` checkout and let it reload. Updating REA below does **not** update this plugin, and updating
-  this plugin does not touch REA.
+- **This plugin** never updates itself. Installed from a plugin market? Update it **in that market**.
+  Installed from a local `file:` checkout (as in the author's setup)? Overwrite the directory and
+  install it again through the plugin manager. Updating REA below does **not** update this plugin, and
+  updating this plugin does not touch REA.
 - **Upstream REA**: update it with `npm i -g rea-agents@latest`. Its `bin` entry
   (`scripts/rea.mjs`) is stable across releases, so this needs no change here.
 - **Ghidra** is version-gated by REA (12.1.x today): update REA first, then check that it accepts a
@@ -125,6 +142,19 @@ EVM 字节码、已记录的 Linux 崩溃与已保存的网络捕获。
 
 **本插件在此之上只增加两件事**：把该 MCP 服务注册进 DSH 的工具层（工具名 `mcp__rea__*`），
 以及把引擎环境变量（`GHIDRA_INSTALL_DIR`、`JAVA_HOME`）限制在这个 MCP 子进程内，而不是整个 harness。
+
+**能做什么、不能做什么（重要）。** 分析能力由上游提供；这里只复述上游自己的契约，避免预期错位。
+
+- **无法完整还原源代码。** 上游对原生二进制返回的是**伪代码与汇编**，对 Android APK 返回
+  **反编译的方法**，对 JEB 单元返回**伪代码**，对 JavaScript/Electron 返回**模块及其关系**。
+  上游的工具契约明确写着：伪代码是反编译器输出，**不是原始源码**，且与其他提供方的输出
+  **不保证文本等价**。
+- 实践中不可恢复的内容：原始标识符命名、类型、注释、宏与模板展开、构建脚本与资源；
+  优化（内联、指令重排）、去符号（strip）、混淆、加壳与 VM 保护只会让可读性更差。
+- 每条结论都自带**置信度与限制**（`observed` / `derived` / `inferred`，另有 limitations 列表）：
+  请把它们当作证据使用，而不要当作"已还原的源码"。
+- 适合做：理解行为、定位实现、互操作与兼容实现、安全审计、迁移参考。
+  **要拿到真正的源码，请走正规渠道**——上游代码仓库、厂商授权，或厂商自己的 SDK。
 
 **已验证版本**（作者机器，2026-10-12）：REA `6.4.0`、DeepSeek Harness 桌面运行时 `0.2.0-rc.2`、
 Ghidra `12.1.4`、Node `24.21.0`、Windows 11 x64。行提供方 `@deepseek-ai/dsh-mcp-client` 由
@@ -162,9 +192,8 @@ dsh plugin --profile <profile> add github:czcdr/dsh-plugin-rea
 
 **更新：两件事，且都要手动。**
 
-- **本插件**不会自动更新。本仓库有新版本时，用插件管理器再安装一次
-  （`add github:czcdr/dsh-plugin-rea`），或覆盖/重新指向本地 `file:` 目录后等它重载。
-  下面更新 REA **不会**更新本插件，反过来也一样。
+- **本插件**不会自动更新。**从插件市场安装的，就在市场里更新**；本地 `file:` 目录方式安装的，
+  覆盖目录后在插件管理器里重装。下面更新 REA **不会**更新本插件，反过来也一样。
 - **上游 REA**：用 `npm i -g rea-agents@latest` 更新。它的 `bin` 入口（`scripts/rea.mjs`）
   跨版本稳定，所以本插件无需改动。
 - **Ghidra**：受 REA 版本门槛限制（当前 12.1.x），先升 REA，再确认它接受新版 Ghidra。
