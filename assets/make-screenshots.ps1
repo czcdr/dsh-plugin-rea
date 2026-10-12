@@ -1,7 +1,14 @@
-﻿<#
+<#
   生成市场展示图（assets/screenshot-*.png）。
   可复现：改完文案后重跑本脚本即可，无需设计工具。
-  注意：Windows PowerShell 5.1 按 ANSI 读 .ps1，本文件必须保存为 UTF-8 with BOM。
+
+  运行方式：
+    Windows PowerShell 5.1 :  powershell -NoProfile -File .\make-screenshots.ps1
+    PowerShell 7 (pwsh)    :  pwsh -NoProfile -File ./make-screenshots.ps1
+  两者都可用；脚本内部用 OutDir 参数，默认写到本文件所在目录。
+
+  注意：Windows PowerShell 5.1 按 ANSI 读取 .ps1，本文件必须保存为 UTF-8 with BOM
+  （用 pwsh 7 编辑则无此限制，但保持 BOM 对两者都安全）。
 #>
 [CmdletBinding()]
 param([string]$OutDir = (Join-Path $PSScriptRoot '.'))
