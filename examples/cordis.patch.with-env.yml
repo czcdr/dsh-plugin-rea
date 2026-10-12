@@ -1,0 +1,32 @@
+# Windows variant that also pins the analysis-engine environment for the MCP child.
+#
+# Use this when GHIDRA_INSTALL_DIR is NOT set as an OS-level environment variable
+# the harness can inherit — for example after setting it up just now, without
+# restarting the harness. The value below is a placeholder: replace it with your
+# own Ghidra 12.1.x extraction directory.
+#
+# Copy the block into cordis.patch.yml, or — better — keep it out of the plugin
+# entirely and override the row from your profile's own cordis.patch.yml:
+#
+#   - id: mcp-rea
+#     config:
+#       env:
+#         GHIDRA_INSTALL_DIR: '<your Ghidra directory>'
+#
+# A profile-level override is machine-local and is never published.
+
+- insert:
+    - id: mcp-rea
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: rea
+        transport: stdio
+        command: 'cmd.exe'
+        args:
+          - '/c'
+          - 'rea'
+          - 'mcp'
+        env:
+          GHIDRA_INSTALL_DIR: 'C:\tools\ghidra_12.1.4_PUBLIC'
+          # JAVA_HOME: 'C:\Program Files\Java\jdk-21'   # only when java is not on PATH
+        failOnStartupError: false
