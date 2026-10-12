@@ -1,0 +1,15 @@
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# Node
+node_modules/
+npm-debug.log*
+pnpm-debug.log*
+*.tgz
+
+# Local overrides: keep your machine-specific paths out of git
+cordis.patch.local.yml
