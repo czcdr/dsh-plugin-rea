@@ -1,6 +1,5 @@
 # dsh-plugin-rea
 
-[![awesome · DSH plugin](https://awesome-dsh-plugin.com/badge.svg)](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)
 [![npm version](https://img.shields.io/npm/v/dsh-plugin-rea?style=flat-square&color=cb3837)](https://www.npmjs.com/package/dsh-plugin-rea)
 
 把 **[REA — Reverse Engineer Anything](https://github.com/morluto/rea)** 接入 **DeepSeek Harness (dsh)**：
@@ -13,7 +12,7 @@
 > - 上游项目：**REA — Reverse Engineer Anything** — <https://github.com/morluto/rea>（MIT）
 > - 上游文档：<https://github.com/morluto/rea#what-you-can-analyze> · [中文](https://github.com/morluto/rea/blob/main/README_zh.md#可以分析什么) · 站点 <https://rea.tools/>
 > - 上游 npm 包：`rea-agents`
-> - 本插件仓库：**<https://github.com/czcdr/dsh-plugin-rea>**
+> - 本插件仓库：**<https://github.com/czcdr/dsh-plugin-rea>** · npm：`dsh-plugin-rea`
 > - 问题反馈：REA 本身的问题请提到上游；本插件的问题提到 [本仓库 Issues](https://github.com/czcdr/dsh-plugin-rea/issues)。
 
 ---
@@ -41,8 +40,8 @@ packages and assets; process behavior; plus offline ELF layout, EVM bytecode, re
 and saved network captures.
 
 **What this plugin adds.** Exactly two things: it registers that MCP server into DSH's tool layer
-under the `mcp__rea__*` names, and it scopes the engine environment variables (`GHIDRA_INSTALL_DIR`,
-`JAVA_HOME`) to that MCP child process instead of the whole harness.
+under the `mcp__rea__*` names, and it lets the engine environment (`GHIDRA_INSTALL_DIR`, …) be scoped
+to that MCP child process instead of the whole harness.
 
 **What it can and cannot do.** The analysis is upstream's; this section only restates upstream's own
 contract so expectations are right.
@@ -60,7 +59,7 @@ contract so expectations are right.
   re-implementation, security review, migration reference. To obtain actual source code, use the
   legitimate route — the upstream repository, vendor authorisation, or the vendor's own SDK.
 
-**Verified against** (author's machine, 2026-10-12):
+**Verified against** (author's machine, 2026-10-12/13):
 
 | Component | Version |
 |---|---|
@@ -71,30 +70,50 @@ contract so expectations are right.
 | Node.js | 24.21.0 (REA engines: `^22.19.0 \|\| ^24.11.0 \|\| >=26.0.0`) |
 | Host | Windows 11 x64 |
 
-**Prerequisites.** Node.js (a version REA accepts), the REA CLI installed globally
-(`npm i -g rea-agents`), and for native analysis a Ghidra 12.1.x extraction directory (Hopper / IDA
-are alternatives, under their own licences). Static JavaScript/Electron and .NET analysis need no
-native engine.
+The shipped row was exercised live: `list_documents` answered through the `cmd.exe` form, and
+`open_binary` completed with the `ghidra` provider while the engine directory came only from a
+profile-level override.
 
-**Install.** Add this repository as a bundle (the repo declares `dsh.bundle.patch`, so it is
-installable directly):
+**Prerequisites.** Node.js (a version REA accepts) and the REA CLI installed globally
+(`npm i -g rea-agents`). For native analysis, Ghidra 12.1.x (Hopper / IDA are alternatives under
+their own licences). Static JavaScript/Electron and .NET analysis need no engine.
+
+**Install.**
 
 ```
 dsh plugin --profile <profile> add github:czcdr/dsh-plugin-rea
+# or, from npm:
+dsh plugin --profile <profile> add dsh-plugin-rea
 ```
 
 A prebuilt tarball is attached to [Releases](https://github.com/czcdr/dsh-plugin-rea/releases)
-(version-free asset name, so the link keeps resolving). Or install a local checkout with
-`file:<path-to-this-repo>`.
+(version-free asset name, so the link keeps resolving).
 
-**Configure — two machine-specific values.** Edit `cordis.patch.yml` before or after installing:
+**Configure — usually nothing.** The shipped row carries **no machine-specific path**:
 
-1. `args[0]` — full path of the REA CLI entry: run `npm root -g`, then append
-   `\rea-agents\scripts\rea.mjs` (`/rea-agents/scripts/rea.mjs` on POSIX).
-2. `env.GHIDRA_INSTALL_DIR` — your Ghidra extraction directory. Omit it only if you do not use Ghidra.
+- Windows: `command: cmd.exe`, `args: ['/c', 'rea', 'mcp']` — the npm shim is a `.cmd`, so a shell is
+  required.
+- macOS/Linux: `command: rea`, `args: ['mcp']` — see
+  [`examples/cordis.patch.posix.yml`](examples/cordis.patch.posix.yml).
 
-`command: node` resolves through `PATH`; replace it with a full path if `node` is not on the PATH the
-harness sees. `env.JAVA_HOME` is optional (only needed when `java` is not on `PATH`).
+The only optional piece is the analysis engine. REA reads `GHIDRA_INSTALL_DIR` from its environment,
+so either:
+
+1. set it as an **OS-level environment variable** and (re)start the harness, or
+2. pin it for the MCP child only — see
+   [`examples/cordis.patch.with-env.yml`](examples/cordis.patch.with-env.yml).
+
+**Keep machine-specific values out of the plugin.** Override the row from your own profile's
+`cordis.patch.yml` (id-targeted config override). That file is machine-local and never published:
+
+```yaml
+- id: mcp-rea
+  config:
+    env:
+      GHIDRA_INSTALL_DIR: '<your Ghidra 12.1.x directory>'
+```
+
+Only one row may use `serverName: rea` in a profile.
 
 **Verify.** Ask for a `mcp__rea__*` call — `binary_session` reports the engine checks
 (`configuration` / `installation` / `headless` / `native_decompiler` / `java`), all of which should be
@@ -108,17 +127,18 @@ artifacts you are authorized to inspect.
 **Updating — two independent things, both manual.**
 
 - **This plugin** never updates itself. Installed from a plugin market? Update it **in that market**.
-  Installed from a local `file:` checkout (as in the author's setup)? Overwrite the directory and
-  install it again through the plugin manager. Updating REA below does **not** update this plugin, and
-  updating this plugin does not touch REA.
-- **Upstream REA**: update it with `npm i -g rea-agents@latest`. Its `bin` entry
-  (`scripts/rea.mjs`) is stable across releases, so this needs no change here.
+  Installed from a local `file:` checkout? Overwrite the directory and install it again. Updating REA
+  below does **not** update this plugin, and updating this plugin does not touch REA.
+- **Upstream REA**: `npm i -g rea-agents@latest`. Its `bin` entry (`scripts/rea.mjs`) is stable across
+  releases, so this needs no change here.
 - **Ghidra** is version-gated by REA (12.1.x today): update REA first, then check that it accepts a
   newer Ghidra.
 - **DeepSeek Harness**: a harness upgrade may change the MCP client's config schema — inspect the row
   with `Config.listConfigs name=@deepseek-ai/dsh-mcp-client` and adjust the field names.
 
-`check-updates.ps1` (Windows PowerShell) reports the state of all four at once.
+`check-updates.ps1` (Windows PowerShell) reports the state of all four at once, and
+`.github/workflows/validate.yml` enforces the bundle's shape — including "the shipped patch must not
+contain a machine-specific path" — in CI.
 
 **License.** MIT (this adapter). REA is MIT and owned by its authors; Ghidra is Apache-2.0 and owned
 by the NSA. No upstream code is redistributed here.
@@ -143,7 +163,7 @@ Android 设备（adb）；JEB 项目；Android 资源；固件；软件包与资
 EVM 字节码、已记录的 Linux 崩溃与已保存的网络捕获。
 
 **本插件在此之上只增加两件事**：把该 MCP 服务注册进 DSH 的工具层（工具名 `mcp__rea__*`），
-以及把引擎环境变量（`GHIDRA_INSTALL_DIR`、`JAVA_HOME`）限制在这个 MCP 子进程内，而不是整个 harness。
+以及让引擎环境变量（`GHIDRA_INSTALL_DIR` 等）只作用于这个 MCP 子进程，而不是整个 harness。
 
 **能做什么、不能做什么（重要）。** 分析能力由上游提供；这里只复述上游自己的契约，避免预期错位。
 
@@ -158,31 +178,49 @@ EVM 字节码、已记录的 Linux 崩溃与已保存的网络捕获。
 - 适合做：理解行为、定位实现、互操作与兼容实现、安全审计、迁移参考。
   **要拿到真正的源码，请走正规渠道**——上游代码仓库、厂商授权，或厂商自己的 SDK。
 
-**已验证版本**（作者机器，2026-10-12）：REA `6.4.0`、DeepSeek Harness 桌面运行时 `0.2.0-rc.2`、
+**已验证版本**（作者机器，2026-10-12/13）：REA `6.4.0`、DeepSeek Harness 桌面运行时 `0.2.0-rc.2`、
 Ghidra `12.1.4`、Node `24.21.0`、Windows 11 x64。行提供方 `@deepseek-ai/dsh-mcp-client` 由
-harness 自带（npm 最新 `0.0.1-rc.1`）。
+harness 自带（npm 最新 `0.0.1-rc.1`）。发布用的这一行**实测跑通过**：`list_documents` 在
+`cmd.exe` 形式下正常应答，`open_binary` 走 `ghidra` 提供方成功，而引擎目录仅来自本机 profile 覆盖。
 
-**前置条件。** 满足 REA 要求的 Node；全局安装 REA（`npm i -g rea-agents`）；原生分析需要
-Ghidra 12.1.x 的解压目录（Hopper / IDA 为替代方案，各自需授权）。静态 JavaScript/Electron 与
-.NET 分析不需要原生引擎。
+**前置条件。** 满足 REA 要求的 Node；全局安装 REA（`npm i -g rea-agents`）。原生分析需要
+Ghidra 12.1.x（Hopper / IDA 为替代方案，各自需授权）；静态 JavaScript/Electron 与 .NET 分析
+不需要引擎。
 
 **安装。**
 
 ```
 dsh plugin --profile <profile> add github:czcdr/dsh-plugin-rea
+# 或从 npm 安装：
+dsh plugin --profile <profile> add dsh-plugin-rea
 ```
 
 [Releases](https://github.com/czcdr/dsh-plugin-rea/releases) 附带预构建 tarball（资产名不带版本号，
-链接不会失效）。也可用本地目录安装：`file:<本仓库路径>`。
+链接不会失效）。
 
-**配置（两个随机器不同的值）**：改 `cordis.patch.yml`
+**配置——通常什么都不用改。** 发布出去的那一行**不含任何机器相关路径**：
 
-1. `args[0]` —— REA 入口文件的绝对路径：先跑 `npm root -g`，再拼上
-   `\rea-agents\scripts\rea.mjs`（POSIX 用 `/`）。
-2. `env.GHIDRA_INSTALL_DIR` —— 你的 Ghidra 解压目录；不用 Ghidra 时可删掉这一行。
+- Windows：`command: cmd.exe`、`args: ['/c', 'rea', 'mcp']` —— npm 的 shim 是 `.cmd`，必须经 shell。
+- macOS/Linux：`command: rea`、`args: ['mcp']` —— 见
+  [`examples/cordis.patch.posix.yml`](examples/cordis.patch.posix.yml)。
 
-`command: node` 走 PATH；若 harness 的 PATH 里没有 `node`，改成绝对路径。`env.JAVA_HOME`
-可选，仅当 `java` 不在 PATH 上时需要。
+唯一可选的是分析引擎。REA 从环境读取 `GHIDRA_INSTALL_DIR`，二选一：
+
+1. 设为**系统级环境变量**，然后重启 harness（让 MCP 子进程继承）；
+2. 只为这个 MCP 子进程指定 —— 见
+   [`examples/cordis.patch.with-env.yml`](examples/cordis.patch.with-env.yml)。
+
+**机器相关值不要写进插件。** 用你自己的 profile `cordis.patch.yml` **按 id 覆盖**这一行即可；
+该文件只在你本机、永不随插件发布：
+
+```yaml
+- id: mcp-rea
+  config:
+    env:
+      GHIDRA_INSTALL_DIR: '<你的 Ghidra 12.1.x 目录>'
+```
+
+同一 profile 内 `serverName: rea` 只能有一条记录。
 
 **验证。** 调用任一 `mcp__rea__*` 工具：`binary_session` 会给出引擎检查项
 （configuration / installation / headless / native_decompiler / java），应全部 `ok: true`；
@@ -202,7 +240,8 @@ dsh plugin --profile <profile> add github:czcdr/dsh-plugin-rea
 - **DeepSeek Harness**：升级可能改变 MCP 客户端配置结构，用
   `Config.listConfigs name=@deepseek-ai/dsh-mcp-client` 看该行 schema 并调整字段名。
 
-`check-updates.ps1`（Windows PowerShell）会把上述四项一次跑完。
+`check-updates.ps1`（Windows PowerShell）会把上述四项一次跑完；
+`.github/workflows/validate.yml` 在 CI 里守住 bundle 的形状（含「发布物不得含机器路径」这一条）。
 
 **许可。** 本适配器为 MIT；REA 为 MIT，版权归其作者；Ghidra 为 Apache-2.0，版权归 NSA。
 本仓库不再分发上游代码。
