@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-rea",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Third-party adapter that registers the upstream REA (Reverse Engineer Anything) MCP server into DeepSeek Harness as mcp__rea__* tools. REA itself is 'one MCP for reverse engineering across binaries, applications, and runtime behavior' (github.com/morluto/rea, MIT) — native binaries, JavaScript/Electron apps, .NET assemblies, websites, Android APKs, firmware and more; this plugin only composes the configuration row and scopes its engine env vars. · 第三方适配插件：把上游 REA（逆向一切）的 MCP 服务注册进 DeepSeek Harness，得到 mcp__rea__* 工具。逆向能力由上游提供（github.com/morluto/rea，MIT）；本插件只做配置组合与引擎环境变量隔离。",
   "type": "module",
   "license": "MIT",
