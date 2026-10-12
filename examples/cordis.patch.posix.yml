@@ -1,0 +1,18 @@
+# macOS / Linux variant of the row.
+#
+# `npm i -g rea-agents` installs a `rea` executable on PATH, so no shell wrapper
+# is needed here (on Windows the shim is a .cmd/.ps1 file, which is why the
+# default cordis.patch.yml goes through cmd.exe).
+#
+# Copy the block below into cordis.patch.yml, replacing the Windows row.
+
+- insert:
+    - id: mcp-rea
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: rea
+        transport: stdio
+        command: 'rea'
+        args:
+          - 'mcp'
+        failOnStartupError: false
