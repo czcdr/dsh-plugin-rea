@@ -124,7 +124,7 @@ if (Test-Path $profPkg) {
   $bundled = @($p.dsh.profile.bundles) -contains 'dsh-plugin-rea'
   if ($dep) { Ok "依赖已登记: dsh-plugin-rea = $dep" } else { Bad '依赖未登记 —— 用 plugin_manager 重新安装本插件' }
   if ($bundled) { Ok '已列入 dsh.profile.bundles（装载层已生效）' } else { Bad '未列入 bundles —— 插件不会加载' }
-  Info '本插件不会自动更新：本仓库（github.com/czcdr/dsh-plugin-rea）有新版本时，用插件管理器重新安装一次即可'
+  Info '本插件不会自动更新：从插件市场安装的在市场里更新；本地 file: 目录方式则覆盖目录后在插件管理器里重装'
   if ($dep -like 'file:*') {
     $p2 = $dep -replace '^file:', ''
     if (Test-Path $p2) { Ok "插件目录存在: $p2" } else { Bad "插件目录不存在: $p2 —— 移走了目录就会加载失败" }
