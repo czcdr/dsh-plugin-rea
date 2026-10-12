@@ -1,0 +1,38 @@
+# dsh-plugin-rea — REA (Reverse Engineer Anything) as native DSH tools
+#
+# Configuration-only bundle: no Host/Client entry files. It inserts one row of
+# the official MCP client plugin and points it at the installed `rea mcp`
+# stdio server; the model then sees mcp__rea__<tool>.
+#
+# ---------------------------------------------------------------------------
+# TWO VALUES ARE MACHINE-SPECIFIC — edit them for your machine:
+#
+#   1. args[0]              full path to the rea CLI entry file.
+#                           Run:  npm root -g
+#                           then append:  \rea-agents\scripts\rea.mjs
+#                           (POSIX: <npm root -g>/rea-agents/scripts/rea.mjs)
+#
+#   2. env.GHIDRA_INSTALL_DIR
+#                           the directory where Ghidra was extracted,
+#                           e.g. D:\ghidra\ghidra_12.1.4_PUBLIC
+#                           Leave it out only if you do not use Ghidra.
+#
+# `command: node` is resolved through PATH; point it at a full path (for
+# example D:\nodejs\node.exe) if node is not on the PATH the harness sees.
+# env.JAVA_HOME is optional — keep it when `java` is not on PATH.
+# ---------------------------------------------------------------------------
+
+- insert:
+    - id: mcp-rea
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: rea
+        transport: stdio
+        command: 'node'
+        args:
+          - 'D:\dev\npm-global\node_modules\rea-agents\scripts\rea.mjs'
+          - mcp
+        env:
+          GHIDRA_INSTALL_DIR: 'D:\ghidra\ghidra_12.1.4_PUBLIC'
+          JAVA_HOME: 'F:\game\xbox'
+        failOnStartupError: false
