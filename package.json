@@ -1,0 +1,44 @@
+{
+  "name": "dsh-plugin-rea",
+  "version": "1.0.0",
+  "description": "REA (Reverse Engineer Anything) as native DeepSeek Harness tools: a configuration-only Cordis bundle that composes the official @deepseek-ai/dsh-mcp-client row for the rea MCP server, so sessions get mcp__rea__* tools. Third-party adapter — not part of REA. · 把 REA 逆向工具接入 DeepSeek Harness：纯配置型 Cordis bundle，复用官方 MCP 客户端行注册 rea 服务器，会话内直接出现 mcp__rea__* 工具。第三方适配，非 REA 官方组成部分。",
+  "type": "module",
+  "license": "MIT",
+  "author": "czcdr",
+  "homepage": "https://github.com/czcdr/dsh-plugin-rea",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/czcdr/dsh-plugin-rea.git"
+  },
+  "bugs": {
+    "url": "https://github.com/czcdr/dsh-plugin-rea/issues"
+  },
+  "keywords": [
+    "deepseek",
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "cordis",
+    "cordis-plugin",
+    "bundle",
+    "mcp",
+    "rea",
+    "reverse-engineering",
+    "ghidra",
+    "binary-analysis"
+  ],
+  "files": [
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE",
+    "check-updates.ps1"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "check-updates": "powershell -NoProfile -File ./check-updates.ps1"
+  }
+}
