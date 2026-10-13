@@ -107,8 +107,10 @@ if ($installed -and $latest) {
   } elseif ($vi -and $vl -and $vl -eq $vi -and $installed -ne $latest) {
     Warn "同版本号但通道不同：$installed → $latest（预发布/正式）"
   } else { Ok '已是最新版本' }
-} else {
+} elseif (-not $latest) {
   Warn '未能取到上游最新版本（两个 registry 都查不通？）—— 已跳过版本比对'
+} else {
+  Warn '本地没读到已安装版本（见上面那条）—— 已跳过版本比对'
 }
 
 # ------------------------------------------------------------- Node 运行时
