@@ -1,33 +1,21 @@
-# dsh-plugin-rea — REA (Reverse Engineer Anything) as native DSH tools
+# dsh-plugin-rea — one-plugin bundle
 #
-# Configuration-only bundle: no Host/Client entry files. It inserts one row of
-# the official MCP client plugin and points it at the installed `rea mcp`
-# stdio server; the model then sees mcp__rea__<tool>.
+# Registers the REA MCP server as mcp__rea__* and launches it through the
+# bundle's own shim, which reads the machine-local state written by
+# `scripts/setup.mjs` and exports exactly the variables REA reads.
 #
-# ---------------------------------------------------------------------------
-# PORTABLE BY DEFAULT — this file carries no machine-specific path.
+# PORTABLE BY CONSTRUCTION — no machine path appears in this file.
+#   * `command` is the running Node executable (`process.execPath`), so the
+#     launcher needs no PATH entry and no shim resolution by the OS.
+#   * `args[0]` is computed at boot from DSH_HOME, where setup mirrors the
+#     shim. `ctx` in a `!!js` expression is the loader scope, which has no
+#     `require`/`path`, so this is written with plain string concatenation.
+#   * If the shim is absent, the row still starts and the shim itself explains
+#     what to run. `failOnStartupError: false` keeps the harness up either way.
 #
-#   Prerequisite: `rea` must be reachable from the PATH the harness sees.
-#                 (`npm i -g rea-agents` puts it there.)
-#
-#   Windows    : command: cmd.exe   args: ['/c', 'rea', 'mcp']   (as below)
-#   macOS/Linux: command: 'rea'     args: ['mcp']
-#                → see examples/cordis.patch.posix.yml
-#
-#   Analysis engines: REA reads GHIDRA_INSTALL_DIR from its environment.
-#     - Option 1 (recommended): set it as an OS-level environment variable,
-#       then start/restart the harness so the MCP child inherits it.
-#     - Option 2: put an `env:` block in the row —
-#       see examples/cordis.patch.with-env.yml.
-#     Without it, native analysis reports the engine as unavailable while every
-#     other REA capability keeps working. Static JavaScript/Electron and .NET
-#     analysis need no engine at all.
-#
-#   Only ONE row may use serverName: rea in a profile. To adapt this bundle for
-#   your machine without touching the upstream file, override `mcp-rea` from
-#   your profile's own cordis.patch.yml (id-targeted config override) — that
-#   file is never published.
-# ---------------------------------------------------------------------------
+# One row may use serverName: rea in a profile. To pin a different launch
+# command on this machine, override `mcp-rea` from the profile's own
+# cordis.patch.yml (id-targeted config override) — that file is never published.
 
 - insert:
     - id: mcp-rea
@@ -35,9 +23,8 @@
       config:
         serverName: rea
         transport: stdio
-        command: 'cmd.exe'
+        command: !!js process.execPath
         args:
-          - '/c'
-          - 'rea'
-          - 'mcp'
+          - !!js process.env.DSH_HOME + '\plugins\rea-bundle\bin\rea-shim.mjs'
+          - mcp
         failOnStartupError: false

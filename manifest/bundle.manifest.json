@@ -1,0 +1,278 @@
+{
+  "$comment": [
+    "Component manifest for the one-plugin bundle. Every entry is fetched from an",
+    "official vendor source and verified before use. Fields:",
+    "  sha256   - REQUIRED for offline integrity. 'unverified' means the vendor does",
+    "             not publish a checksum we could confirm; setup then pins the hash",
+    "             it observed on first fetch (TOFU) and fails on later mismatch.",
+    "  size     - expected byte count, used only for progress/truncation checks.",
+    "  license  - license of the 'from' declaration, not a redistribution claim.",
+    "  requires - components whose binaries this one needs to run.",
+    "Nothing here is redistributed inside the npm package; setup downloads it."
+  ],
+  "manifestVersion": 1,
+  "generatedFor": "dsh-plugin-rea one-plugin bundle",
+  "pins": {
+    "reaAgents": "6.4.0",
+    "ghidra": "12.1.4",
+    "jdk": "21",
+    "apktool": "3.0.3",
+    "jadxHeadlessMcp": "0.7.1",
+    "nodeEngines": "^22.19.0 || ^24.11.0 || >=26.0.0"
+  },
+  "components": {
+    "node": {
+      "description": "Portable Node.js runtime used to execute vendored REA. Only provisioned when no compatible node.exe is already reachable.",
+      "kind": "archive-zip",
+      "license": "MIT (Node.js)",
+      "requires": [],
+      "unpack": { "stripRootComponents": 1, "moveTo": "node", "pick": ["node.exe"] },
+      "probe": { "argv": ["{node}", "-v"], "expect": { "regex": "^v\\d+" } },
+      "sources": {
+        "win32-x64": {
+          "version": "24.21.0",
+          "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-win-x64.zip",
+          "format": "zip",
+          "size": 37618919,
+          "sha256": "158f7685b44de51f6c0df1d153526cbcd3e1bc739a8dfc607721cef75de9e541",
+          "sha256Source": "https://nodejs.org/dist/v24.21.0/SHASUMS256.txt (line: node-v24.21.0-win-x64.zip)",
+          "sha256VerifiedOn": "2026-10-13",
+          "note": "Checksum and unpack verified on this machine: the extracted node.exe runs standalone (v24.21.0), no installer and no registry writes."
+        },
+        "darwin-arm64": {
+          "version": "24.21.0",
+          "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-darwin-arm64.tar.gz",
+          "format": "tar.gz",
+          "sha256": "unverified",
+          "sha256Source": "https://nodejs.org/dist/v24.21.0/SHASUMS256.txt"
+        },
+        "linux-x64": {
+          "version": "24.21.0",
+          "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-x64.tar.xz",
+          "format": "tar.xz",
+          "sha256": "unverified",
+          "sha256Source": "https://nodejs.org/dist/v24.21.0/SHASUMS256.txt",
+          "note": ".tar.xz is not unpackable by Windows Expand-Archive; bsdtar handles it."
+        }
+      }
+    },
+    "jdk": {
+      "description": "Full JDK (not a JRE) for Ghidra headless and the JADX bridge. REA validates it with 'java --list-modules' and requires jdk.compiler.",
+      "kind": "archive",
+      "license": "GPL-2.0-with-classpath-exception (Eclipse Temurin)",
+      "requires": [],
+      "unpack": { "stripRootComponents": 1, "moveTo": "jdk" },
+      "probe": { "argv": ["{jvm}", "--list-modules"], "expect": { "contains": "jdk.compiler" } },
+      "sources": {
+        "win32-x64": {
+          "version": "21.0.12.1+1",
+          "url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1%2B1/OpenJDK21U-jdk_x64_windows_hotspot_21.0.12.1_1.zip",
+          "format": "zip",
+          "size": 205073461,
+          "sha256": "f9d6e191ab098c0d416e7d588a24420a8621cd2f4720dab2459b8b7b2d2d8b4e",
+          "sha256Source": "Adoptium API /v3/assets/latest/21/hotspot?os=windows&architecture=x64&image_type=jdk (binary.package.checksum)",
+          "sha256VerifiedOn": "2026-10-13",
+          "metaApi": "https://api.adoptium.net/v3/assets/latest/21/hotspot?architecture=x64&image_type=jdk&os=windows&vendor=eclipse"
+        },
+        "darwin-x64": {
+          "version": "21.0.12.1+1",
+          "url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1%2B1/OpenJDK21U-jdk_x64_mac_hotspot_21.0.12.1_1.tar.gz",
+          "format": "tar.gz",
+          "size": 194316575,
+          "sha256": "44db0f08196daf19a47f90d13388b0c943b67663cb537f998fe29e836fa842ce",
+          "sha256Source": "Adoptium API (binary.package.checksum)",
+          "sha256VerifiedOn": "2026-10-13"
+        },
+        "darwin-arm64": {
+          "version": "21.0.12.1+1",
+          "url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1%2B1/OpenJDK21U-jdk_aarch64_mac_hotspot_21.0.12.1_1.tar.gz",
+          "format": "tar.gz",
+          "size": 200073404,
+          "sha256": "3623232f33a9c3baadf304480b2535f9a3cba8a58d42ecbb438ba267315d9998",
+          "sha256Source": "Adoptium API (binary.package.checksum)",
+          "sha256VerifiedOn": "2026-10-13"
+        },
+        "linux-x64": {
+          "version": "21.0.12.1+1",
+          "url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1%2B1/OpenJDK21U-jdk_x64_linux_hotspot_21.0.12.1_1.tar.gz",
+          "format": "tar.gz",
+          "size": 207473347,
+          "sha256": "ce79869e1307ed8ee1e2baa86a412b1eb5b75d10a01006d788a6f968bcfaee94",
+          "sha256Source": "Adoptium API (binary.package.checksum)",
+          "sha256VerifiedOn": "2026-10-13"
+        }
+      }
+    },
+    "ghidra": {
+      "description": "Ghidra release, extracted. REA locates support/analyzeHeadless(.bat) and Features/Decompiler/os/<platform>/decompile[.exe] inside it.",
+      "kind": "archive-zip",
+      "license": "Apache-2.0",
+      "requires": ["jdk"],
+      "unpack": { "stripRootComponents": 1, "moveTo": "ghidra" },
+      "probe": { "file": "{ghidra}/Ghidra/application.properties", "expect": { "contains": "application.version=" } },
+      "sources": {
+        "all": {
+          "version": "12.1.4",
+          "url": "https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.1.4_build/ghidra_12.1.4_PUBLIC_20260921.zip",
+          "format": "zip",
+          "size": 569649598,
+          "sha256": "unverified",
+          "sha256Source": "Ghidra release notes (GitHub release body) — the .zip.sha256 asset URL 404s; setup performs a TOFU pin when the vendor hash cannot be confirmed, and re-verifies on every later run.",
+          "releaseApi": "https://api.github.com/repos/NationalSecurityAgency/ghidra/releases/tags/Ghidra_12.1.4_build",
+          "note": "No platform split for the public release: one zip serves Windows/macOS/Linux. ~570 MB, the single largest component; never redistributed inside the npm package."
+        }
+      }
+    },
+    "apktool": {
+      "description": "Android resource decoding. REA is pointed at the wrapper script, which must sit next to the jar.",
+      "kind": "multi-file",
+      "license": "Apache-2.0",
+      "requires": ["jdk"],
+      "entries": {
+        "all": [
+          {
+            "id": "jar",
+            "version": "3.0.3",
+            "url": "https://github.com/iBotPeaches/Apktool/releases/download/v3.0.3/apktool_3.0.3.jar",
+            "format": "file",
+            "size": 15478013,
+            "sha256": "unverified",
+            "sha256Source": "GitHub release asset (no vendor checksum published); TOFU pin on first fetch",
+            "moveTo": "apktool",
+            "saveAs": "apktool.jar"
+          }
+        ],
+        "byPlatform": {
+          "win32-x64": [
+            {
+              "id": "wrapper",
+              "version": "master",
+              "url": "https://raw.githubusercontent.com/iBotPeaches/Apktool/master/scripts/windows/apktool.bat",
+              "format": "file",
+              "size": 2348,
+              "sha256": "9440ec9d98efdef14136f4cefd79ac200d72baa016b5991d128234a3a3ef3b43",
+              "sha256Source": "measured on 2026-10-13 (raw.githubusercontent.com publishes no checksum); archive-free single file, 2,348 B",
+              "moveTo": "apktool",
+              "saveAs": "apktool.bat"
+            }
+          ],
+          "darwin-arm64": [
+            {
+              "id": "wrapper",
+              "version": "master",
+              "url": "https://raw.githubusercontent.com/iBotPeaches/Apktool/master/scripts/linux/apktool",
+              "format": "file",
+              "sha256": "unverified",
+              "sha256Source": "raw.githubusercontent.com (no published checksum); TOFU pin on first fetch",
+              "moveTo": "apktool",
+              "saveAs": "apktool"
+            }
+          ],
+          "linux-x64": [
+            {
+              "id": "wrapper",
+              "version": "master",
+              "url": "https://raw.githubusercontent.com/iBotPeaches/Apktool/master/scripts/linux/apktool",
+              "format": "file",
+              "sha256": "unverified",
+              "sha256Source": "raw.githubusercontent.com (no published checksum); TOFU pin on first fetch",
+              "moveTo": "apktool",
+              "saveAs": "apktool"
+            }
+          ]
+        }
+      },
+      "probe": { "argv": ["{jvm}", "-jar", "{vendor}/apktool/apktool.jar", "--version"], "expect": { "regex": "\\d+\\.\\d+" } }
+    },
+    "jadxHeadlessMcp": {
+      "description": "REA validates this exact jar's bridge classes; it is not interchangeable with a plain jadx build.",
+      "kind": "file",
+      "license": "Apache-2.0",
+      "requires": ["jdk"],
+      "probe": { "file": "{vendor}/jadx/jadx-headless-mcp-0.7.1-all.jar" },
+      "entries": {
+        "all": [
+          {
+            "id": "jar",
+            "version": "0.7.1",
+            "url": "https://github.com/1013503897/jadx-headless-mcp/releases/download/v0.7.1/jadx-headless-mcp-0.7.1-all.jar",
+            "format": "file",
+            "size": 42619858,
+            "sha256": "6e5eacf500b64292bfb73c49797c1958f6ee44646e43e868039ae7feb573ff75",
+            "sha256Source": "measured on 2026-10-13; no vendor checksum published. HEAD confirmed 200 with Content-Length 42,619,858 B and the archive lists cleanly (com/atxx/jhmcp/*). REA pins this path via REA_JADX_MCP_JAR and validates the jar's own bridge classes.",
+            "moveTo": "jadx",
+            "saveAs": "jadx-headless-mcp-0.7.1-all.jar"
+          }
+        ]
+      }
+    },
+    "androidPlatformTools": {
+      "description": "adb, for REA's device tools. Optional: without a device these tools simply report no devices.",
+      "kind": "archive-zip",
+      "license": "Android SDK Terms (Google)",
+      "requires": [],
+      "optional": true,
+      "unpack": { "stripRootComponents": 1, "moveTo": "platform-tools" },
+      "probe": { "argv": ["{vendor}/platform-tools/adb{exe}", "version"], "expect": { "contains": "Android Debug Bridge" } },
+      "sources": {
+        "win32-x64": {
+          "version": "latest",
+          "url": "https://dl.google.com/android/repository/platform-tools-latest-windows.zip",
+          "format": "zip",
+          "size": 8044989,
+          "sha256": "45f4d63113e895ebde0c90f194099a4676b6ac653bd28d54314a9e022bbc1a99",
+          "sha256Source": "Google publishes no checksum for this rolling asset; this value was measured on 2026-10-13 and the archive was verified readable (15 entries incl. adb.exe). Setup re-verifies against the recorded value and reports drift rather than silently accepting new bytes.",
+          "note": "Rolling 'latest' URL: the pinned version is whatever was fetched, recorded in bundle.json. Reported Content-Length 8,044,989 B (confirmed by HEAD)."
+        },
+        "darwin-x64": {
+          "version": "latest",
+          "url": "https://dl.google.com/android/repository/platform-tools-latest-darwin.zip",
+          "format": "zip",
+          "sha256": "unverified",
+          "sha256Source": "Google publishes no checksum for this rolling asset"
+        },
+        "linux-x64": {
+          "version": "latest",
+          "url": "https://dl.google.com/android/repository/platform-tools-latest-linux.zip",
+          "format": "zip",
+          "sha256": "unverified",
+          "sha256Source": "Google publishes no checksum for this rolling asset"
+        }
+      }
+    },
+    "reaAgents": {
+      "description": "The REA MCP server itself, installed into vendor/ from the npm registry so the bundle owns the runtime copy.",
+      "kind": "npm",
+      "license": "MIT",
+      "requires": ["node"],
+      "unpack": { "moveTo": "rea-agents" },
+      "probe": {
+        "argv": ["{node}", "{vendor}/rea-agents/scripts/rea.mjs", "--version"],
+        "expect": { "regex": "^6\\.4\\.0" }
+      },
+      "sources": {
+        "npm": {
+          "version": "6.4.0",
+          "registry": "https://registry.npmjs.org/rea-agents",
+          "integrity": "registry-provided (npm verifies the tarball signature/integrity itself)",
+          "sha256": "unverified",
+          "sha256Source": "npm registry integrity field is authoritative for the tarball; setup records the resolved dist.tarball + integrity it saw"
+        }
+      }
+    }
+  },
+  "notProvisionable": {
+    "$comment": "Upstream host gates. Listed so the setup report can explain an unavailable capability instead of silently omitting it.",
+    "hopper": "macOS only (HOPPER_LAUNCHER_PATH).",
+    "ida": "requires a user-owned IDA plus REA_IDA_MCP_CONFIG; REA never launches IDA.",
+    "firmware": "binwalk/unblob are Linux-only (REA_BINWALK_COMMAND / REA_UNBLOB_COMMAND).",
+    "wakaru": "Linux x64 only (REA_WAKARU_COMMAND).",
+    "pwntools": "Linux x64 only (REA_PWNTOOLS_PYTHON) — ELF layout and recorded-crash tools.",
+    "pwndbg": "Linux/macOS only (gdb + REA_PWNDBG_GDB).",
+    "mitmdump": "Linux only, native mitmproxy captures (REA_MITMDUMP_COMMAND); HAR needs no engine.",
+    "appleToolchain": "macOS only (xcrun, plutil, assetutil, hdiutil, lldb).",
+    "processCapture": "Linux/macOS PTY only.",
+    "ilspycmd": "Optional .NET decompiler (REA_ILSPY_CMD_PATH). Only wired when a runnable ilspycmd already exists; the static managed provider works without it.",
+    "browser": "Reused from the host (REA_BROWSER_EXECUTABLE). Never downloaded by this bundle."
+  }
+}
