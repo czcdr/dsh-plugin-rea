@@ -1,0 +1,104 @@
+name: Validate
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Bundle manifest sanity
+        run: |
+          node -e "
+            const p = require('./package.json');
+            const fail = (m) => { console.error('FAIL: ' + m); process.exit(1) };
+            if (!p.dsh || !p.dsh.bundle || !p.dsh.bundle.patch) fail('package.json is missing dsh.bundle.patch');
+            if (p.private) fail('package.json must not be private to be publishable');
+            for (const f of ['cordis.patch.yml', 'README.md', 'LICENSE', 'check-updates.ps1']) {
+              if (!p.files.includes(f)) fail('files[] must ship ' + f);
+            }
+            if (!require('fs').existsSync(p.dsh.bundle.patch)) fail('dsh.bundle.patch target does not exist');
+            console.log('manifest ok');
+          "
+
+      - name: JSON files parse
+        run: |
+          node -e "
+            for (const f of ['package.json', 'screenshots.json']) {
+              JSON.parse(require('fs').readFileSync(f, 'utf8'));
+              console.log('json ok:', f);
+            }
+          "
+
+      - name: The npm payload ships every market-facing file
+        run: |
+          # Regression guard for files[]: the market reads screenshots.json and the
+          # images next to package.json, and a user copies examples/ by hand — none of
+          # that is worth anything if npm pack drops it.
+          node -e "
+            const { execSync } = require('child_process');
+            const meta = JSON.parse(execSync('npm pack --dry-run --json', { encoding: 'utf8' }))[0];
+            const files = meta.files.map((f) => f.path);
+            const need = [
+              'cordis.patch.yml', 'README.md', 'LICENSE', 'CHANGELOG.md', 'check-updates.ps1',
+              'screenshots.json', 'assets/screenshot-1.png', 'assets/screenshot-2.png',
+              'examples/cordis.patch.posix.yml', 'examples/cordis.patch.with-env.yml',
+            ];
+            const missing = need.filter((f) => !files.includes(f));
+            if (missing.length) {
+              console.error('FAIL: the npm payload is missing ' + missing.join(', '));
+              process.exit(1);
+            }
+            console.log('npm payload ok: ' + files.length + ' files, all market-facing files included');
+          "
+
+      - name: YAML files parse
+        run: |
+          python3 -m pip install --quiet --disable-pip-version-check pyyaml
+          python3 - <<'PY'
+          import glob, sys, yaml
+          files = ['cordis.patch.yml', 'docs/marketplace-entry.yml'] + sorted(glob.glob('examples/*.yml')) + sorted(glob.glob('.github/workflows/*.yml'))
+          for f in files:
+              with open(f, encoding='utf-8') as fh:
+                  yaml.safe_load(fh)
+              print('yaml ok:', f)
+          PY
+
+      - name: The shipped patch stays machine-independent
+        run: |
+          set -e
+          if grep -nE '[A-Za-z]:\\\\|[A-Za-z]:\\' cordis.patch.yml; then
+            echo "FAIL: cordis.patch.yml must not contain an absolute Windows path"
+            exit 1
+          fi
+          if grep -nE '/(home|Users)/[A-Za-z0-9._-]+' cordis.patch.yml; then
+            echo "FAIL: cordis.patch.yml must not contain an absolute POSIX home path"
+            exit 1
+          fi
+          echo "patch ok: no machine-specific path"
+
+      - name: The row keeps its contract
+        run: |
+          python3 - <<'PY'
+          import sys, yaml
+          doc = yaml.safe_load(open('cordis.patch.yml', encoding='utf-8'))
+          row = doc[0]['insert'][0]
+          assert row['id'] == 'mcp-rea', row
+          assert row['name'] == '@deepseek-ai/dsh-mcp-client', row
+          cfg = row['config']
+          assert cfg['serverName'] == 'rea', cfg
+          assert cfg['transport'] == 'stdio', cfg
+          assert 'command' in cfg and 'args' in cfg, cfg
+          print('row ok:', cfg['command'], cfg['args'])
+          PY

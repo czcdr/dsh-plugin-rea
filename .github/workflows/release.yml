@@ -1,0 +1,77 @@
+name: Release
+
+# Two independent jobs, both triggered by publishing a GitHub Release:
+#   1. pack   — builds the tarball, renames it to the version-free asset name and
+#               attaches it to the release (the market's `latest/download` link
+#               depends on that exact name staying free of a version number).
+#   2. publish — publishes to npm. Enabled only after this repository is
+#               configured as a Trusted Publisher on npmjs.com and the repo
+#               variable NPM_TRUSTED_PUBLISHING is set to "true"; until then the
+#               job is skipped, so a release never fails on missing credentials.
+#
+# Setup for job 2 (one time, by the package owner):
+#   npmjs.com → the package → Settings → Trusted Publisher → GitHub Actions:
+#     Organization/user: czcdr   Repository: dsh-plugin-rea
+#     Workflow filename: release.yml   Environment: (leave empty)
+#   then: repo Settings → Secrets and variables → Actions → Variables →
+#     NPM_TRUSTED_PUBLISHING = true
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Verify the released tag matches package.json
+        run: |
+          tag="${{ github.event.release.tag_name }}"
+          ver="v$(node -p "require('./package.json').version")"
+          if [ -n "$tag" ] && [ "$tag" != "$ver" ]; then
+            echo "FAIL: release tag $tag does not match package.json $ver"
+            exit 1
+          fi
+          echo "tag matches: ${tag:-<manual run>}"
+
+      - name: Pack and attach a version-free tarball
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          npm pack
+          mv dsh-plugin-rea-*.tgz dsh-plugin-rea.tgz
+          ls -l dsh-plugin-rea.tgz
+          if [ -n "${{ github.event.release.tag_name }}" ]; then
+            gh release upload "${{ github.event.release.tag_name }}" dsh-plugin-rea.tgz --clobber
+          fi
+
+  publish:
+    needs: pack
+    if: ${{ vars.NPM_TRUSTED_PUBLISHING == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: npm CLI must support OIDC trusted publishing (>= 11.15.0)
+        run: npm install -g npm@latest && npm --version
+
+      - name: Publish to npm via trusted publishing
+        run: npm publish --provenance --access public
