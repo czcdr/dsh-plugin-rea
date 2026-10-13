@@ -17,7 +17,7 @@
   两个 registry 都查不通时不再静默跳过版本比对；`rea` 优先解析 `rea.cmd`（与发布行的
   `cmd.exe /c rea` 对齐，此前 `Get-Command rea` 会先命中 `.ps1` 垫片）；`rea doctor` 非零退出码会提示。
 - **`assets/make-screenshots.ps1` 补 BOM**：该文件自己的注释要求 UTF-8 with BOM，此前漏做。
-- **`package.json` description 真正缩短**：239 → 约 186 字符（1.0.4 只是改写，仍会被 npm 列表页截断）。
+- **`package.json` description 真正缩短**：239 → 201 字符（1.0.4 只是改写，仍会被 npm 列表页截断）。
 - **文档口径修正**：README 的 harness 版本拆成「桌面运行时 / 自带 dsh CLI」两个口径；
   投稿条目注释里的 Release 版本改为当前值。
 
