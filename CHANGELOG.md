@@ -2,6 +2,25 @@
 
 本插件遵循语义化版本。版本号变化说明「配置组合」这层的变化，与 REA 自身的版本无关。
 
+## 1.0.5 — 2026-10-13
+
+把 1.0.4 留下的形状问题收尾，并让承诺过的 CI 真正跑在仓库上。
+
+- **CI 首次真正进仓库**：1.0.4 的 CHANGELOG 与 README 都写了 `validate.yml` / `release.yml`，
+  但 `.github/` 当时没有提交，GitHub 上 `actions/workflows` 是空的——现已推送并在 push 上跑通。
+- **校验范围扩到示例**：机器路径检查从只查 `cordis.patch.yml` 扩到 `examples/*.yml`（读者会照抄的文件）；
+  新增一步断言 npm 包必须带齐 `screenshots.json`、`assets/`、`examples/`——`files[]` 的回归守卫。
+- **`examples/cordis.patch.with-env.yml` 不再提供可照抄的假路径**：原来的 `C:\tools\...` 是编造值，
+  现改为 `<your Ghidra 12.1.x extraction directory>`，并补上 `!!js process.env.GHIDRA_INSTALL_DIR`
+  这一「安装者零改配置」的写法（entry-list dialect 支持 `!!js`；引擎变量本来就会被 MCP 子进程继承）。
+- **`check-updates.ps1` 加固**：`Test-NodeEngines` 去掉会先于函数体抛异常的类型约束；
+  两个 registry 都查不通时不再静默跳过版本比对；`rea` 优先解析 `rea.cmd`（与发布行的
+  `cmd.exe /c rea` 对齐，此前 `Get-Command rea` 会先命中 `.ps1` 垫片）；`rea doctor` 非零退出码会提示。
+- **`assets/make-screenshots.ps1` 补 BOM**：该文件自己的注释要求 UTF-8 with BOM，此前漏做。
+- **`package.json` description 真正缩短**：239 → 约 186 字符（1.0.4 只是改写，仍会被 npm 列表页截断）。
+- **文档口径修正**：README 的 harness 版本拆成「桌面运行时 / 自带 dsh CLI」两个口径；
+  投稿条目注释里的 Release 版本改为当前值。
+
 ## 1.0.4 — 2026-10-13
 
 按外部评审修订：发布物不再携带任何机器相关路径。
@@ -28,7 +47,8 @@
 
 - 新增 `assets/screenshot-1.png`、`assets/screenshot-2.png` 与 `screenshots.json`（市场详情页展示用，
   由 `assets/make-screenshots.ps1` 可复现生成）。
-- 维护记录改为**仅本机保留**（不再随仓库或 tarball 发布）。
+- 维护记录改为**仅本机保留**：本机维护记录 `docs/project-notes.md` 既不进仓库也不进 tarball；
+  投稿条目 `docs/marketplace-entry.yml` 留在仓库里，但不进 npm 包。
 
 ## 1.0.2 — 2026-10-12
 

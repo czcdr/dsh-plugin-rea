@@ -64,7 +64,7 @@ contract so expectations are right.
 | Component | Version |
 |---|---|
 | REA (`rea-agents`) | **6.4.0** |
-| DeepSeek Harness (dsh desktop runtime) | **0.2.0-rc.2** |
+| DeepSeek Harness | desktop runtime **0.2.0-rc.2**, with its bundled dsh CLI 0.1.7-rc.2 |
 | `@deepseek-ai/dsh-mcp-client` (row provider) | bundled by the harness; npm latest `0.0.1-rc.1` |
 | Ghidra | 12.1.4 (REA currently accepts 12.1.x) |
 | Node.js | 24.21.0 (REA engines: `^22.19.0 \|\| ^24.11.0 \|\| >=26.0.0`) |
@@ -102,6 +102,10 @@ so either:
 1. set it as an **OS-level environment variable** and (re)start the harness, or
 2. pin it for the MCP child only — see
    [`examples/cordis.patch.with-env.yml`](examples/cordis.patch.with-env.yml).
+
+Either way the variable reaches REA without any literal path: the client hands the parent
+environment to the child (minus names that look like secrets), and the patch dialect evaluates
+`!!js` expressions, so `GHIDRA_INSTALL_DIR: !!js process.env.GHIDRA_INSTALL_DIR` also works.
 
 **Keep machine-specific values out of the plugin.** Override the row from your own profile's
 `cordis.patch.yml` (id-targeted config override). That file is machine-local and never published:
@@ -178,10 +182,11 @@ EVM 字节码、已记录的 Linux 崩溃与已保存的网络捕获。
 - 适合做：理解行为、定位实现、互操作与兼容实现、安全审计、迁移参考。
   **要拿到真正的源码，请走正规渠道**——上游代码仓库、厂商授权，或厂商自己的 SDK。
 
-**已验证版本**（作者机器，2026-10-12/13）：REA `6.4.0`、DeepSeek Harness 桌面运行时 `0.2.0-rc.2`、
-Ghidra `12.1.4`、Node `24.21.0`、Windows 11 x64。行提供方 `@deepseek-ai/dsh-mcp-client` 由
-harness 自带（npm 最新 `0.0.1-rc.1`）。发布用的这一行**实测跑通过**：`list_documents` 在
-`cmd.exe` 形式下正常应答，`open_binary` 走 `ghidra` 提供方成功，而引擎目录仅来自本机 profile 覆盖。
+**已验证版本**（作者机器，2026-10-12/13）：REA `6.4.0`、DeepSeek Harness 桌面运行时 `0.2.0-rc.2`
+（自带 dsh CLI `0.1.7-rc.2`）、Ghidra `12.1.4`、Node `24.21.0`、Windows 11 x64。行提供方
+`@deepseek-ai/dsh-mcp-client` 由 harness 自带（npm 最新 `0.0.1-rc.1`）。发布用的这一行**实测跑通过**：
+`list_documents` 在 `cmd.exe` 形式下正常应答，`open_binary` 走 `ghidra` 提供方成功，
+而引擎目录仅来自本机 profile 覆盖。
 
 **前置条件。** 满足 REA 要求的 Node；全局安装 REA（`npm i -g rea-agents`）。原生分析需要
 Ghidra 12.1.x（Hopper / IDA 为替代方案，各自需授权）；静态 JavaScript/Electron 与 .NET 分析
@@ -209,6 +214,10 @@ dsh plugin --profile <profile> add dsh-plugin-rea
 1. 设为**系统级环境变量**，然后重启 harness（让 MCP 子进程继承）；
 2. 只为这个 MCP 子进程指定 —— 见
    [`examples/cordis.patch.with-env.yml`](examples/cordis.patch.with-env.yml)。
+
+两种方式都不需要在插件里写死路径：客户端会把父进程环境传给子进程（只剔除名字像密钥的变量），
+而补丁方言支持 `!!js` 表达式，所以 `GHIDRA_INSTALL_DIR: !!js process.env.GHIDRA_INSTALL_DIR`
+同样可用。
 
 **机器相关值不要写进插件。** 用你自己的 profile `cordis.patch.yml` **按 id 覆盖**这一行即可；
 该文件只在你本机、永不随插件发布：

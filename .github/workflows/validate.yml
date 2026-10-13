@@ -75,18 +75,22 @@ jobs:
               print('yaml ok:', f)
           PY
 
-      - name: The shipped patch stays machine-independent
+      - name: The shipped patches stay machine-independent
         run: |
           set -e
-          if grep -nE '[A-Za-z]:\\\\|[A-Za-z]:\\' cordis.patch.yml; then
-            echo "FAIL: cordis.patch.yml must not contain an absolute Windows path"
+          # The row DSH loads, plus every example a reader is told to copy: none of
+          # them may carry a real machine path. `<placeholders in angle brackets>`
+          # are the intended form.
+          targets=$(printf '%s\n' cordis.patch.yml examples/*.yml)
+          if grep -nE '[A-Za-z]:\\' $targets; then
+            echo "FAIL: a shipped patch contains an absolute Windows path"
             exit 1
           fi
-          if grep -nE '/(home|Users)/[A-Za-z0-9._-]+' cordis.patch.yml; then
-            echo "FAIL: cordis.patch.yml must not contain an absolute POSIX home path"
+          if grep -nE '/(home|Users)/[A-Za-z0-9._-]+' $targets; then
+            echo "FAIL: a shipped patch contains an absolute POSIX home path"
             exit 1
           fi
-          echo "patch ok: no machine-specific path"
+          echo "patches ok: no machine-specific path"
 
       - name: The row keeps its contract
         run: |

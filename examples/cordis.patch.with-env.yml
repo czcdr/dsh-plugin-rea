@@ -2,8 +2,12 @@
 #
 # Use this when GHIDRA_INSTALL_DIR is NOT set as an OS-level environment variable
 # the harness can inherit — for example after setting it up just now, without
-# restarting the harness. The value below is a placeholder: replace it with your
-# own Ghidra 12.1.x extraction directory.
+# restarting the harness.
+#
+# The value below is a placeholder in angle brackets, not a real directory:
+# replace it with your own, or use the `!!js` form to read the variable the
+# harness already has. REA reads only GHIDRA_INSTALL_DIR; `java` comes from PATH
+# or JAVA_HOME.
 #
 # Copy the block into cordis.patch.yml, or — better — keep it out of the plugin
 # entirely and override the row from your profile's own cordis.patch.yml:
@@ -27,6 +31,12 @@
           - 'rea'
           - 'mcp'
         env:
-          GHIDRA_INSTALL_DIR: 'C:\tools\ghidra_12.1.4_PUBLIC'
-          # JAVA_HOME: 'C:\Program Files\Java\jdk-21'   # only when java is not on PATH
+          # Replace with your own Ghidra 12.1.x extraction directory.
+          # Leaving the placeholder in place is harmless: REA then reports the
+          # native engine as unavailable, exactly as when the variable is unset.
+          GHIDRA_INSTALL_DIR: '<your Ghidra 12.1.x extraction directory>'
+          # Or read it from the environment the harness already has — the
+          # entry-list dialect evaluates `!!js` expressions at activation:
+          # GHIDRA_INSTALL_DIR: !!js process.env.GHIDRA_INSTALL_DIR
+          # JAVA_HOME: '<your JDK 21 or newer home>'   # only when java is not on PATH
         failOnStartupError: false

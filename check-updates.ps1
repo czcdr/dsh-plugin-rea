@@ -38,18 +38,24 @@ function Get-NumericVersion([string]$v) {
 }
 
 # 判断 Node 版本是否满足 engines 字符串（支持 ^X.Y.Z / ~X.Y.Z / >=X.Y.Z，用 || 分隔）
-function Test-NodeEngines([version]$node, [string]$engines) {
-  if (-not $engines) { return $null }
+# 参数收 string 不收 [version]：类型约束在函数体之前生效，调用方一旦传入
+# 'abc' / '' / 'v24.21.0' 这类值就会抛 ParameterBindingArgumentTransformationException。
+function Test-NodeEngines([string]$node, [string]$engines) {
+  if (-not $engines -or -not $node) { return $null }
+  # 必须用新变量接收：$node 带 [string] 约束，赋 [version] 会被强制转回字符串，
+  # 之后 $node.Major 为 $null，所有 ^ / ~ 分支都会判假（曾因此把 Node 24 判成不满足）。
+  $v = Get-NumericVersion $node
+  if (-not $v) { return $null }
   foreach ($term in ($engines -split '\|\|')) {
     $t = $term.Trim()
     if ($t -match '^\^(\d+\.\d+\.\d+)$') {
       $base = [version]$Matches[1]
-      if ($node.Major -eq $base.Major -and $node -ge $base) { return $true }
+      if ($v.Major -eq $base.Major -and $v -ge $base) { return $true }
     } elseif ($t -match '^>=(\d+\.\d+\.\d+)$') {
-      if ($node -ge [version]$Matches[1]) { return $true }
+      if ($v -ge [version]$Matches[1]) { return $true }
     } elseif ($t -match '^~(\d+\.\d+\.\d+)$') {
       $base = [version]$Matches[1]
-      if ($node.Major -eq $base.Major -and $node.Minor -eq $base.Minor -and $node -ge $base) { return $true }
+      if ($v.Major -eq $base.Major -and $v.Minor -eq $base.Minor -and $v -ge $base) { return $true }
     }
   }
   return $false
@@ -101,6 +107,8 @@ if ($installed -and $latest) {
   } elseif ($vi -and $vl -and $vl -eq $vi -and $installed -ne $latest) {
     Warn "同版本号但通道不同：$installed → $latest（预发布/正式）"
   } else { Ok '已是最新版本' }
+} else {
+  Warn '未能取到上游最新版本（两个 registry 都查不通？）—— 已跳过版本比对'
 }
 
 # ------------------------------------------------------------- Node 运行时
@@ -145,7 +153,10 @@ try {
 # --------------------------------------------------------- REA 引擎自检
 Head 'REA 引擎自检（rea doctor）'
 $env:GHIDRA_INSTALL_DIR = $gd
-$reaCmd = (Get-Command rea -ErrorAction SilentlyContinue).Source
+# 优先取 .cmd：发布出去的那一行是 `cmd.exe /c rea mcp`（走 cmd 的 PATHEXT，命中 rea.cmd），
+# 而 PowerShell 的 Get-Command rea 会先命中同目录的 rea.ps1 垫片，两者行为（尤其退出码）并不相同。
+$reaCmd = (Get-Command 'rea.cmd' -ErrorAction SilentlyContinue).Source
+if (-not $reaCmd) { $reaCmd = (Get-Command rea -ErrorAction SilentlyContinue).Source }
 $reaArgs = @()
 if (-not $reaCmd) {
   if ($reaEntry -and (Test-Path $reaEntry) -and (Get-Command node -ErrorAction SilentlyContinue)) {
@@ -156,6 +167,7 @@ if (-not $reaCmd) {
 if ($reaCmd) {
   try {
     $raw = & $reaCmd @reaArgs doctor --format json 2>$null
+    if ($LASTEXITCODE -ne 0) { Warn "rea doctor 退出码 $LASTEXITCODE —— 报告了不健康状态，下面按输出解析" }
     $doc = ($raw -join "`n") | ConvertFrom-Json
     $g = @($doc.providerInspections) | Where-Object { $_.id -eq 'ghidra' }
     if ($g) {

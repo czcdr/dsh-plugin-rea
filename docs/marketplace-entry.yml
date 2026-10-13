@@ -10,7 +10,9 @@
 #   - 一个 PR 最多 3 条。
 #
 # 若已发布 Release tarball，可取消下面 tarball 行的注释（资产名必须不带版本号）。
-# 本仓库已在 v1.0.0 Release 中附带 dsh-plugin-rea.tgz，故该行已启用。
+# 本仓库的 Release 一直附带 dsh-plugin-rea.tgz（当前 v1.0.5），故该行保持启用。
+# 注意：脚本里 npm 映射优先于 tarball（installTargetFor：有 npm 名就走 npm），
+# 所以这行只是 npm 不可用时的兜底，不会改变市场默认的安装方式。
 
 url: https://github.com/czcdr/dsh-plugin-rea
 name: czcdr/dsh-plugin-rea
