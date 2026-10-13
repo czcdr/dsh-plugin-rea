@@ -51,7 +51,7 @@ jobs:
             const meta = JSON.parse(execSync('npm pack --dry-run --json', { encoding: 'utf8' }))[0];
             const files = meta.files.map((f) => f.path);
             const need = [
-              'cordis.patch.yml', 'README.md', 'LICENSE', 'CHANGELOG.md', 'check-updates.ps1',
+              'cordis.patch.yml', 'README.md', 'README.zh-CN.md', 'LICENSE', 'CHANGELOG.md', 'check-updates.ps1',
               'screenshots.json', 'assets/screenshot-1.png', 'assets/screenshot-2.png',
               'examples/cordis.patch.posix.yml', 'examples/cordis.patch.with-env.yml',
             ];

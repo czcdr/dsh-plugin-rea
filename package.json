@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-rea",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "Registers the upstream REA MCP server into DeepSeek Harness as mcp__rea__* tools — a third-party adapter, analysis is upstream's. · 把上游 REA 的 MCP 服务接入 DeepSeek Harness，提供 mcp__rea__* 工具（第三方适配，分析能力属上游）。",
   "type": "module",
   "license": "MIT",
@@ -30,6 +30,7 @@
   "files": [
     "cordis.patch.yml",
     "README.md",
+    "README.zh-CN.md",
     "LICENSE",
     "CHANGELOG.md",
     "check-updates.ps1",
