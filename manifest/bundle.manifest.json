@@ -27,6 +27,7 @@
       "license": "MIT (Node.js)",
       "requires": [],
       "unpack": { "stripRootComponents": 1, "moveTo": "node", "pick": ["node.exe"] },
+      "binaries": ["node{exe}"],
       "probe": { "argv": ["{node}", "-v"], "expect": { "regex": "^v\\d+" } },
       "sources": {
         "win32-x64": {
@@ -62,6 +63,7 @@
       "license": "GPL-2.0-with-classpath-exception (Eclipse Temurin)",
       "requires": [],
       "unpack": { "stripRootComponents": 1, "moveTo": "jdk" },
+      "binaries": ["bin/java{exe}"],
       "probe": { "argv": ["{jvm}", "--list-modules"], "expect": { "contains": "jdk.compiler" } },
       "sources": {
         "win32-x64": {

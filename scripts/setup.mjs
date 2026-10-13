@@ -27,6 +27,8 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { appendFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { homedir } from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -48,10 +50,12 @@ function parseArgs(argv) {
     json: false,
     only: null,
     offline: false,
-    // A slow mirror must not look like a dead one: the GitHub release CDN
-    // measured 0.35–0.54 MiB/s here, where a 10 s connect timeout is plenty for
-    // the headers but a stalled body still needs resuming + retries.
-    timeoutMs: Number(process.env.REA_BUNDLE_FETCH_TIMEOUT_MS ?? 60000),
+    // Two different clocks, because one number cannot serve both: a route must
+    // be declared dead quickly when the socket never opens, but a slow-but-alive
+    // transfer must not be killed for taking long overall (measured here:
+    // 0.35–0.54 MiB/s, where 570 MB legitimately takes ~30 minutes).
+    connectTimeoutMs: Number(process.env.REA_BUNDLE_CONNECT_TIMEOUT_MS ?? 15000),
+    idleTimeoutMs: Number(process.env.REA_BUNDLE_IDLE_TIMEOUT_MS ?? 120000),
     retries: Number(process.env.REA_BUNDLE_FETCH_RETRIES ?? 4),
   };
   for (let i = 0; i < argv.length; i += 1) {
@@ -114,12 +118,201 @@ function sha256File(file) {
   return hash.digest("hex");
 }
 
+/* ------------------------------------------------------------ proxy support */
+
+/**
+ * Where the network expects us to go through a proxy.
+ *
+ * This matters more than it looks: Node's global fetch ignores the system proxy
+ * settings entirely, while .NET/PowerShell honour them. On a machine with
+ * WinINET's ProxyEnable=1 (here: 127.0.0.1:7890) `Invoke-WebRequest` reaches
+ * github.com fine and Node gets ECONNRESET/timeout on the very same URL — which
+ * is exactly the failure this function exists to remove.
+ *
+ * Order: explicit environment first (standard names, either case), then the
+ * Windows registry, then NO_PROXY handling.
+ */
+function resolveProxy() {
+  const fromEnv =
+    process.env.HTTPS_PROXY ?? process.env.https_proxy ??
+    process.env.HTTP_PROXY ?? process.env.http_proxy ??
+    process.env.ALL_PROXY ?? process.env.all_proxy ?? "";
+  let server = fromEnv.trim();
+
+  if (!server && IS_WINDOWS) {
+    const result = spawnSync(
+      "reg",
+      ["query", "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings", "/v", "ProxyEnable"],
+      { encoding: "utf8" },
+    );
+    const enabled = /ProxyEnable\s+REG_DWORD\s+0x1/i.test(result.stdout ?? "");
+    if (enabled) {
+      const value = spawnSync(
+        "reg",
+        ["query", "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings", "/v", "ProxyServer"],
+        { encoding: "utf8" },
+      );
+      const match = /ProxyServer\s+REG_SZ\s+(.+)/i.exec(value.stdout ?? "");
+      if (match) server = match[1].trim();
+    }
+  }
+  if (!server) return null;
+
+  // A registry value may be a per-scheme list: "http=host:port;https=host:port".
+  if (server.includes("=")) {
+    const parts = Object.fromEntries(
+      server.split(";").filter(Boolean).map((entry) => {
+        const [scheme, target] = entry.split("=");
+        return [scheme.trim().toLowerCase(), (target ?? "").trim()];
+      }),
+    );
+    server = parts.https ?? parts.http ?? "";
+  }
+  if (!server) return null;
+  if (!/^[a-z]+:\/\//i.test(server)) server = `http://${server}`;
+
+  let parsed;
+  try {
+    parsed = new URL(server);
+  } catch {
+    return null;
+  }
+  const bypass = (process.env.NO_PROXY ?? process.env.no_proxy ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  return {
+    host: parsed.hostname,
+    port: Number(parsed.port || 8080),
+    auth: parsed.username
+      ? "Basic " + Buffer.from(`${decodeURIComponent(parsed.username)}:${decodeURIComponent(parsed.password)}`).toString("base64")
+      : null,
+    bypass,
+    display: `${parsed.hostname}:${parsed.port || 8080}`,
+  };
+}
+
+function bypassesProxy(proxy, target) {
+  if (!proxy) return false;
+  const host = target.hostname.toLowerCase();
+  return proxy.bypass.some((entry) => {
+    const pattern = entry.toLowerCase();
+    if (pattern === "*") return true;
+    const bare = pattern.replace(/^\./, "");
+    return host === bare || host.endsWith(`.${bare}`);
+  });
+}
+
+/**
+ * Candidate routes for one URL, in the order they should be tried.
+ *
+ * Neither route is universally right, and "a proxy is configured" does not mean
+ * "a proxy is needed": on the machine this was written for, the local proxy
+ * answers github.com correctly but returns 403 for nodejs.org and 404 for
+ * dl.google.com, while both are fine directly. The reverse also happens
+ * (github.com reset by the network, fine through the proxy). So the direct
+ * route is tried first and the proxy is a fallback — with the winner logged, so
+ * the behaviour is visible instead of mysterious.
+ */
+function candidateRoutes(proxy, target) {
+  const routes = [{ proxy: null, label: "direct" }];
+  if (proxy && !bypassesProxy(proxy, target)) {
+    routes.push({ proxy, label: `proxy ${proxy.display}` });
+  }
+  return routes;
+}
+
+/**
+ * One HTTPS GET, returning { status, headers, stream, via }. Goes through a
+ * CONNECT tunnel when `proxy` is given, otherwise connects directly.
+ */
+function openGet(url, { proxy, headers, connectTimeoutMs }) {
+  return new Promise((resolve, reject) => {
+    const target = new URL(url);
+    const useProxy = Boolean(proxy);
+    const requestHeaders = { "user-agent": "dsh-plugin-rea-bundle", accept: "*/*", ...headers };
+    const connectTimeout = connectTimeoutMs;
+    const idleTimeout = options.idleTimeoutMs;
+    // Idle, not total: every received chunk pushes the deadline out, so a slow
+    // but healthy transfer survives while a stalled one is cut.
+    const touch = (socket) => () => socket.setTimeout(idleTimeout);
+    const done = (res, via) => {
+      res.on("data", touch(res.socket));
+      resolve({ status: res.statusCode, headers: res.headers, stream: res, via });
+    };
+
+    if (!useProxy) {
+      const req = httpsRequest(
+        {
+          host: target.hostname,
+          port: target.port || 443,
+          path: target.pathname + target.search,
+          method: "GET",
+          headers: requestHeaders,
+          timeout: connectTimeout,
+        },
+        (res) => done(res, "direct"),
+      );
+      req.on("socket", (socket) => {
+        socket.setTimeout(connectTimeout);
+        socket.once("connect", () => socket.setTimeout(idleTimeout));
+      });
+      req.on("timeout", () => req.destroy(new Error(`no response within ${idleTimeout}ms`)));
+      req.on("error", reject);
+      req.end();
+      return;
+    }
+
+    // Establish a tunnel with CONNECT, then run TLS inside it.
+    const connectHeaders = { host: `${target.hostname}:${target.port || 443}` };
+    if (proxy.auth) connectHeaders["proxy-authorization"] = proxy.auth;
+    const tunnel = httpRequest({
+      host: proxy.host,
+      port: proxy.port,
+      method: "CONNECT",
+      path: `${target.hostname}:${target.port || 443}`,
+      headers: connectHeaders,
+      timeout: connectTimeout,
+    });
+    tunnel.on("timeout", () => tunnel.destroy(new Error(`proxy CONNECT timeout after ${connectTimeout}ms`)));
+    tunnel.on("error", reject);
+    tunnel.on("connect", (res, socket) => {
+      if (res.statusCode !== 200) {
+        socket.destroy();
+        reject(new Error(`proxy CONNECT refused with ${res.statusCode}`));
+        return;
+      }
+      const inner = httpsRequest(
+        {
+          socket,
+          agent: false,
+          servername: target.hostname,
+          path: target.pathname + target.search,
+          method: "GET",
+          headers: requestHeaders,
+          timeout: idleTimeout,
+        },
+        (response) => done(response, `proxy ${proxy.display}`),
+      );
+      inner.on("timeout", () => inner.destroy(new Error(`no data within ${idleTimeout}ms`)));
+      inner.on("error", reject);
+      inner.end();
+    });
+    tunnel.end();
+  });
+}
+
 /* ------------------------------------------------------------ download + unzip */
 
+/**
+ * Fetch one URL to `destination`, verifying size and checksum.
+ *
+ * Transfers retry with backoff, resume a partial file through a Range request,
+ * and go through the proxy when one applies (see resolveProxy for why that
+ * matters). A server that ignores Range is handled by restarting the file.
+ */
 async function download(url, destination, expected, label) {
   const temporary = destination + ".part";
-  const timeoutMs = options.timeoutMs;
+  const connectTimeoutMs = options.connectTimeoutMs;
   const attempts = Math.max(1, options.retries);
+  const proxy = resolveProxy();
 
   // Resume an interrupted run: a partial file plus a Range request continues
   // where the last attempt stopped instead of paying for the bytes twice.
@@ -135,84 +328,213 @@ async function download(url, destination, expected, label) {
   }
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    let response;
     try {
-      response = await fetch(url, {
-        redirect: "follow",
-        signal: controller.signal,
-        headers: have > 0 ? { range: `bytes=${have}-` } : undefined,
-      });
-    } catch (error) {
-      clearTimeout(timer);
-      const cause = error?.cause?.message ?? error?.cause?.code ?? "";
-      const detail = `${String(error?.name ?? "error")}: ${String(error?.message ?? error)}${cause ? ` (${cause})` : ""}`;
-      if (attempt < attempts) {
-        const wait = 2000 * attempt;
-        log(`       attempt ${attempt}/${attempts} failed (${detail}); retrying in ${wait / 1000}s`);
-        await new Promise((resolve) => setTimeout(resolve, wait));
-        continue;
-      }
-      throw new Error(`could not reach ${url} after ${attempts} attempt(s) — ${detail}`);
-    }
+      // Route order differs by design. On Windows the .NET stack is tried first:
+      // it honours the system proxy and follows GitHub's release-asset redirect
+      // to release-assets.githubusercontent.com correctly, which is exactly what
+      // the Node routes fail at here (direct = reset/timeout, proxy = a 301 loop
+      // rewriting back to github.com). It also completed nodejs.org's 37 MB zip
+      // where the Node route was truncated by 860 bytes on every attempt
+      // (nodejs.org advertises no accept-ranges, so a resume can never close
+      // that gap). Verified by the same size + checksum gate either way.
+      let via = null;
+      let nodeFailure = null;
+      const tryPowerShellFirst = IS_WINDOWS;
+      const first = tryPowerShellFirst
+        ? async () => {
+            rmSync(temporary, { force: true });
+            const written = downloadViaPowerShell(url, temporary);
+            log(`       ${label}: via powershell (${(written / 1048576).toFixed(1)} MiB)`);
+            return "powershell";
+          }
+        : async () => {
+            const response = await openViaBestRoute(url, { connectTimeoutMs, have });
+            await writeBody(response.stream, response.headers, temporary, have, response.status, label);
+            return response.via;
+          };
+      const second = tryPowerShellFirst
+        ? async () => {
+            const response = await openViaBestRoute(url, { connectTimeoutMs, have });
+            await writeBody(response.stream, response.headers, temporary, have, response.status, label);
+            return response.via;
+          }
+        : async () => {
+            rmSync(temporary, { force: true });
+            const written = downloadViaPowerShell(url, temporary);
+            return `powershell (${(written / 1048576).toFixed(1)} MiB)`;
+          };
 
-    try {
-      if (!response.ok) throw new Error(`HTTP ${response.status} ${response.statusText ?? ""} for ${url}`.trim());
-      // A server that ignores Range answers 200 with the whole body: restart.
-      const restarted = have > 0 && response.status !== 206;
-      if (restarted) {
-        rmSync(temporary, { force: true });
-        have = 0;
+      try {
+        via = await first();
+      } catch (primaryFailure) {
+        log(`       ${label}: first route failed (${String(primaryFailure?.message ?? primaryFailure).slice(0, 140)})`);
+        nodeFailure = primaryFailure;
+        via = await second();
       }
-      const total = Number(response.headers.get("content-length") ?? 0) + (restarted ? 0 : have);
-      const stream = createWriteStream(temporary, restarted ? {} : { flags: "a" });
-      let seen = have;
-      let nextMark = 0;
-      for await (const chunk of response.body) {
-        stream.write(chunk);
-        seen += chunk.length;
-        if (total > 0 && seen >= nextMark) {
-          const percent = ((seen / total) * 100).toFixed(1);
-          if (!options.json) process.stdout.write(`\r       ${label}: ${percent}% (${(seen / 1048576).toFixed(1)} MiB)`);
-          nextMark = seen + Math.max(total / 20, 1048576);
+      if (attempt === 1 && via) log(`       ${label}: route ${via}`);
+      const produced = statSync(temporary).size;
+
+      if (expected.size && produced !== expected.size) {
+        if (produced < expected.size) {
+          // A few bytes missing at the tail is this network's signature (860 and
+          // 15875 bytes observed on otherwise complete transfers). Asking for
+          // the exact remainder is cheaper than re-fetching 37 MB, so the next
+          // attempt resumes from `produced`; a fresh start is forced once the
+          // attempts run out, so a marginal short read cannot accumulate.
+          if (attempt < attempts) {
+            log(`       attempt ${attempt}/${attempts} ended short by ${expected.size - produced} byte(s); resuming`);
+            have = produced;
+            continue;
+          }
         }
+        rmSync(temporary, { force: true });
+        throw new Error(`size mismatch: got ${produced}, expected ${expected.size}`);
       }
-      await new Promise((resolve, reject) => stream.end((error) => (error ? reject(error) : resolve())));
-      if (!options.json) process.stdout.write("\r" + " ".repeat(72) + "\r");
+      const digest = sha256File(temporary);
+      if (expected.sha256 && expected.sha256 !== "unverified" && digest !== expected.sha256) {
+        // A bad body is re-downloaded from scratch rather than resumed onto.
+        rmSync(temporary, { force: true });
+        throw new Error(`sha256 mismatch: got ${digest}, expected ${expected.sha256}`);
+      }
+      rmSync(destination, { force: true });
+      const { renameSync } = await import("node:fs");
+      renameSync(temporary, destination);
+      return { sha256: digest, size: produced, tofu: !expected.sha256 || expected.sha256 === "unverified" };
     } catch (error) {
-      clearTimeout(timer);
       if (attempt < attempts) {
         const wait = 2000 * attempt;
-        log(`       attempt ${attempt}/${attempts} interrupted (${String(error?.message ?? error)}); retrying in ${wait / 1000}s`);
+        log(`       attempt ${attempt}/${attempts} failed (${String(error?.message ?? error)}); retrying in ${wait / 1000}s`);
         have = existsSync(temporary) ? statSync(temporary).size : 0;
         await new Promise((resolve) => setTimeout(resolve, wait));
         continue;
       }
-      throw error;
-    } finally {
-      clearTimeout(timer);
+      throw new Error(`${url} failed after ${attempts} attempt(s) — ${String(error?.message ?? error)}`);
     }
-
-    const size = statSync(temporary).size;
-    if (expected.size && size !== expected.size) {
-      if (attempt < attempts) {
-        log(`       attempt ${attempt}/${attempts} ended short (${size}/${expected.size} bytes); resuming`);
-        have = size;
-        continue;
-      }
-      throw new Error(`size mismatch: got ${size}, expected ${expected.size}`);
-    }
-    const digest = sha256File(temporary);
-    if (expected.sha256 && expected.sha256 !== "unverified" && digest !== expected.sha256) {
-      throw new Error(`sha256 mismatch: got ${digest}, expected ${expected.sha256}`);
-    }
-    rmSync(destination, { force: true });
-    const { renameSync } = await import("node:fs");
-    renameSync(temporary, destination);
-    return { sha256: digest, size, tofu: !expected.sha256 || expected.sha256 === "unverified" };
   }
   throw new Error(`download gave up after ${attempts} attempt(s): ${url}`);
+}
+
+/**
+ * Windows fallback route: let PowerShell/.NET perform the transfer.
+ *
+ * Measured here, this is not redundant with the Node routes. The local proxy
+ * rewrites GitHub's release-asset redirect back to itself (an infinite 301
+ * loop), while a direct Node connection to github.com times out or is reset.
+ * The .NET stack honours the system proxy, follows the redirect chain to
+ * release-assets.githubusercontent.com correctly, and reports the full asset
+ * length. It is slower (~0.13 MiB/s vs ~0.5 MiB/s), so it is a fallback, and
+ * the result is verified by the same size + checksum gate as every other route.
+ */
+function downloadViaPowerShell(url, destination) {
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    "$ProgressPreference = 'SilentlyContinue'",
+    `$url = '${url.replace(/'/g, "''")}'`,
+    `$out = '${destination.replace(/'/g, "''")}'`,
+    "$req = [System.Net.HttpWebRequest]::Create($url)",
+    "$req.UserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) dsh-plugin-rea-bundle'",
+    "$req.AllowAutoRedirect = $true",
+    "$req.Timeout = 60000",
+    "$resp = $req.GetResponse()",
+    "$stream = $resp.GetResponseStream()",
+    "$file = [System.IO.File]::Create($out)",
+    "$stream.CopyTo($file)",
+    "$file.Close()",
+    "$stream.Close()",
+    "$resp.Close()",
+    "Write-Output ('bytes=' + (Get-Item $out).Length)",
+  ].join("; ");
+  const result = spawnSync("powershell", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script], {
+    encoding: "utf8",
+    timeout: 0,
+  });
+  if (result.status !== 0) {
+    throw new Error(`powershell route failed (${result.status}): ${`${result.stderr ?? ""}${result.stdout ?? ""}`.trim().split("\n").slice(-2).join(" | ").slice(0, 200)}`);
+  }
+  return existsSync(destination) ? statSync(destination).size : 0;
+}
+
+/**
+ * Try each candidate route until one yields a usable response. A route fails on
+ * a transport error, or on an HTTP status that is not 2xx/3xx — a proxy that
+ * answers 403/404 for a host is not a working route for that host.
+ */
+async function openViaBestRoute(url, { connectTimeoutMs, have }) {
+  const proxies = proxyCache.get(url) ?? resolveProxy();
+  proxyCache.set(url, proxies);
+  const target = new URL(url);
+  const routes = candidateRoutes(proxies, target);
+  const failures = [];
+  for (const route of routes) {
+    try {
+      const response = await openGetFollowing(url, { proxy: route.proxy, connectTimeoutMs, have });
+      return { ...response, via: route.label === "direct" ? "direct" : route.label };
+    } catch (error) {
+      failures.push(`${route.label}: ${String(error?.message ?? error)}`);
+    }
+  }
+  throw new Error(failures.join(" | "));
+}
+
+const proxyCache = new Map();
+
+/** GET with redirects followed by hand (node:http does not follow them). */
+async function openGetFollowing(url, { proxy, connectTimeoutMs, have, hops = 0 }) {
+  if (hops > 5) throw new Error(`too many redirects starting at ${url}`);
+  const response = await openGet(url, {
+    proxy,
+    connectTimeoutMs,
+    headers: have > 0 ? { range: `bytes=${have}-` } : undefined,
+  });
+  if (response.status >= 300 && response.status < 400 && response.headers.location) {
+    response.stream.resume(); // drain the redirect body
+    const next = new URL(response.headers.location, url).toString();
+    return openGetFollowing(next, { proxy, connectTimeoutMs, have, hops: hops + 1 });
+  }
+  if (response.status !== 200 && response.status !== 206) {
+    response.stream.resume();
+    throw new Error(`HTTP ${response.status} for ${url}`);
+  }
+  return response;
+}
+
+/** Stream a response body onto the partial file, resuming or restarting. */
+async function writeBody(stream, headers, temporary, have, status, label) {
+  const restarted = have > 0 && status !== 206;
+  if (restarted) {
+    rmSync(temporary, { force: true });
+    have = 0;
+  }
+  const length = Number(headers["content-length"] ?? headers["Content-Length"] ?? 0);
+  const total = length + (restarted ? 0 : have);
+  const out = createWriteStream(temporary, restarted ? {} : { flags: "a" });
+  let seen = have;
+  let nextMark = 0;
+
+  // Progress is reported from the write side; pipe() owns the backpressure, so
+  // a 570 MB body never accumulates in memory and a slow disk cannot stall the
+  // promise. Settle on the write stream's lifecycle only: the response can end
+  // while its last bytes are still buffered, and resolving from that handler
+  // raced the promise and left it unsettled (setup hung after a full transfer).
+  out.on("pipe", (source) => {
+    source.on("data", (chunk) => {
+      seen += chunk.length;
+      if (total > 0 && seen >= nextMark) {
+        const percent = ((seen / total) * 100).toFixed(1);
+        if (!options.json) process.stdout.write(`\r       ${label}: ${percent}% (${(seen / 1048576).toFixed(1)} MiB)`);
+        nextMark = seen + Math.max(total / 20, 1048576);
+      }
+    });
+  });
+
+  await new Promise((resolve, reject) => {
+    out.on("finish", resolve);
+    out.on("error", reject);
+    stream.on("error", reject);
+    stream.pipe(out);
+  });
+  if (!options.json) process.stdout.write("\r" + " ".repeat(72) + "\r");
+  return seen;
 }
 
 /** Extract with the platform's own tools. Returns true on success. */
@@ -553,7 +875,19 @@ async function provisionComponent(name, component, context) {
 
   const probe = runProbe(component.probe ?? {}, context);
   step(name, probe.ok ? "ok" : "FAIL", `${target}${probe.ok ? "" : " — " + probe.detail}`);
-  return probe.ok ? { path: target, version: source.version, sha256: fetched.sha256, tofu: fetched.tofu } : null;
+  if (!probe.ok) return null;
+  // A component's resolved path is a DIRECTORY, but `requires` needs something
+  // spawnable: without this, {node} would resolve to vendor/node and the probe
+  // for a dependent component would try to launch a directory (ENOENT).
+  let resolvedPath = target;
+  for (const relative of component.binaries ?? []) {
+    const candidate = path.join(target, ...relative.split("/").map((part) => part.replaceAll("{exe}", EXE)));
+    if (existsSync(candidate)) {
+      resolvedPath = candidate;
+      break;
+    }
+  }
+  return { path: resolvedPath, root: target, version: source.version, sha256: fetched.sha256, tofu: fetched.tofu };
 }
 
 /**
