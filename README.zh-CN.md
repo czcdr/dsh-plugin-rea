@@ -96,10 +96,19 @@ harness 永远不会被卡住 —— `failOnStartupError: false` 是刻意的。
         transport: stdio
         command: !!js process.execPath
         args:
-          - !!js process.env.DSH_HOME + '\plugins\rea-bundle\bin\rea-shim.mjs'
+          - !!js (process.env.DSH_HOME && process.env.DSH_HOME.trim() !== "" ? process.env.DSH_HOME : process.env.USERPROFILE || process.env.HOME || "") + '/plugins/rea-bundle/bin/rea-shim.mjs'
           - mcp
+        env:
+          ELECTRON_RUN_AS_NODE: '1'
         failOnStartupError: false
 ```
+
+这一行里有两个"承重"细节，而且**两个都先以 bug 的形式出现过**：
+
+- **必须用正斜杠，不能用反斜杠。** YAML 单引号标量会保留 `\` 字面量，接着 JavaScript 会把它吃掉：`'\plugins'` 不是路径而是 BEL 控制字符，`'\rea-bundle'` 变成回车、`'\bin'` 变成退格 —— 路径被静默摧毁。正斜杠在 Windows 与 POSIX 上都成立。
+- **`!!js` 表达式里没有 `path`/`require`**：`ctx` 是 loader 作用域，所以 DSH_HOME 的兜底写成纯字符串拼接。
+
+`ELECTRON_RUN_AS_NODE` 只在 harness 本身跑在 Electron 上时才有意义；对纯 Node 宿主无害，而显式写出来胜过依赖它恰好能在子进程环境清洗中存活。
 
 `command` 是当前运行的 Node 可执行文件，`args[0]` 由 `DSH_HOME` 在启动时算出，所以同一份 patch 在
 Windows、macOS、Linux 上都成立，且不依赖 PATH 上的 `rea`。所有机器相关的真相都放在

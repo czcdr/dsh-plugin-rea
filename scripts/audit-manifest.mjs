@@ -218,6 +218,49 @@ if (manifest) {
   };
   for (const name of names) walk(name, []);
 
+  /* ------------------------------------- 8. the published patch's JS escapes */
+
+  // This check exists because of a real bug: the row used
+  //   process.env.DSH_HOME + '\plugins\rea-bundle\bin\rea-shim.mjs'
+  // YAML single quotes keep the backslashes literal, and JavaScript then eats
+  // them — '\p' is not a path separator, '\r' is a carriage return and '\b' is a
+  // backspace, so the evaluated path was a string full of control characters
+  // that could never start. Nothing in a manifest audit would notice; evaluating
+  // the expression does.
+  const patchPath = path.join(HERE, "..", "cordis.patch.yml");
+  const patchText = readFileSync(patchPath, "utf8");
+  const controlChar = /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/;
+
+  // Evaluate every JS string literal in the patch the way JavaScript would, so
+  // the escape handling is the real one and not a re-implementation.
+  const literals = [...patchText.matchAll(/'((?:[^'\\]|\\.)*)'/g)].map((match) => match[1]);
+  const evaluated = literals.map((literal) => {
+    try {
+      // eslint-disable-next-line no-new-func
+      return new Function(`return '${literal}'`)();
+    } catch {
+      return literal;
+    }
+  });
+  for (const value of evaluated) {
+    if (controlChar.test(value)) {
+      add(
+        "error",
+        "cordis.patch.yml",
+        `a single-quoted literal evaluates to a string containing control characters (${JSON.stringify(value.slice(0, 60))}) — use forward slashes in JS string literals`,
+      );
+    }
+  }
+  if (/\\p|\\r|\\b|\\n|\\t/.test(patchText.replace(/^\s*#.*$/gm, ""))) {
+    add("error", "cordis.patch.yml", "a JS string literal contains a backslash escape (\\p, \\r, \\b, ...); use forward slashes");
+  }
+  if (!/rea-shim\.mjs/.test(patchText)) {
+    add("error", "cordis.patch.yml", "the patch does not reference rea-shim.mjs");
+  }
+  if (!/DSH_HOME/.test(patchText) || !/USERPROFILE|HOME/.test(patchText)) {
+    add("warn", "cordis.patch.yml", "no fallback for an unset DSH_HOME was found");
+  }
+
   /* ------------------------------------------------------------- summary */
 
   const pinned = fetchEntries.filter((entry) => entry.entry.sha256 && entry.entry.sha256 !== "unverified").length;

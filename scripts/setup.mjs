@@ -26,7 +26,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, copyFileSync, createWriteStream, existsSync, mkdirSync, openSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { homedir } from "node:os";
@@ -111,17 +111,32 @@ function step(name, status, detail) {
 
 /* ------------------------------------------------------------------- hashing */
 
+/**
+ * Hash a file with a stream. Reading it whole would allocate the file's size
+ * (the Ghidra archive is 570 MB) and could not be resumed across a short read.
+ */
 function sha256File(file) {
   const hash = createHash("sha256");
-  const buffer = readFileSync(file);
-  hash.update(buffer);
+  const descriptor = openSync(file, "r");
+  const buffer = Buffer.allocUnsafe(1024 * 1024);
+  try {
+    for (;;) {
+      const read = readSync(descriptor, buffer, 0, buffer.length, null);
+      if (read <= 0) break;
+      hash.update(buffer.subarray(0, read));
+    }
+  } finally {
+    closeSync(descriptor);
+  }
   return hash.digest("hex");
 }
 
 /* ------------------------------------------------------------ proxy support */
 
 /**
- * Where the network expects us to go through a proxy.
+ * Where the network expects us to go through a proxy. Resolved once and cached:
+ * the Windows lookup spawns reg.exe twice, and doing that per download was
+ * pointless work on the same answer.
  *
  * This matters more than it looks: Node's global fetch ignores the system proxy
  * settings entirely, while .NET/PowerShell honour them. On a machine with
@@ -132,7 +147,9 @@ function sha256File(file) {
  * Order: explicit environment first (standard names, either case), then the
  * Windows registry, then NO_PROXY handling.
  */
+let proxyResolution;
 function resolveProxy() {
+  if (proxyResolution !== undefined) return proxyResolution;
   const fromEnv =
     process.env.HTTPS_PROXY ?? process.env.https_proxy ??
     process.env.HTTP_PROXY ?? process.env.http_proxy ??
@@ -168,17 +185,21 @@ function resolveProxy() {
     );
     server = parts.https ?? parts.http ?? "";
   }
-  if (!server) return null;
+  if (!server) {
+    proxyResolution = null;
+    return null;
+  }
   if (!/^[a-z]+:\/\//i.test(server)) server = `http://${server}`;
 
   let parsed;
   try {
     parsed = new URL(server);
   } catch {
+    proxyResolution = null;
     return null;
   }
   const bypass = (process.env.NO_PROXY ?? process.env.no_proxy ?? "").split(",").map((s) => s.trim()).filter(Boolean);
-  return {
+  proxyResolution = {
     host: parsed.hostname,
     port: Number(parsed.port || 8080),
     auth: parsed.username
@@ -187,6 +208,7 @@ function resolveProxy() {
     bypass,
     display: `${parsed.hostname}:${parsed.port || 8080}`,
   };
+  return proxyResolution;
 }
 
 function bypassesProxy(proxy, target) {
@@ -603,7 +625,15 @@ function substituteProbe(value, context) {
     // component's own probe fails with a literal "{jvm}" even though the
     // extraction succeeded — which silently discarded a fully downloaded JDK
     // and a 543 MB Ghidra archive.
-    if (name === "node") return process.execPath;
+    if (name === "node") {
+      // The component's own probe runs before it is recorded, so this is the one
+      // place that must find the vendored runtime directly. {node} means the
+      // interpreter, never the directory: returning vendor/node made the probe
+      // spawn a folder and fail with ENOENT even though the extraction was fine.
+      const installed = path.join(context.vendor, "node");
+      const executables = [path.join(installed, `node${EXE}`), path.join(installed, "bin", "node")];
+      return executables.find((candidate) => existsSync(candidate)) ?? process.execPath;
+    }
     if (name === "jdk") return path.join(context.vendor, "jdk");
     if (name === "ghidra") return path.join(context.vendor, "ghidra");
     return null;
@@ -629,7 +659,10 @@ function substituteProbe(value, context) {
     swap("{jvm}", path.join(home, "bin", `java${EXE}`));
     swap("{javahome}", home);
   }
-  swap("{exe}", EXE);
+  // {exe} is replaced unconditionally: on POSIX it is the empty string, and the
+  // `resolved !== ""` guard in swap() would leave a literal "adb{exe}" behind,
+  // which then fails its probe with ENOENT on Linux and macOS.
+  text = text.replaceAll("{exe}", EXE);
   return text.replaceAll("/", path.sep);
 }
 
@@ -965,6 +998,29 @@ async function provisionReaAgents(component, context) {
    * free to run arbitrary package scripts during a provisioning step.
    */
   mkdirSync(installRoot, { recursive: true });
+
+  /*
+   * Resolve npm, do not assume it.
+   *
+   * On the machine this bundle exists for, `npm` is only on PATH because a
+   * system Node happens to be installed; the bootstrap's whole job is the case
+   * where it is not. A bare `spawnSync("npm", ...)` therefore dies with ENOENT
+   * on exactly the target machine — and did, until this was fixed. The vendored
+   * or discovered Node ships its own npm-cli.js, which is used instead.
+   */
+  const nodeRuntime = context.resolved.node?.path && existsSync(context.resolved.node.path)
+    ? context.resolved.node.path
+    : process.execPath;
+  const npmCandidates = [
+    // Portable Windows zip: <node>\node_modules\npm\bin\npm-cli.js
+    path.join(path.dirname(nodeRuntime), "node_modules", "npm", "bin", "npm-cli.js"),
+    // POSIX tarball: <node>/lib/node_modules/npm/bin/npm-cli.js
+    path.join(path.dirname(nodeRuntime), "..", "lib", "node_modules", "npm", "bin", "npm-cli.js"),
+    // An installed Node: <prefix>/lib/node_modules/..., also covered above.
+    path.join(path.dirname(nodeRuntime), "..", "..", "lib", "node_modules", "npm", "bin", "npm-cli.js"),
+  ];
+  const npmCli = npmCandidates.find((candidate) => existsSync(candidate)) ?? null;
+
   const installArgs = [
     "install",
     `rea-agents@${version}`,
@@ -975,11 +1031,14 @@ async function provisionReaAgents(component, context) {
     "--no-fund",
     "--loglevel", "error",
   ];
-  log(`       npm install rea-agents@${version} (dependency closure)`);
-  const install = spawnSync("npm", installArgs, {
+  if (!npmCli) {
+    step("reaAgents", "FAIL", `no npm-cli.js next to ${nodeRuntime}; cannot resolve the dependency closure without npm`);
+    return null;
+  }
+  log(`       ${path.relative(installRoot, npmCli) || npmCli} (vendored npm, not PATH)`);
+  const install = spawnSync(nodeRuntime, [npmCli, ...installArgs], {
     cwd: installRoot,
     encoding: "utf8",
-    shell: IS_WINDOWS,
     timeout: 1800000,
   });
   if (install.status !== 0) {
@@ -1089,6 +1148,10 @@ if (!options.dryRun) {
   writeFileSync(path.join(options.root, "bundle.json"), JSON.stringify(bundleConfig, null, 2) + "\n");
   step("wire", "ok", path.join(options.root, "bundle.json"));
 
+  // The row launches <DSH_HOME>/plugins/rea-bundle/bin/rea-shim.mjs; create it
+  // before probing, so the probe exercises exactly what the row will start.
+  mirrorLauncher(context);
+
   // Readiness probe: REA's own verdict, run through the vendored CLI.
   //
   // `rea doctor` exits non-zero when any check is unmet, and on Windows some
@@ -1122,10 +1185,11 @@ if (!options.dryRun) {
     step("probe", "FAIL", "vendored REA CLI is missing; the MCP row will report unprovisioned");
   }
 
-  // The real end-to-end check: launch the exact command the MCP row will use,
-  // with no REA on PATH, and confirm the shim relays the CLI's answer.
-  if (existsSync(path.join(PLUGIN_ROOT, "bin", "rea-shim.mjs"))) {
-    const shim = spawnSync(process.execPath, [path.join(PLUGIN_ROOT, "bin", "rea-shim.mjs"), "--version"], {
+  // The real end-to-end check: launch the exact shim the MCP row will use
+  // (the mirrored copy, not the source tree) and confirm it relays the CLI.
+  const mirroredShim = path.join(options.root, "bin", "rea-shim.mjs");
+  if (existsSync(mirroredShim)) {
+    const shim = spawnSync(process.execPath, [mirroredShim, "--version"], {
       encoding: "utf8",
       timeout: 120000,
       env: { ...process.env, REA_BUNDLE_ROOT: options.root },
@@ -1133,9 +1197,46 @@ if (!options.dryRun) {
     const output = `${shim.stdout ?? ""}${shim.stderr ?? ""}`.trim();
     const ok = shim.status === 0 && /\d+\.\d+\.\d+/.test(output);
     step("shim", ok ? "ok" : "FAIL", ok ? `resolved to REA ${output.split(/\r?\n/)[0]}` : output.slice(0, 240));
+  } else {
+    step("shim", "FAIL", `the launcher the patch expects is missing: ${mirroredShim}`);
   }
 } else {
   step("wire", "plan", `would write ${path.join(options.root, "bundle.json")}`);
+}
+
+/* ------------------------------------------------------------------ mirroring */
+
+/**
+ * Copy the launcher into the bundle root.
+ *
+ * The published patch points at `<DSH_HOME>/plugins/rea-bundle/bin/rea-shim.mjs`
+ * and nothing else creates that file, so without this step the MCP row would
+ * reference a path that never exists — provisioning could succeed completely and
+ * the row would still fail with MODULE_NOT_FOUND. Everything the shim needs at
+ * run time is mirrored next to it, because the shim derives its plugin root from
+ * its own location.
+ *
+ * Runs before the probe so the probe tests what the row actually launches.
+ */
+function mirrorLauncher(context) {
+  const sources = [
+    ["bin/rea-shim.mjs", path.join("bin", "rea-shim.mjs")],
+    ["scripts/setup.mjs", path.join("scripts", "setup.mjs")],
+  ];
+  const copied = [];
+  for (const [from, to] of sources) {
+    const source = path.join(PLUGIN_ROOT, ...from.split("/"));
+    if (!existsSync(source)) {
+      step("mirror", "FAIL", `cannot mirror ${from}: not found in the plugin`);
+      return false;
+    }
+    const target = path.join(context.root, ...to.split("/"));
+    mkdirSync(path.dirname(target), { recursive: true });
+    copyFileSync(source, target);
+    copied.push(to.replaceAll("\\", "/"));
+  }
+  step("mirror", "ok", `${path.join(context.root, "bin", "rea-shim.mjs")} (${copied.join(", ")})`);
+  return true;
 }
 
 /* -------------------------------------------------------------------- summary */

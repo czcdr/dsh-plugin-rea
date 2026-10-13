@@ -7,11 +7,17 @@
 # PORTABLE BY CONSTRUCTION — no machine path appears in this file.
 #   * `command` is the running Node executable (`process.execPath`), so the
 #     launcher needs no PATH entry and no shim resolution by the OS.
-#   * `args[0]` is computed at boot from DSH_HOME, where setup mirrors the
-#     shim. `ctx` in a `!!js` expression is the loader scope, which has no
-#     `require`/`path`, so this is written with plain string concatenation.
-#   * If the shim is absent, the row still starts and the shim itself explains
-#     what to run. `failOnStartupError: false` keeps the harness up either way.
+#   * `args[0]` is computed at boot from DSH_HOME, where setup mirrors the shim.
+#   * FORWARD SLASHES ONLY in the JS string literals below. A single-quoted YAML
+#     scalar keeps backslashes literal, and JavaScript then eats them: '\plugins'
+#     is not "\plugins" but the BEL control character, '\rea-bundle' becomes a
+#     carriage return and '\bin' a backspace, so the path is silently destroyed.
+#     Forward slashes are accepted on Windows and are correct on POSIX, so one
+#     expression serves every platform.
+#   * `path`/`require` are not in scope for a `!!js` expression (`ctx` is the
+#     loader scope), hence plain string concatenation.
+#   * No DSH_HOME (undefined/absent) falls back to the portable default rather
+#     than producing the literal "undefined/plugins/...".
 #
 # One row may use serverName: rea in a profile. To pin a different launch
 # command on this machine, override `mcp-rea` from the profile's own
@@ -25,6 +31,11 @@
         transport: stdio
         command: !!js process.execPath
         args:
-          - !!js process.env.DSH_HOME + '\plugins\rea-bundle\bin\rea-shim.mjs'
+          - !!js (process.env.DSH_HOME && process.env.DSH_HOME.trim() !== "" ? process.env.DSH_HOME : process.env.USERPROFILE || process.env.HOME || "") + '/plugins/rea-bundle/bin/rea-shim.mjs'
           - mcp
+        env:
+          # Only meaningful when the harness itself runs on Electron; harmless
+          # for a plain Node host. Explicit is better than relying on this
+          # variable happening to survive the child-env scrub.
+          ELECTRON_RUN_AS_NODE: '1'
         failOnStartupError: false

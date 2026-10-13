@@ -103,10 +103,19 @@ The shipped row carries **no machine path**:
         transport: stdio
         command: !!js process.execPath
         args:
-          - !!js process.env.DSH_HOME + '\plugins\rea-bundle\bin\rea-shim.mjs'
+          - !!js (process.env.DSH_HOME && process.env.DSH_HOME.trim() !== "" ? process.env.DSH_HOME : process.env.USERPROFILE || process.env.HOME || "") + '/plugins/rea-bundle/bin/rea-shim.mjs'
           - mcp
+        env:
+          ELECTRON_RUN_AS_NODE: '1'
         failOnStartupError: false
 ```
+
+Two details in that row are load-bearing, and both were bugs first:
+
+- **Forward slashes, never backslashes.** A single-quoted YAML scalar keeps `\` literal, and JavaScript then consumes it: `'\plugins'` is not a path but the BEL control character, `'\rea-bundle'` becomes a carriage return and `'\bin'` a backspace — the path is destroyed silently. Forward slashes work on Windows and on POSIX.
+- **No `path`/`require` in a `!!js` expression**: `ctx` is the loader scope, so the DSH_HOME fallback is written as plain concatenation.
+
+`ELECTRON_RUN_AS_NODE` only matters if the harness itself runs on Electron; it is harmless for a plain Node host, and stating it explicitly beats relying on it surviving the child-env scrub.
 
 `command` is the running Node executable and `args[0]` is computed from `DSH_HOME`, so the same patch works
 on Windows, macOS and Linux without a PATH entry. Everything machine-specific lives in

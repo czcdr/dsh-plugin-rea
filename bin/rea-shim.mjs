@@ -67,8 +67,11 @@ function maybeAutoProvision(root) {
   }
   try {
     mkdirSync(path.join(root, "logs"), { recursive: true });
-    writeFileSync(lock, String(Date.now()));
-  } catch {
+    // Exclusive create: check-then-write is not atomic, so two rows starting at
+    // once could both decide to provision. EEXIST means another run owns it.
+    writeFileSync(lock, String(Date.now()), { flag: "wx" });
+  } catch (error) {
+    if (error?.code === "EEXIST") return logPath;
     /* a read-only bundle root must never break the harness */
     return null;
   }

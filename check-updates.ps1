@@ -216,6 +216,61 @@ if (Test-Path $profPatch) {
   }
 }
 
+# ------------------------------------------------- 一体包（bundle 分支）
+# 设计文档承诺了这个分区：一体包把组件版本钉在 manifest 里，供应结果记在
+# bundle.json 里。两者不一致 = 有一次 pin 更新还没重新供给，或盘上的组件被换过。
+Head '一体包供给状态（bundle 分支）'
+$pluginRoot = $PSScriptRoot
+$manifestPath = Join-Path $pluginRoot 'manifest\bundle.manifest.json'
+$bundleRoot = $env:REA_BUNDLE_ROOT
+if (-not $bundleRoot) {
+  $homeDir = $env:DSH_HOME
+  if (-not $homeDir) { $homeDir = Join-Path $HOME '.dsh' }
+  $bundleRoot = Join-Path $homeDir 'plugins\rea-bundle'
+}
+$bundleJson = Join-Path $bundleRoot 'bundle.json'
+
+if (-not (Test-Path $manifestPath)) {
+  Info '未找到 manifest/bundle.manifest.json —— 这不是一体包分支，跳过'
+} else {
+  Info "bundle 根目录: $bundleRoot"
+  try {
+    $manifest = Get-Content $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if (Test-Path $bundleJson) {
+      $state = Get-Content $bundleJson -Raw -Encoding UTF8 | ConvertFrom-Json
+      Ok "已供给：$($state.provisionedAt)"
+      $drift = 0
+      foreach ($name in $manifest.pins.PSObject.Properties.Name) {
+        if ($name -eq 'nodeEngines') { continue }
+        $pinned = [string]$manifest.pins.$name
+        $installed = ''
+        if ($state.versions -and ($state.versions.PSObject.Properties.Name -contains $name)) {
+          $installed = [string]$state.versions.$name
+        }
+        if (-not $installed) { continue }
+        # Node 的 pin 是引擎范围，不是版本号；其它组件比前缀即可
+        $same = $installed.Equals($pinned) -or $installed.StartsWith(($pinned -split '\.')[0] + '.')
+        if ($same) { Info "  $name = $installed（pin $pinned）" }
+        else { Warn "$name 盘上为 $installed，manifest 已钉 $pinned —— 重跑 setup 对齐"; $drift++ }
+      }
+      if ($drift -eq 0) { Ok '所有组件与 manifest 的 pin 一致' }
+      if ($state.unverifiedChecksums -and @($state.unverifiedChecksums).Count -gt 0) {
+        Warn ("TOFU（无厂商校验和，取首次实测值）: " + (@($state.unverifiedChecksums) -join ', '))
+      }
+      $mirrored = Join-Path $bundleRoot 'bin\rea-shim.mjs'
+      if (Test-Path $mirrored) { Ok 'MCP 行指向的 shim 已就位' }
+      else { Bad "缺少 MCP 行指向的 shim: $mirrored —— 重跑 setup --reuse" }
+    } else {
+      Warn "尚未供给：$bundleJson 不存在 —— 运行 node scripts/setup.mjs（或直接装插件，行会自行触发）"
+    }
+    $pins = @()
+    foreach ($name in $manifest.pins.PSObject.Properties.Name) {
+      if ($name -ne 'nodeEngines') { $pins += "$name=$($manifest.pins.$name)" }
+    }
+    Info ('manifest 钉子: ' + ($pins -join ', '))
+  } catch { Warn "bundle 状态解析失败: $($_.Exception.Message)" }
+}
+
 # ------------------------------------------------------------------ 汇总
 Head '结论'
 if ($actions.Count -eq 0) { Ok '无需动作：整条链路与上游保持一致' }

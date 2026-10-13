@@ -1,4 +1,4 @@
-# rea-bundle-bootstrap.ps1 — get from "no Node at all" to a provisioned bundle.
+﻿# rea-bundle-bootstrap.ps1 — get from "no Node at all" to a provisioned bundle.
 #
 # Why this exists: setup.mjs is written in Node, so a machine with no Node
 # cannot run it. This script uses only PowerShell + Expand-Archive (no
@@ -57,11 +57,25 @@ if ($env:PROCESSOR_ARCHITECTURE -notmatch '64') {
 }
 
 # --- Node: reuse if compatible, else fetch the portable zip -----------------
+#
+# The version and checksum come from the manifest, which is the single source of
+# truth the rest of provisioning already reads. Hard-coding a second copy here
+# meant two numbers that could drift apart silently.
 
-$nodeEngines = '^24\.11\.0 || ^22\.19\.0 || >=26'
-$nodeVersion = '24.21.0'
-$nodeSha256 = '158f7685b44de51f6c0df1d153526cbcd3e1bc739a8dfc607721cef75de9e541'
-$nodeUrl = "https://nodejs.org/dist/v$nodeVersion/node-v$nodeVersion-win-x64.zip"
+$manifestPath = Join-Path $pluginRoot 'manifest\bundle.manifest.json'
+if (-not (Test-Path $manifestPath)) { throw "manifest not found: $manifestPath" }
+$manifest = Get-Content $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+
+$hostKey = 'win32-' + $(if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' })
+$nodeSource = $manifest.components.node.sources.$hostKey
+if (-not $nodeSource) { throw "the manifest has no Node source for $hostKey" }
+$nodeVersion = $nodeSource.version
+$nodeSha256 = $nodeSource.sha256
+$nodeUrl = $nodeSource.url
+$nodeZipName = [System.IO.Path]::GetFileName(([uri]$nodeUrl).AbsolutePath)
+$nodeFolder = [System.IO.Path]::GetFileNameWithoutExtension([System.IO.Path]::GetFileNameWithoutExtension($nodeZipName))
+if ($nodeSha256 -eq 'unverified') { throw "the manifest pins no checksum for $hostKey; refusing to download unverified bytes" }
+Write-Step "Node source: $hostKey v$nodeVersion"
 
 function Test-NodeUsable([string]$Exe) {
   if (-not $Exe -or -not (Test-Path $Exe)) { return $null }
@@ -70,25 +84,28 @@ function Test-NodeUsable([string]$Exe) {
   } catch { return $null }
   if (-not $version) { return $null }
   $clean = $version.TrimStart('v').Trim()
-  $major = [int]($clean.Split('.')[0])
-  $minor = [int]($clean.Split('.')[1])
+  $parts = $clean.Split('.')
+  if ($parts.Count -lt 2) { return $null }
+  $major = [int]$parts[0]
+  $minor = [int]$parts[1]
+  # REA's engines: ^22.19.0 || ^24.11.0 || >=26.0.0
   $ok = ($major -eq 22 -and $minor -ge 19) -or ($major -eq 24 -and $minor -ge 11) -or ($major -ge 26)
   if (-not $ok) { return $null }
   return [pscustomobject]@{ Path = (Resolve-Path $Exe).Path; Version = $clean }
 }
 
 function Get-PortableNode {
-  $exe = Join-Path $stack "node-v$nodeVersion-win-x64\node.exe"
+  $exe = Join-Path (Join-Path $stack $nodeFolder) 'node.exe'
   $found = Test-NodeUsable $exe
   if ($found) { Write-Step "portable Node present: $($found.Path) (v$($found.Version))"; return $found }
 
-  $zip = Join-Path $cache "node-v$nodeVersion-win-x64.zip"
+  $zip = Join-Path $cache $nodeZipName
   if (Test-Path $zip) {
     $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
     if ($hash -ne $nodeSha256) { Write-Step "cached Node zip failed its checksum; re-downloading"; Remove-Item $zip -Force }
   }
   if (-not (Test-Path $zip)) {
-    Write-Step "downloading Node.js v$nodeVersion (portable zip, ~35 MiB)"
+    Write-Step "downloading $nodeZipName (~35 MiB)"
     $partial = "$zip.part"
     if (Test-Path $partial) { Remove-Item $partial -Force }
     # Invoke-WebRequest buffers the whole body before writing, so a slow mirror
@@ -102,8 +119,8 @@ function Get-PortableNode {
 
   Write-Step "extracting into $stack"
   Expand-Archive -LiteralPath $zip -DestinationPath $stack -Force
-  $unpacked = Join-Path $stack "node-v$nodeVersion-win-x64"
-  if (-not (Test-Path $unpacked)) { throw "the Node zip did not contain node-v$nodeVersion-win-x64" }
+  $unpacked = Join-Path $stack $nodeFolder
+  if (-not (Test-Path $unpacked)) { throw "the Node zip did not contain $nodeFolder" }
   $found = Test-NodeUsable (Join-Path $unpacked 'node.exe')
   if (-not $found) { throw "the extracted node.exe could not be executed" }
   Write-Step "portable Node ready: $($found.Path) (v$($found.Version))"
@@ -121,7 +138,7 @@ foreach ($candidate in $candidates) {
 }
 
 if ($DryRun) {
-  if (-not $node) { Write-Step "plan: download and extract Node.js v$nodeVersion into $stack" }
+  if (-not $node) { Write-Step "plan: download and extract $nodeZipName into $stack" }
   Write-Step "plan: node `"$setupScript`" --root `"$Root`"$(if ($Reuse) { ' --reuse' })"
   Write-Step "dry run complete; nothing was changed."
   exit 0

@@ -48,7 +48,9 @@ function substituteProbe(value, context) {
     swap("{jvm}", path.join(home, "bin", `java${EXE}`));
     swap("{javahome}", home);
   }
-  swap("{exe}", EXE);
+  // Unconditional, matching setup.mjs: on POSIX EXE is "" and a `!== ""` guard
+  // would leave the literal token in place.
+  text = text.replaceAll("{exe}", EXE);
   return text.replaceAll("/", path.sep);
 }
 
@@ -94,6 +96,9 @@ test("{exe} is expanded for tokens that need it and not for those that carry it"
   });
   const adb = substituteProbe("{vendor}/platform-tools/adb{exe}", context);
   assert.equal(adb, path.join(path.sep, "bundle", "vendor", "platform-tools", `adb${EXE}`));
+  // On POSIX {exe} is "", and the substitution must still consume the token:
+  // leaving "adb{exe}" behind fails the probe with ENOENT on Linux and macOS.
+  assert.equal(adb.includes("{exe}"), false, "{exe} must be consumed even when it expands to nothing");
   assert.equal(substituteProbe("{jvm}", context).endsWith(`java${EXE}`), true);
   assert.equal(substituteProbe("{jvm}", context).endsWith(`java${EXE}${EXE}`), false);
 });

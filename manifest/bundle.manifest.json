@@ -33,7 +33,11 @@
       "requires": [],
       "unpack": { "stripRootComponents": 1, "moveTo": "node" },
       "binaries": ["bin/node", "node{exe}"],
-      "probe": { "argv": ["{node}", "-v"], "expect": { "regex": "^v\\d+" } },
+      "probe": {
+        "argv": ["{node}", "-v"],
+        "expect": { "regex": "^v(22\\.(1[9]|[2-9][0-9])|24\\.(1[1-9]|[2-9][0-9])|2[6-9]\\.|[3-9][0-9]\\.)" },
+        "why": "REA's engines are ^22.19.0 || ^24.11.0 || >=26.0.0. A loose '^v\\d+' accepted Node 20, which then fails at REA runtime; the reuse path must reject it here."
+      },
       "sources": {
         "win32-x64": {
           "version": "24.21.0",
