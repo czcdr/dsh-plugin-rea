@@ -48,6 +48,11 @@ function parseArgs(argv) {
     json: false,
     only: null,
     offline: false,
+    // A slow mirror must not look like a dead one: the GitHub release CDN
+    // measured 0.35–0.54 MiB/s here, where a 10 s connect timeout is plenty for
+    // the headers but a stalled body still needs resuming + retries.
+    timeoutMs: Number(process.env.REA_BUNDLE_FETCH_TIMEOUT_MS ?? 60000),
+    retries: Number(process.env.REA_BUNDLE_FETCH_RETRIES ?? 4),
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -113,35 +118,101 @@ function sha256File(file) {
 
 async function download(url, destination, expected, label) {
   const temporary = destination + ".part";
-  if (existsSync(temporary)) rmSync(temporary, { force: true });
-  log(`       downloading ${label}`);
-  const response = await fetch(url, { redirect: "follow" });
-  if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`);
-  const total = Number(response.headers.get("content-length") ?? 0);
-  const stream = createWriteStream(temporary);
-  let seen = 0;
-  let nextMark = 0;
-  for await (const chunk of response.body) {
-    stream.write(chunk);
-    seen += chunk.length;
-    if (total > 0 && seen >= nextMark) {
-      const percent = ((seen / total) * 100).toFixed(1);
-      if (!options.json) process.stdout.write(`\r       ${label}: ${percent}% (${(seen / 1048576).toFixed(1)} MiB)`);
-      nextMark = seen + Math.max(total / 20, 1048576);
+  const timeoutMs = options.timeoutMs;
+  const attempts = Math.max(1, options.retries);
+
+  // Resume an interrupted run: a partial file plus a Range request continues
+  // where the last attempt stopped instead of paying for the bytes twice.
+  let have = existsSync(temporary) ? statSync(temporary).size : 0;
+  if (have > 0 && expected.size && have > expected.size) {
+    rmSync(temporary, { force: true });
+    have = 0;
+  }
+  if (have > 0 && have === expected.size) {
+    log(`       ${label}: partial file already complete`);
+  } else {
+    log(`       downloading ${label}${have > 0 ? ` (resuming at ${(have / 1048576).toFixed(1)} MiB)` : ""}`);
+  }
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let response;
+    try {
+      response = await fetch(url, {
+        redirect: "follow",
+        signal: controller.signal,
+        headers: have > 0 ? { range: `bytes=${have}-` } : undefined,
+      });
+    } catch (error) {
+      clearTimeout(timer);
+      const cause = error?.cause?.message ?? error?.cause?.code ?? "";
+      const detail = `${String(error?.name ?? "error")}: ${String(error?.message ?? error)}${cause ? ` (${cause})` : ""}`;
+      if (attempt < attempts) {
+        const wait = 2000 * attempt;
+        log(`       attempt ${attempt}/${attempts} failed (${detail}); retrying in ${wait / 1000}s`);
+        await new Promise((resolve) => setTimeout(resolve, wait));
+        continue;
+      }
+      throw new Error(`could not reach ${url} after ${attempts} attempt(s) — ${detail}`);
     }
+
+    try {
+      if (!response.ok) throw new Error(`HTTP ${response.status} ${response.statusText ?? ""} for ${url}`.trim());
+      // A server that ignores Range answers 200 with the whole body: restart.
+      const restarted = have > 0 && response.status !== 206;
+      if (restarted) {
+        rmSync(temporary, { force: true });
+        have = 0;
+      }
+      const total = Number(response.headers.get("content-length") ?? 0) + (restarted ? 0 : have);
+      const stream = createWriteStream(temporary, restarted ? {} : { flags: "a" });
+      let seen = have;
+      let nextMark = 0;
+      for await (const chunk of response.body) {
+        stream.write(chunk);
+        seen += chunk.length;
+        if (total > 0 && seen >= nextMark) {
+          const percent = ((seen / total) * 100).toFixed(1);
+          if (!options.json) process.stdout.write(`\r       ${label}: ${percent}% (${(seen / 1048576).toFixed(1)} MiB)`);
+          nextMark = seen + Math.max(total / 20, 1048576);
+        }
+      }
+      await new Promise((resolve, reject) => stream.end((error) => (error ? reject(error) : resolve())));
+      if (!options.json) process.stdout.write("\r" + " ".repeat(72) + "\r");
+    } catch (error) {
+      clearTimeout(timer);
+      if (attempt < attempts) {
+        const wait = 2000 * attempt;
+        log(`       attempt ${attempt}/${attempts} interrupted (${String(error?.message ?? error)}); retrying in ${wait / 1000}s`);
+        have = existsSync(temporary) ? statSync(temporary).size : 0;
+        await new Promise((resolve) => setTimeout(resolve, wait));
+        continue;
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+
+    const size = statSync(temporary).size;
+    if (expected.size && size !== expected.size) {
+      if (attempt < attempts) {
+        log(`       attempt ${attempt}/${attempts} ended short (${size}/${expected.size} bytes); resuming`);
+        have = size;
+        continue;
+      }
+      throw new Error(`size mismatch: got ${size}, expected ${expected.size}`);
+    }
+    const digest = sha256File(temporary);
+    if (expected.sha256 && expected.sha256 !== "unverified" && digest !== expected.sha256) {
+      throw new Error(`sha256 mismatch: got ${digest}, expected ${expected.sha256}`);
+    }
+    rmSync(destination, { force: true });
+    const { renameSync } = await import("node:fs");
+    renameSync(temporary, destination);
+    return { sha256: digest, size, tofu: !expected.sha256 || expected.sha256 === "unverified" };
   }
-  await new Promise((resolve, reject) => stream.end((error) => (error ? reject(error) : resolve())));
-  if (!options.json) process.stdout.write("\r" + " ".repeat(72) + "\r");
-  const size = statSync(temporary).size;
-  if (expected.size && size !== expected.size) throw new Error(`size mismatch: got ${size}, expected ${expected.size}`);
-  const digest = sha256File(temporary);
-  if (expected.sha256 && expected.sha256 !== "unverified" && digest !== expected.sha256) {
-    throw new Error(`sha256 mismatch: got ${digest}, expected ${expected.sha256}`);
-  }
-  rmSync(destination, { force: true });
-  const { renameSync } = await import("node:fs");
-  renameSync(temporary, destination);
-  return { sha256: digest, size, tofu: !expected.sha256 || expected.sha256 === "unverified" };
+  throw new Error(`download gave up after ${attempts} attempt(s): ${url}`);
 }
 
 /** Extract with the platform's own tools. Returns true on success. */
@@ -170,19 +241,11 @@ function hostKey() {
   return `${process.platform}-${process.arch}`;
 }
 
-/** Path of a resolved component, wherever it actually lives (vendor or reused). */
-function componentPath(context, name) {
-  const resolved = context.resolved?.[name];
-  if (resolved && typeof resolved.path === "string") return resolved.path;
-  return path.join(context.vendor, name);
-}
-
 /**
  * Substitute probe tokens. `{root}` is the bundle root; component tokens
- * ({node},{jdk},{ghidra},{jvm},{vendor}/{vendorDir}) resolve through the
- * components that have already been provisioned or adopted this run, so a
- * reused JDK is found at its real location instead of a vendor path that was
- * never created. Paths are joined with the platform separator by the caller.
+ * ({node},{jdk},{ghidra},{jvm},{vendor}) resolve through the components already
+ * provisioned or adopted this run, so a reused JDK is found at its real location
+ * instead of a vendor path that was never created.
  */
 function substituteProbe(value, context) {
   const vendor = context.vendor;
@@ -195,7 +258,12 @@ function substituteProbe(value, context) {
   };
   const vendorPath = (name) => {
     const resolved = context.resolved?.[name];
-    return resolved && typeof resolved.path === "string" ? resolved.path : null;
+    if (resolved && typeof resolved.path === "string") return resolved.path;
+    // A component that provides the runtime cannot resolve its own token before
+    // it is recorded: while provisioning `node`, {node} means the interpreter
+    // already running this script.
+    if (name === "node") return process.execPath;
+    return null;
   };
   swap("{vendor}", vendor);
   swap("{vendorDir}", vendor);
@@ -311,25 +379,33 @@ async function provisionComponent(name, component, context) {
   const root = context.root;
   const vendor = path.join(root, "vendor");
 
-  // 1) already present and verified?
+  // 1) adopt an existing install first: a reused component is authoritative and
+  //    makes the recorded-state check below redundant (and its message wrong).
+  const reused = reuseExisting(name, root);
+  if (reused) {
+    step(name, "skip", `reusing existing ${name} from ${reused.how}: ${reused.path}`);
+    return { path: reused.path, reused: true };
+  }
+
+  // 2) already present in the bundle and still verifiable?
+  //
+  // A recorded entry is a claim, not a fact: a previous run may have recorded a
+  // component it could not provision (path null / unavailable), and files can be
+  // deleted afterwards. Only a recorded path that exists AND passes the probe is
+  // trusted; anything else falls through to provisioning again.
   if (existsSync(path.join(root, "bundle.json"))) {
     const current = JSON.parse(readFileSync(path.join(root, "bundle.json"), "utf8"));
     const recorded = current.components?.[name];
-    if (recorded) {
+    if (recorded && typeof recorded.path === "string" && existsSync(recorded.path)) {
       const probe = runProbe(component.probe ?? {}, context);
       if (probe.ok) {
         step(name, "skip", `already provisioned (${recorded.version ?? "recorded"})`);
         return recorded;
       }
       step(name, "plan", `recorded but unverifiable: ${probe.detail}`);
+    } else if (recorded) {
+      step(name, "plan", "recorded without a usable path; provisioning again");
     }
-  }
-
-  // 2) adopt an existing install
-  const reused = reuseExisting(name, root);
-  if (reused) {
-    step(name, "skip", `reusing existing ${name} from ${reused.how}: ${reused.path}`);
-    return { path: reused.path, reused: true };
   }
 
   // 3) the browser is never downloaded
@@ -462,17 +538,13 @@ async function provisionComponent(name, component, context) {
   }
   const strip = component.unpack?.stripRootComponents ?? 0;
   let effective = staging;
-  if (strip > 0) {
-    const { readdirSync, renameSync } = await import("node:fs");
-    for (let level = 0; level < strip; level += 1) {
-      const entries = readdirSync(effective).filter((entry) => !entry.startsWith("."));
-      if (entries.length !== 1) break;
-      effective = path.join(effective, entries[0]);
-    }
-    const entries = readdirSync(effective);
-    if (entries.length === 1 && statSync(path.join(effective, entries[0])).isDirectory() && strip > 1) {
-      effective = path.join(effective, entries[0]);
-    }
+  for (let level = 0; level < strip; level += 1) {
+    // Descend into the archive's single root directory. If the level is not a
+    // single directory (some archives are already flat), stop rather than guess.
+    const { readdirSync } = await import("node:fs");
+    const entries = readdirSync(effective).filter((entry) => !entry.startsWith("."));
+    if (entries.length !== 1 || !statSync(path.join(effective, entries[0])).isDirectory()) break;
+    effective = path.join(effective, entries[0]);
   }
   const { renameSync } = await import("node:fs");
   rmSync(target, { recursive: true, force: true });
@@ -618,10 +690,7 @@ const paths = {
     ? path.join(results.apktool.path, IS_WINDOWS ? "apktool.bat" : "apktool")
     : null,
   jadxJar: results.jadxHeadlessMcp?.path
-    ? path.join(
-        results.jadxHeadlessMcp.path,
-        results.jadxHeadlessMcp.jarName ?? "jadx-headless-mcp-0.7.1-all.jar",
-      )
+    ? path.join(results.jadxHeadlessMcp.path, results.jadxHeadlessMcp.jarName ?? "")
     : null,
   browser: browser?.path ?? null,
   ilspycmd: process.env.REA_ILSPY_CMD_PATH ?? null,

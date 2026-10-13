@@ -116,10 +116,10 @@
           "url": "https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.1.4_build/ghidra_12.1.4_PUBLIC_20260921.zip",
           "format": "zip",
           "size": 569649598,
-          "sha256": "unverified",
-          "sha256Source": "Ghidra release notes (GitHub release body) — the .zip.sha256 asset URL 404s; setup performs a TOFU pin when the vendor hash cannot be confirmed, and re-verifies on every later run.",
+          "sha256": "ddac49f903da9d5bac833e5cc79395098b9c33cfd3279be5f31bd00387d2d4db",
+          "sha256Source": "GitHub release body of the pinned tag: api.github.com/repos/NationalSecurityAgency/ghidra/releases/tags/Ghidra_12.1.4_build -> .body, line '* SHA-256: `ddac49f9...`'. No checksum asset exists (six candidate names 404). Always read the pinned tag, never releases/latest, because the body changes.",
           "releaseApi": "https://api.github.com/repos/NationalSecurityAgency/ghidra/releases/tags/Ghidra_12.1.4_build",
-          "note": "No platform split for the public release: one zip serves Windows/macOS/Linux. ~570 MB, the single largest component; never redistributed inside the npm package."
+          "note": "No platform split for the public release: one zip serves Windows/macOS/Linux. ~570 MB, the single largest component; never redistributed inside the npm package. Windows traps: a path containing '!' or '^' breaks Ghidra, and macOS native components are not shipped (they must be built with support/gradle/gradlew buildNatives)."
         }
       }
     },
@@ -136,8 +136,8 @@
             "url": "https://github.com/iBotPeaches/Apktool/releases/download/v3.0.3/apktool_3.0.3.jar",
             "format": "file",
             "size": 15478013,
-            "sha256": "unverified",
-            "sha256Source": "GitHub release asset (no vendor checksum published); TOFU pin on first fetch",
+            "sha256": "dbf930b076c6b9be08d57c449cacefc3bdd6b71ebd59b3066fc0e1f5b14f9423",
+            "sha256Source": "Vendor-published in the 3.0.3 release post (apktool.org/blog/apktool-3.0.3/), md5 50d98c920b005d2fcdc18d3d52e3f23b. Independently reproduced here: this is the hash of the 15,478,013-byte apktool_3.0.3.jar.",
             "moveTo": "apktool",
             "saveAs": "apktool.jar"
           }
@@ -152,6 +152,11 @@
               "size": 2348,
               "sha256": "9440ec9d98efdef14136f4cefd79ac200d72baa016b5991d128234a3a3ef3b43",
               "sha256Source": "measured on 2026-10-13 (raw.githubusercontent.com publishes no checksum); archive-free single file, 2,348 B",
+              "notes": [
+                "The wrapper pushd's to its own directory and resolves apktool.jar first, then globs apktool_*.jar, so the renamed jar next to it is found.",
+                "Its final line is `for %%i in (%cmdcmdline%) do if /i \"%%~i\"==\"/c\" pause & exit /b`: measured here it returns exit 0 in 0.2 s, but it appends 'Press any key to continue . . .' to stdout. That trailing text is upstream's, not a provisioning defect; tools that parse apktool's stdout should tolerate it.",
+                "REA is pointed at this .bat (REA_APKTOOL_COMMAND), not at the jar, exactly as the wrapper expects."
+              ],
               "moveTo": "apktool",
               "saveAs": "apktool.bat"
             }
@@ -199,7 +204,7 @@
             "format": "file",
             "size": 42619858,
             "sha256": "6e5eacf500b64292bfb73c49797c1958f6ee44646e43e868039ae7feb573ff75",
-            "sha256Source": "measured on 2026-10-13; no vendor checksum published. HEAD confirmed 200 with Content-Length 42,619,858 B and the archive lists cleanly (com/atxx/jhmcp/*). REA pins this path via REA_JADX_MCP_JAR and validates the jar's own bridge classes.",
+            "sha256Source": "Vendor-published sidecar asset releases/download/v0.7.1/jadx-headless-mcp.sha256 (98 bytes, one line); the value was independently reproduced here by hashing the downloaded 42,619,858-byte jar. 0.7.1 is the newest release and REA requires exactly this bridge build: the project's own build.gradle.kts documents that the fat jar must be shaded with duplicatesStrategy INCLUDE, otherwise only KotlinMetadataPlugin registers and every APK resolves to a single R class. Versions 0.6.0 and earlier predate that fix.",
             "moveTo": "jadx",
             "saveAs": "jadx-headless-mcp-0.7.1-all.jar"
           }
@@ -221,8 +226,8 @@
           "format": "zip",
           "size": 8044989,
           "sha256": "45f4d63113e895ebde0c90f194099a4676b6ac653bd28d54314a9e022bbc1a99",
-          "sha256Source": "Google publishes no checksum for this rolling asset; this value was measured on 2026-10-13 and the archive was verified readable (15 entries incl. adb.exe). Setup re-verifies against the recorded value and reports drift rather than silently accepting new bytes.",
-          "note": "Rolling 'latest' URL: the pinned version is whatever was fetched, recorded in bundle.json. Reported Content-Length 8,044,989 B (confirmed by HEAD)."
+          "sha256Source": "Google publishes no checksum for this rolling asset; this value was measured on 2026-10-13 (Content-Length 8,044,989 B confirmed by HEAD) and the archive was verified readable (15 entries incl. adb.exe). The archive's own platform-tools/source.properties reports Pkg.Revision=37.0.1, so the pin is really 'platform-tools 37.0.1'. Because -latest- moves, setup re-verifies against this recorded value and reports drift instead of silently accepting new bytes; Google's repository2-3.xml carries size+checksum for versioned archives if a vendor hash is ever required.",
+          "note": "Rolling 'latest' URL pinned by observation. Android SDK components are not OSI-licensed and Google restricts redistribution, so this is fetched from Google at install time and never re-hosted. Contents also include fastboot, sqlite3, mke2fs and the USB API DLLs."
         },
         "darwin-x64": {
           "version": "latest",

@@ -24,7 +24,6 @@ import { fileURLToPath } from "node:url";
 const EX_CONFIG = 78;
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = path.resolve(HERE, "..");
-const IS_WINDOWS = process.platform === "win32";
 
 /** DSH home: env first, then the conventional location. */
 function dshHome() {
@@ -261,8 +260,11 @@ function main() {
   });
   child.on("exit", (code, signal) => {
     if (signal) {
-      process.kill(process.pid, signal);
-      return;
+      // Re-raising the signal is not portable: process.kill(pid, "SIGTERM")
+      // throws ERR_UNKNOWN_SIGNAL on Windows. Report the conventional 128+n
+      // status instead, which the harness reads the same way.
+      const signals = { SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGKILL: 9, SIGTERM: 15 };
+      process.exit(128 + (signals[signal] ?? 0));
     }
     process.exit(code ?? 0);
   });
