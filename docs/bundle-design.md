@@ -94,8 +94,25 @@ dsh starts
 4. `verify`  — sha256 against the manifest (and vendor checksum file when present)
 5. `unpack`  — platform-native extraction, atomic into `vendor/`
 6. `wire`    — write `bundle.json`, export the environment variables REA reads
-7. `probe`   — run `rea doctor --json` and one real analysis smoke test
-8. `report`  — human summary + exit code; every failure names its remediation
+7. `mirror`  — copy the launcher to the path the published patch computes
+8. `probe`   — `rea doctor --json`, then launch the **mirrored** shim exactly as the row would
+9. `report`  — human summary + exit code; every failure names its remediation
+
+Two notes on stages that exist because their absence was a bug:
+
+- **7 (mirror).** The patch points at `<bundle root>/bin/rea-shim.mjs`, and the
+  plugin itself is not guaranteed to live anywhere the patch can compute. Setup
+  therefore copies the launcher (and the setup script it re-invokes) into the
+  bundle root. Without this, provisioning could succeed and the row would still
+  fail — and the "install the plugin first, it provisions itself" path could
+  never start, because the shim that does the provisioning would not exist at
+  the path being launched.
+- **3 (fetch).** Route order is deliberate and environment-dependent: direct
+  first, then the system proxy, and on Windows the .NET route ahead of both
+  because it follows the GitHub release-asset redirect that the Node routes
+  cannot. Neither "always direct" nor "always proxy" is correct — measured on
+  the development machine, the local proxy answers github.com but returns 403
+  for nodejs.org and 404 for dl.google.com, while the reverse also happens.
 
 ## 6. What is genuinely impossible on Windows
 
