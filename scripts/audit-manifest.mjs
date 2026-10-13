@@ -1,0 +1,233 @@
+#!/usr/bin/env node
+/**
+ * manifest audit — validate the component manifest before it is published.
+ *
+ * JSON.parse cannot see duplicate keys (the last one silently wins), and this
+ * manifest is long enough that a duplicated field is easy to introduce while
+ * editing. So the checks are:
+ *
+ *  1. duplicate object keys inside any single object            (parse-level)
+ *  2. every fetch entry has a sha256 that is either 64-hex or the literal
+ *     "unverified", never a placeholder or an invented value
+ *  3. every fetch entry declares a size, except formats where the vendor does
+ *     not publish one
+ *  4. every platform we claim to support has every entry it needs
+ *  5. the apktool wrapper for a platform is the right script (the osx wrapper
+ *     is not the linux one) and jar+wrapper both land in the same directory
+ *  6. every probe token is one the substitution step actually understands
+ *  7. `requires` names refer to real components and cannot form a cycle
+ *
+ * Exit code 0 = clean, 1 = findings. Also usable as `npm run bundle:audit`.
+ */
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import process from "node:process";
+import { fileURLToPath } from "node:url";
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const MANIFEST = path.join(HERE, "..", "manifest", "bundle.manifest.json");
+const raw = readFileSync(MANIFEST, "utf8");
+
+const findings = [];
+const add = (severity, where, message) => findings.push({ severity, where, message });
+
+/* -------------------------------------------------- 1. duplicate object keys */
+
+/** Walk the raw text and report any key that appears twice in one object. */
+function findDuplicateKeys(text) {
+  const duplicates = [];
+  const stack = [];
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === "{") {
+      stack.push(new Set());
+      i += 1;
+      continue;
+    }
+    if (ch === "}") {
+      stack.pop();
+      i += 1;
+      continue;
+    }
+    if (ch === '"') {
+      const start = i;
+      i += 1;
+      while (i < text.length) {
+        if (text[i] === "\\") i += 2;
+        else if (text[i] === '"') break;
+        else i += 1;
+      }
+      const key = text.slice(start + 1, i);
+      i += 1;
+      // A key is followed by ':' after optional whitespace.
+      let j = i;
+      while (j < text.length && /\s/.test(text[j])) j += 1;
+      if (text[j] === ":" && stack.length > 0) {
+        const frame = stack[stack.length - 1];
+        if (frame.has(key)) duplicates.push({ key, index: start });
+        frame.add(key);
+      }
+      continue;
+    }
+    i += 1;
+  }
+  return duplicates;
+}
+
+const duplicates = findDuplicateKeys(raw);
+if (duplicates.length > 0) {
+  const lineOf = (index) => raw.slice(0, index).split("\n").length;
+  for (const duplicate of duplicates) {
+    add("error", `line ${lineOf(duplicate.index)}`, `duplicate object key "${duplicate.key}" — JSON.parse silently keeps only the last one`);
+  }
+}
+
+let manifest;
+try {
+  manifest = JSON.parse(raw);
+} catch (error) {
+  add("error", "manifest", `not valid JSON: ${String(error.message)}`);
+}
+
+if (manifest) {
+  /* ------------------------------------------- 2/3. every fetch entry is sound */
+
+  const HEX64 = /^[0-9a-f]{64}$/;
+  const fetchEntries = [];
+  for (const [componentName, component] of Object.entries(manifest.components ?? {})) {
+    if (component.sources) {
+      for (const [key, source] of Object.entries(component.sources)) {
+        if (key === "npm") continue;
+        fetchEntries.push({ where: `${componentName}.sources.${key}`, entry: source });
+      }
+    }
+    if (component.entries) {
+      for (const [key, list] of Object.entries(component.entries)) {
+        if (key === "byPlatform") {
+          for (const [platform, platformList] of Object.entries(list)) {
+            for (const [index, entry] of platformList.entries()) {
+              fetchEntries.push({ where: `${componentName}.entries.byPlatform.${platform}[${index}]`, entry });
+            }
+          }
+        } else {
+          for (const [index, entry] of list.entries()) {
+            fetchEntries.push({ where: `${componentName}.entries.${key}[${index}]`, entry });
+          }
+        }
+      }
+    }
+  }
+
+  for (const { where, entry } of fetchEntries) {
+    const sha = entry.sha256;
+    if (sha === undefined) {
+      add("error", where, "has no sha256 field");
+    } else if (sha !== "unverified" && !HEX64.test(sha)) {
+      add("error", where, `sha256 is neither 64 lowercase hex nor "unverified": ${JSON.stringify(sha)}`);
+    }
+    if (entry.size === undefined && entry.format !== "npm") {
+      add("warn", where, "has no size, so a truncated transfer cannot be detected by length");
+    }
+    if (!entry.url) add("error", where, "has no url");
+    if (entry.url && /localhost|127\.0\.0\.1/.test(entry.url)) add("error", where, "url points at loopback");
+    if (entry.sha256 === "unverified" && !entry.sha256Source) {
+      add("warn", where, "is unverified but does not say why");
+    }
+  }
+
+  /* ------------------------------------------------- 4. platform coverage */
+
+  const DECLARED_PLATFORMS = ["win32-x64", "darwin-x64", "darwin-arm64", "linux-x64", "linux-arm64"];
+  for (const [name, component] of Object.entries(manifest.components ?? {})) {
+    if (!component.sources) continue;
+    // An `all` source is platform-independent and an npm source has no platform
+    // at all; neither is expected to enumerate every platform.
+    if (component.sources.all || component.kind === "npm" || component.sources.npm) continue;
+    for (const platform of DECLARED_PLATFORMS) {
+      if (!component.sources[platform]) {
+        add("error", `${name}.sources`, `no source for declared platform ${platform}`);
+      }
+    }
+  }
+
+  /* ------------------------------- 5. apktool wrapper mapping is not crossed */
+
+  const apktool = manifest.components?.apktool;
+  if (apktool?.entries?.byPlatform) {
+    const byPlatform = apktool.entries.byPlatform;
+    const jarDirectory = apktool.entries.all?.[0]?.moveTo;
+    for (const [platform, list] of Object.entries(byPlatform)) {
+      for (const entry of list) {
+        const wantsWindows = platform.startsWith("win32");
+        const wantsOsx = platform.startsWith("darwin");
+        if (wantsWindows && !entry.url.includes("/windows/")) {
+          add("error", `apktool.entries.byPlatform.${platform}`, `expects the windows wrapper but points at ${entry.url}`);
+        }
+        if (wantsOsx && !entry.url.includes("/osx/")) {
+          add("error", `apktool.entries.byPlatform.${platform}`, `macOS must use scripts/osx/apktool, not ${entry.url}`);
+        }
+        if (platform.startsWith("linux") && !entry.url.includes("/linux/")) {
+          add("error", `apktool.entries.byPlatform.${platform}`, `expects the linux wrapper but points at ${entry.url}`);
+        }
+        if (entry.moveTo !== jarDirectory) {
+          add("error", `apktool.entries.byPlatform.${platform}`, `wrapper lands in ${entry.moveTo} but the jar lands in ${jarDirectory}; the wrapper resolves the jar next to itself`);
+        }
+      }
+    }
+  }
+
+  /* ------------------------------------------------------- 6. probe tokens */
+
+  const KNOWN_TOKENS = ["{root}", "{vendor}", "{vendorDir}", "{node}", "{jdk}", "{jvm}", "{javahome}", "{ghidra}", "{exe}"];
+  const probes = [];
+  for (const [name, component] of Object.entries(manifest.components ?? {})) {
+    if (component.probe?.argv) for (const value of component.probe.argv) probes.push({ where: `${name}.probe`, value });
+    if (component.probe?.file) probes.push({ where: `${name}.probe`, value: component.probe.file });
+  }
+  for (const { where, value } of probes) {
+    for (const token of String(value).match(/\{[a-zA-Z]+\}/g) ?? []) {
+      if (!KNOWN_TOKENS.includes(token)) add("error", where, `unknown probe token ${token} in ${JSON.stringify(value)}`);
+    }
+  }
+
+  /* -------------------------------------------------- 7. requires integrity */
+
+  const names = new Set(Object.keys(manifest.components ?? {}));
+  for (const [name, component] of Object.entries(manifest.components ?? {})) {
+    for (const requirement of component.requires ?? []) {
+      if (!names.has(requirement)) add("error", `${name}.requires`, `unknown component "${requirement}"`);
+      if (requirement === name) add("error", `${name}.requires`, "depends on itself");
+    }
+  }
+  // Cycle check over `requires`.
+  const visiting = new Set();
+  const visited = new Set();
+  const walk = (name, trail) => {
+    if (visited.has(name)) return;
+    if (visiting.has(name)) {
+      add("error", `${name}.requires`, `dependency cycle: ${[...trail, name].join(" -> ")}`);
+      return;
+    }
+    visiting.add(name);
+    for (const requirement of manifest.components[name]?.requires ?? []) {
+      if (names.has(requirement)) walk(requirement, [...trail, name]);
+    }
+    visiting.delete(name);
+    visited.add(name);
+  };
+  for (const name of names) walk(name, []);
+
+  /* ------------------------------------------------------------- summary */
+
+  const pinned = fetchEntries.filter((entry) => entry.entry.sha256 && entry.entry.sha256 !== "unverified").length;
+  const tofu = fetchEntries.length - pinned;
+  console.log(`manifest audit: ${fetchEntries.length} fetch entries — ${pinned} hash-pinned, ${tofu} TOFU`);
+  const errors = findings.filter((finding) => finding.severity === "error");
+  const warnings = findings.filter((finding) => finding.severity === "warn");
+  for (const finding of findings) {
+    console.log(`  ${finding.severity === "error" ? "ERROR" : "warn "} ${finding.where}: ${finding.message}`);
+  }
+  console.log(errors.length === 0 ? `clean${warnings.length ? ` (${warnings.length} warning(s))` : ""}` : `${errors.length} error(s), ${warnings.length} warning(s)`);
+  process.exit(errors.length === 0 ? 0 : 1);
+}

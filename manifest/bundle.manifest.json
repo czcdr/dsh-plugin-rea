@@ -2,12 +2,16 @@
   "$comment": [
     "Component manifest for the one-plugin bundle. Every entry is fetched from an",
     "official vendor source and verified before use. Fields:",
-    "  sha256   - REQUIRED for offline integrity. 'unverified' means the vendor does",
-    "             not publish a checksum we could confirm; setup then pins the hash",
-    "             it observed on first fetch (TOFU) and fails on later mismatch.",
-    "  size     - expected byte count, used only for progress/truncation checks.",
-    "  license  - license of the 'from' declaration, not a redistribution claim.",
+    "  sha256   - REQUIRED for offline integrity. Vendor-published where one exists;",
+    "             otherwise measured once and recorded here, and drift is reported",
+    "             rather than silently accepted. 'unverified' means neither was done",
+    "             yet, and setup then pins the hash it observes on first fetch.",
+    "  size     - expected byte count, used for truncation checks and resume math.",
+    "  license  - license of the upstream project, not a redistribution claim.",
     "  requires - components whose binaries this one needs to run.",
+    "  binaries - workspace-relative entries inside the unpacked directory that are",
+    "             directly spawnable; the first that exists becomes the component's",
+    "             recorded path so another component can depend on it.",
     "Nothing here is redistributed inside the npm package; setup downloads it."
   ],
   "manifestVersion": 1,
@@ -18,16 +22,17 @@
     "jdk": "21",
     "apktool": "3.0.3",
     "jadxHeadlessMcp": "0.7.1",
+    "node": "24.21.0",
     "nodeEngines": "^22.19.0 || ^24.11.0 || >=26.0.0"
   },
   "components": {
     "node": {
-      "description": "Portable Node.js runtime used to execute vendored REA. Only provisioned when no compatible node.exe is already reachable.",
-      "kind": "archive-zip",
+      "description": "Portable Node.js runtime used to execute vendored REA. Only provisioned when no compatible node is already reachable.",
+      "kind": "archive",
       "license": "MIT (Node.js)",
       "requires": [],
-      "unpack": { "stripRootComponents": 1, "moveTo": "node", "pick": ["node.exe"] },
-      "binaries": ["node{exe}"],
+      "unpack": { "stripRootComponents": 1, "moveTo": "node" },
+      "binaries": ["bin/node", "node{exe}"],
       "probe": { "argv": ["{node}", "-v"], "expect": { "regex": "^v\\d+" } },
       "sources": {
         "win32-x64": {
@@ -40,20 +45,51 @@
           "sha256VerifiedOn": "2026-10-13",
           "note": "Checksum and unpack verified on this machine: the extracted node.exe runs standalone (v24.21.0), no installer and no registry writes."
         },
+        "win32-arm64": {
+          "version": "24.21.0",
+          "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-win-arm64.zip",
+          "format": "zip",
+          "size": 33679608,
+          "sha256": "8779b1bde1d39f8d420e3b57aa657b39891af434d3de44a919044cec06785921",
+          "sha256Source": "https://nodejs.org/dist/v24.21.0/SHASUMS256.txt (line: node-v24.21.0-win-arm64.zip), size confirmed by HEAD",
+          "sha256VerifiedOn": "2026-10-13"
+        },
+        "darwin-x64": {
+          "version": "24.21.0",
+          "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-darwin-x64.tar.gz",
+          "format": "tar.gz",
+          "size": 54203979,
+          "sha256": "1462cb3b3046b815cf8ea436d3da450ec1a9f11dac7e5a46b0ada5305d7e8097",
+          "sha256Source": "https://nodejs.org/dist/v24.21.0/SHASUMS256.txt (line: node-v24.21.0-darwin-x64.tar.gz)",
+          "sha256VerifiedOn": "2026-10-13"
+        },
         "darwin-arm64": {
           "version": "24.21.0",
           "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-darwin-arm64.tar.gz",
           "format": "tar.gz",
-          "sha256": "unverified",
-          "sha256Source": "https://nodejs.org/dist/v24.21.0/SHASUMS256.txt"
+          "size": 52909993,
+          "sha256": "bed7eea5325e1108f32ce5228ddd6a5f0f08a499ee42aa7442aea583702f6057",
+          "sha256Source": "https://nodejs.org/dist/v24.21.0/SHASUMS256.txt (line: node-v24.21.0-darwin-arm64.tar.gz)",
+          "sha256VerifiedOn": "2026-10-13"
         },
         "linux-x64": {
           "version": "24.21.0",
           "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-x64.tar.xz",
           "format": "tar.xz",
-          "sha256": "unverified",
-          "sha256Source": "https://nodejs.org/dist/v24.21.0/SHASUMS256.txt",
-          "note": ".tar.xz is not unpackable by Windows Expand-Archive; bsdtar handles it."
+          "size": 31890184,
+          "sha256": "fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6",
+          "sha256Source": "https://nodejs.org/dist/v24.21.0/SHASUMS256.txt (line: node-v24.21.0-linux-x64.tar.xz)",
+          "sha256VerifiedOn": "2026-10-13",
+          "note": ".tar.xz is not unpackable by Windows Expand-Archive; bsdtar handles it. A .tar.gz twin exists for every platform if xz support is ever in doubt."
+        },
+        "linux-arm64": {
+          "version": "24.21.0",
+          "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-arm64.tar.xz",
+          "format": "tar.xz",
+          "size": 30859684,
+          "sha256": "6ad1325edbdb5649c379b75a237147a666c95d4f9ae8d340fef2d1575d289ad2",
+          "sha256Source": "https://nodejs.org/dist/v24.21.0/SHASUMS256.txt (line: node-v24.21.0-linux-arm64.tar.xz)",
+          "sha256VerifiedOn": "2026-10-13"
         }
       }
     },
@@ -71,9 +107,10 @@
           "format": "zip",
           "size": 205073461,
           "sha256": "f9d6e191ab098c0d416e7d588a24420a8621cd2f4720dab2459b8b7b2d2d8b4e",
-          "sha256Source": "Adoptium API /v3/assets/latest/21/hotspot?os=windows&architecture=x64&image_type=jdk (binary.package.checksum)",
+          "sha256Source": "Adoptium API /v3/assets/latest/21/hotspot (binary.package.checksum), cross-checked against the per-asset .zip.sha256.txt sidecar",
           "sha256VerifiedOn": "2026-10-13",
-          "metaApi": "https://api.adoptium.net/v3/assets/latest/21/hotspot?architecture=x64&image_type=jdk&os=windows&vendor=eclipse"
+          "metaApi": "https://api.adoptium.net/v3/assets/latest/21/hotspot?architecture=x64&image_type=jdk&os=windows&vendor=eclipse",
+          "note": "Unpacked and exercised on this machine: bin/javac.exe and jmods are present, java --list-modules reports jdk.compiler, and REA's Ghidra provider accepted it as a 64-bit full JDK 21+."
         },
         "darwin-x64": {
           "version": "21.0.12.1+1",
@@ -82,7 +119,8 @@
           "size": 194316575,
           "sha256": "44db0f08196daf19a47f90d13388b0c943b67663cb537f998fe29e836fa842ce",
           "sha256Source": "Adoptium API (binary.package.checksum)",
-          "sha256VerifiedOn": "2026-10-13"
+          "sha256VerifiedOn": "2026-10-13",
+          "metaApi": "https://api.adoptium.net/v3/assets/latest/21/hotspot?architecture=x64&image_type=jdk&os=mac&vendor=eclipse"
         },
         "darwin-arm64": {
           "version": "21.0.12.1+1",
@@ -91,7 +129,8 @@
           "size": 200073404,
           "sha256": "3623232f33a9c3baadf304480b2535f9a3cba8a58d42ecbb438ba267315d9998",
           "sha256Source": "Adoptium API (binary.package.checksum)",
-          "sha256VerifiedOn": "2026-10-13"
+          "sha256VerifiedOn": "2026-10-13",
+          "metaApi": "https://api.adoptium.net/v3/assets/latest/21/hotspot?architecture=aarch64&image_type=jdk&os=mac&vendor=eclipse"
         },
         "linux-x64": {
           "version": "21.0.12.1+1",
@@ -100,13 +139,24 @@
           "size": 207473347,
           "sha256": "ce79869e1307ed8ee1e2baa86a412b1eb5b75d10a01006d788a6f968bcfaee94",
           "sha256Source": "Adoptium API (binary.package.checksum)",
-          "sha256VerifiedOn": "2026-10-13"
+          "sha256VerifiedOn": "2026-10-13",
+          "metaApi": "https://api.adoptium.net/v3/assets/latest/21/hotspot?architecture=x64&image_type=jdk&os=linux&vendor=eclipse"
+        },
+        "linux-arm64": {
+          "version": "21.0.12.1+1",
+          "url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1%2B1/OpenJDK21U-jdk_aarch64_linux_hotspot_21.0.12.1_1.tar.gz",
+          "format": "tar.gz",
+          "size": 205641175,
+          "sha256": "23e37e026f12f3e706f18938ff611db3032d075b09d0879a25d06718c773e223",
+          "sha256Source": "Adoptium API (binary.package.checksum)",
+          "sha256VerifiedOn": "2026-10-13",
+          "metaApi": "https://api.adoptium.net/v3/assets/latest/21/hotspot?architecture=aarch64&image_type=jdk&os=linux&vendor=eclipse"
         }
       }
     },
     "ghidra": {
       "description": "Ghidra release, extracted. REA locates support/analyzeHeadless(.bat) and Features/Decompiler/os/<platform>/decompile[.exe] inside it.",
-      "kind": "archive-zip",
+      "kind": "archive",
       "license": "Apache-2.0",
       "requires": ["jdk"],
       "unpack": { "stripRootComponents": 1, "moveTo": "ghidra" },
@@ -120,7 +170,8 @@
           "sha256": "ddac49f903da9d5bac833e5cc79395098b9c33cfd3279be5f31bd00387d2d4db",
           "sha256Source": "GitHub release body of the pinned tag: api.github.com/repos/NationalSecurityAgency/ghidra/releases/tags/Ghidra_12.1.4_build -> .body, line '* SHA-256: `ddac49f9...`'. No checksum asset exists (six candidate names 404). Always read the pinned tag, never releases/latest, because the body changes.",
           "releaseApi": "https://api.github.com/repos/NationalSecurityAgency/ghidra/releases/tags/Ghidra_12.1.4_build",
-          "note": "No platform split for the public release: one zip serves Windows/macOS/Linux. ~570 MB, the single largest component; never redistributed inside the npm package. Windows traps: a path containing '!' or '^' breaks Ghidra, and macOS native components are not shipped (they must be built with support/gradle/gradlew buildNatives)."
+          "sha256VerifiedOn": "2026-10-13",
+          "note": "No platform split for the public release: one zip serves Windows/macOS/Linux. Unpacked and sniffed here (support/analyzeHeadless.bat and the win_x86_64 native decompiler are present, and REA reported provider version 12.1.4). Windows traps: a path containing '!' or '^' breaks Ghidra, and macOS native components are not shipped (they must be built with support/gradle/gradlew buildNatives). Ghidra requires JDK 21+; application.java.max is empty at this tag, so a newer JDK is permitted."
         }
       }
     },
@@ -139,6 +190,7 @@
             "size": 15478013,
             "sha256": "dbf930b076c6b9be08d57c449cacefc3bdd6b71ebd59b3066fc0e1f5b14f9423",
             "sha256Source": "Vendor-published in the 3.0.3 release post (apktool.org/blog/apktool-3.0.3/), md5 50d98c920b005d2fcdc18d3d52e3f23b. Independently reproduced here: this is the hash of the 15,478,013-byte apktool_3.0.3.jar.",
+            "sha256VerifiedOn": "2026-10-13",
             "moveTo": "apktool",
             "saveAs": "apktool.jar"
           }
@@ -152,7 +204,8 @@
               "format": "file",
               "size": 2348,
               "sha256": "9440ec9d98efdef14136f4cefd79ac200d72baa016b5991d128234a3a3ef3b43",
-              "sha256Source": "measured on 2026-10-13 (raw.githubusercontent.com publishes no checksum); archive-free single file, 2,348 B",
+              "sha256Source": "measured on 2026-10-13 (raw.githubusercontent.com publishes no checksum for the wrapper); a single 2,348-byte file, so the archive-free case needs no TOFU",
+              "sha256VerifiedOn": "2026-10-13",
               "notes": [
                 "The wrapper pushd's to its own directory and resolves apktool.jar first, then globs apktool_*.jar, so the renamed jar next to it is found.",
                 "Its final line is `for %%i in (%cmdcmdline%) do if /i \"%%~i\"==\"/c\" pause & exit /b`: measured here it returns exit 0 in 0.2 s, but it appends 'Press any key to continue . . .' to stdout. That trailing text is upstream's, not a provisioning defect; tools that parse apktool's stdout should tolerate it.",
@@ -162,14 +215,30 @@
               "saveAs": "apktool.bat"
             }
           ],
+          "darwin-x64": [
+            {
+              "id": "wrapper",
+              "version": "master",
+              "url": "https://raw.githubusercontent.com/iBotPeaches/Apktool/master/scripts/osx/apktool",
+              "format": "file",
+              "size": 2672,
+              "sha256": "d0c86f0475ed73bfffa6ac39faa69de7aa2dd40ff5e7e6540f82002be3a38f0b",
+              "sha256Source": "measured on 2026-10-13 from the osx wrapper (the correct one for macOS; the linux script is a different file)",
+              "sha256VerifiedOn": "2026-10-13",
+              "moveTo": "apktool",
+              "saveAs": "apktool"
+            }
+          ],
           "darwin-arm64": [
             {
               "id": "wrapper",
               "version": "master",
-              "url": "https://raw.githubusercontent.com/iBotPeaches/Apktool/master/scripts/linux/apktool",
+              "url": "https://raw.githubusercontent.com/iBotPeaches/Apktool/master/scripts/osx/apktool",
               "format": "file",
-              "sha256": "unverified",
-              "sha256Source": "raw.githubusercontent.com (no published checksum); TOFU pin on first fetch",
+              "size": 2672,
+              "sha256": "d0c86f0475ed73bfffa6ac39faa69de7aa2dd40ff5e7e6540f82002be3a38f0b",
+              "sha256Source": "measured on 2026-10-13 from the osx wrapper",
+              "sha256VerifiedOn": "2026-10-13",
               "moveTo": "apktool",
               "saveAs": "apktool"
             }
@@ -180,8 +249,24 @@
               "version": "master",
               "url": "https://raw.githubusercontent.com/iBotPeaches/Apktool/master/scripts/linux/apktool",
               "format": "file",
-              "sha256": "unverified",
-              "sha256Source": "raw.githubusercontent.com (no published checksum); TOFU pin on first fetch",
+              "size": 2648,
+              "sha256": "a851371023c43ca9b9a30218f87f9fd536304283de7b85447183ae811dfd033c",
+              "sha256Source": "measured on 2026-10-13 from the linux wrapper",
+              "sha256VerifiedOn": "2026-10-13",
+              "moveTo": "apktool",
+              "saveAs": "apktool"
+            }
+          ],
+          "linux-arm64": [
+            {
+              "id": "wrapper",
+              "version": "master",
+              "url": "https://raw.githubusercontent.com/iBotPeaches/Apktool/master/scripts/linux/apktool",
+              "format": "file",
+              "size": 2648,
+              "sha256": "a851371023c43ca9b9a30218f87f9fd536304283de7b85447183ae811dfd033c",
+              "sha256Source": "measured on 2026-10-13 from the linux wrapper",
+              "sha256VerifiedOn": "2026-10-13",
               "moveTo": "apktool",
               "saveAs": "apktool"
             }
@@ -206,6 +291,7 @@
             "size": 42619858,
             "sha256": "6e5eacf500b64292bfb73c49797c1958f6ee44646e43e868039ae7feb573ff75",
             "sha256Source": "Vendor-published sidecar asset releases/download/v0.7.1/jadx-headless-mcp.sha256 (98 bytes, one line); the value was independently reproduced here by hashing the downloaded 42,619,858-byte jar. 0.7.1 is the newest release and REA requires exactly this bridge build: the project's own build.gradle.kts documents that the fat jar must be shaded with duplicatesStrategy INCLUDE, otherwise only KotlinMetadataPlugin registers and every APK resolves to a single R class. Versions 0.6.0 and earlier predate that fix.",
+            "sha256VerifiedOn": "2026-10-13",
             "moveTo": "jadx",
             "saveAs": "jadx-headless-mcp-0.7.1-all.jar"
           }
@@ -214,7 +300,7 @@
     },
     "androidPlatformTools": {
       "description": "adb, for REA's device tools. Optional: without a device these tools simply report no devices.",
-      "kind": "archive-zip",
+      "kind": "archive",
       "license": "Android SDK Terms (Google)",
       "requires": [],
       "optional": true,
@@ -222,47 +308,72 @@
       "probe": { "argv": ["{vendor}/platform-tools/adb{exe}", "version"], "expect": { "contains": "Android Debug Bridge" } },
       "sources": {
         "win32-x64": {
-          "version": "latest",
+          "version": "latest (37.0.1)",
           "url": "https://dl.google.com/android/repository/platform-tools-latest-windows.zip",
           "format": "zip",
           "size": 8044989,
           "sha256": "45f4d63113e895ebde0c90f194099a4676b6ac653bd28d54314a9e022bbc1a99",
-          "sha256Source": "Google publishes no checksum for this rolling asset; this value was measured on 2026-10-13 (Content-Length 8,044,989 B confirmed by HEAD) and the archive was verified readable (15 entries incl. adb.exe). The archive's own platform-tools/source.properties reports Pkg.Revision=37.0.1, so the pin is really 'platform-tools 37.0.1'. Because -latest- moves, setup re-verifies against this recorded value and reports drift instead of silently accepting new bytes; Google's repository2-3.xml carries size+checksum for versioned archives if a vendor hash is ever required.",
-          "note": "Rolling 'latest' URL pinned by observation. Android SDK components are not OSI-licensed and Google restricts redistribution, so this is fetched from Google at install time and never re-hosted. Contents also include fastboot, sqlite3, mke2fs and the USB API DLLs."
+          "sha256Source": "Google publishes no checksum for this rolling asset; measured on 2026-10-13 and the archive verified readable (15 entries incl. adb.exe). The archive's own platform-tools/source.properties reports Pkg.Revision=37.0.1, so the real pin is 'platform-tools 37.0.1'. Google's repository2-3.xml carries size+checksum for versioned archives if a vendor hash is ever required.",
+          "sha256VerifiedOn": "2026-10-13",
+          "note": "Rolling 'latest' URL pinned by observation; setup re-verifies against this value and reports drift. Android SDK components are not OSI-licensed and Google restricts redistribution, so this is fetched from Google at install time and never re-hosted. Also contains fastboot, sqlite3, mke2fs and the USB API DLLs."
         },
         "darwin-x64": {
           "version": "latest",
           "url": "https://dl.google.com/android/repository/platform-tools-latest-darwin.zip",
           "format": "zip",
-          "sha256": "unverified",
-          "sha256Source": "Google publishes no checksum for this rolling asset"
+          "size": 16110554,
+          "sha256": "ee39ad5967e95c2a07f04dbcbde96b1a0c916ba376096db5d2f498b7727a5d1d",
+          "sha256Source": "Google publishes no checksum for this rolling asset; measured on 2026-10-13 by downloading the archive and hashing it locally (16,110,554 bytes)",
+          "sha256VerifiedOn": "2026-10-13",
+          "note": "Rolling 'latest' URL pinned by observation; setup re-verifies against this value and reports drift."
+        },
+        "darwin-arm64": {
+          "version": "latest",
+          "url": "https://dl.google.com/android/repository/platform-tools-latest-darwin.zip",
+          "format": "zip",
+          "size": 16110554,
+          "sha256": "ee39ad5967e95c2a07f04dbcbde96b1a0c916ba376096db5d2f498b7727a5d1d",
+          "sha256Source": "Same darwin archive as x64 (measured 2026-10-13); it serves Intel and Apple silicon.",
+          "sha256VerifiedOn": "2026-10-13",
+          "note": "The same darwin archive serves Intel and Apple silicon."
         },
         "linux-x64": {
           "version": "latest",
           "url": "https://dl.google.com/android/repository/platform-tools-latest-linux.zip",
           "format": "zip",
-          "sha256": "unverified",
-          "sha256Source": "Google publishes no checksum for this rolling asset"
+          "size": 9054187,
+          "sha256": "d230f13842f60f782a8645f9c813f8f845bf36089ea7289f28c48f17979313f1",
+          "sha256Source": "Google publishes no checksum for this rolling asset; measured on 2026-10-13 by downloading the archive and hashing it locally (9,054,187 bytes)",
+          "sha256VerifiedOn": "2026-10-13",
+          "note": "The same linux archive serves x86-64 and arm64."
+        },
+        "linux-arm64": {
+          "version": "latest",
+          "url": "https://dl.google.com/android/repository/platform-tools-latest-linux.zip",
+          "format": "zip",
+          "size": 9054187,
+          "sha256": "d230f13842f60f782a8645f9c813f8f845bf36089ea7289f28c48f17979313f1",
+          "sha256Source": "Same linux archive as x64 (measured 2026-10-13).",
+          "sha256VerifiedOn": "2026-10-13"
         }
       }
     },
     "reaAgents": {
-      "description": "The REA MCP server itself, installed into vendor/ from the npm registry so the bundle owns the runtime copy.",
+      "description": "The REA MCP server itself, installed into vendor/node_modules so the bundle owns the runtime copy. The resolved entry point is vendor/node_modules/rea-agents/scripts/rea.mjs.",
       "kind": "npm",
       "license": "MIT",
       "requires": ["node"],
       "unpack": { "moveTo": "rea-agents" },
       "probe": {
-        "argv": ["{node}", "{vendor}/rea-agents/scripts/rea.mjs", "--version"],
+        "argv": ["{node}", "{vendor}/node_modules/rea-agents/scripts/rea.mjs", "--version"],
         "expect": { "regex": "^6\\.4\\.0" }
       },
       "sources": {
         "npm": {
           "version": "6.4.0",
           "registry": "https://registry.npmjs.org/rea-agents",
-          "integrity": "registry-provided (npm verifies the tarball signature/integrity itself)",
-          "sha256": "unverified",
-          "sha256Source": "npm registry integrity field is authoritative for the tarball; setup records the resolved dist.tarball + integrity it saw"
+          "integrity": "npm's own dist.integrity is the authoritative check for this tarball: the registry tarball ships NO node_modules (verified: 1161 entries, 0 under node_modules), so setup resolves the dependency closure with `npm install --ignore-scripts` instead of unpacking a tarball.",
+          "note": "`just unpacking the published tarball cannot work` is a verified fact, not a caution: the CLI would fail with ERR_MODULE_NOT_FOUND on zod."
         }
       }
     }

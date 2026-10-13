@@ -55,7 +55,8 @@
     "check-updates": "powershell -NoProfile -File ./check-updates.ps1",
     "bundle:setup": "node ./scripts/setup.mjs",
     "bundle:status": "node ./bin/rea-shim.mjs --shim-status",
-    "bundle:dry-run": "node ./scripts/setup.mjs --reuse --dry-run"
+    "bundle:dry-run": "node ./scripts/setup.mjs --reuse --dry-run",
+    "bundle:audit": "node ./scripts/audit-manifest.mjs"
   },
   "engines": {
     "node": "^22.19.0 || ^24.11.0 || >=26.0.0"
