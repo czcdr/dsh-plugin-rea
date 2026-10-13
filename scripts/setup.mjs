@@ -301,6 +301,15 @@ function openGet(url, { proxy, headers, connectTimeoutMs }) {
 
 /* ------------------------------------------------------------ download + unzip */
 
+/** The cache file name a URL maps to; used in messages before a download runs. */
+function archiveNameFor(url) {
+  try {
+    return path.basename(new URL(url).pathname);
+  } catch {
+    return url;
+  }
+}
+
 /**
  * Fetch one URL to `destination`, verifying size and checksum.
  *
@@ -329,6 +338,12 @@ async function download(url, destination, expected, label) {
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
+      // --offline is a promise, not a hint: nothing network-facing may run, so
+      // the refusal happens before either route is attempted rather than after
+      // the first one fails.
+      if (options.offline) {
+        throw new Error(`${label} is not in the cache (${archiveNameFor(url)}) and --offline forbids fetching it`);
+      }
       // Route order differs by design. On Windows the .NET stack is tried first:
       // it honours the system proxy and follows GitHub's release-asset redirect
       // to release-assets.githubusercontent.com correctly, which is exactly what
