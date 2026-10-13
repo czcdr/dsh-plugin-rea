@@ -581,12 +581,23 @@ function substituteProbe(value, context) {
   const vendorPath = (name) => {
     const resolved = context.resolved?.[name];
     if (resolved && typeof resolved.path === "string") return resolved.path;
-    // A component that provides the runtime cannot resolve its own token before
-    // it is recorded: while provisioning `node`, {node} means the interpreter
-    // already running this script.
+    // A component cannot resolve its own token before it is recorded. While
+    // provisioning `node`, {node} means the interpreter already running this
+    // script; while provisioning `jdk` or `ghidra`, the copy being unpacked
+    // right now is the answer (and {jvm} is its bin/java). Without this the
+    // component's own probe fails with a literal "{jvm}" even though the
+    // extraction succeeded — which silently discarded a fully downloaded JDK
+    // and a 543 MB Ghidra archive.
     if (name === "node") return process.execPath;
+    if (name === "jdk") return path.join(context.vendor, "jdk");
+    if (name === "ghidra") return path.join(context.vendor, "ghidra");
     return null;
   };
+  // Order matters. The path tokens that already carry a Windows extension
+  // ({node}, {jvm}) are expanded FIRST, and {exe} LAST. Doing it the other way
+  // round turned the apktool probe into
+  // "<...>\jdk\bin\java.exe\bin\java.exe": {jvm} resolved to a path ending in
+  // java.exe and then {exe} appended a second one.
   swap("{vendor}", vendor);
   swap("{vendorDir}", vendor);
   swap("{root}", context.root);
@@ -594,7 +605,15 @@ function substituteProbe(value, context) {
   swap("{jdk}", vendorPath("jdk"));
   swap("{ghidra}", vendorPath("ghidra"));
   const jdk = vendorPath("jdk");
-  if (jdk) swap("{jvm}", path.join(jdk, "bin", `java${EXE}`));
+  if (jdk) {
+    // {jdk} resolves to the JDK's java executable (that is what `binaries`
+    // records so a dependent component has something spawnable), while
+    // REA_JADX_MCP_JAR-style probes want JAVA_HOME. Derive it defensively:
+    // strip a trailing bin/java[.exe] if present, otherwise use the path as-is.
+    const home = /[\\/]bin[\\/]java(\.exe)?$/i.test(jdk) ? path.dirname(path.dirname(jdk)) : jdk;
+    swap("{jvm}", path.join(home, "bin", `java${EXE}`));
+    swap("{javahome}", home);
+  }
   swap("{exe}", EXE);
   return text.replaceAll("/", path.sep);
 }
