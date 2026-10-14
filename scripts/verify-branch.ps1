@@ -95,6 +95,36 @@ Check 'dry-run plans every component' ($planned -ge 4) "planned=$planned"
 Check 'dry-run reports no unavailable dependency' ($unmet -eq 0) "unavailable=$unmet"
 Remove-Item Env:\REA_BUNDLE_ROOT -ErrorAction SilentlyContinue
 
+Write-Host "`n=== 8. bootstrap recognises an unpacked portable Node (no download) ===" -ForegroundColor Cyan
+# A machine with no Node is this script's entire audience, so the portable path is
+# only ever exercised where it is least observable: it must therefore be tested
+# here, with an empty PATH and a stack laid out exactly as the official zip lays it
+# out. The folder name is derived from the manifest by a SINGLE extension strip
+# (node-v24.21.0-win-x64.zip -> node-v24.21.0-win-x64); a double strip used to make
+# the bootstrap throw "the Node zip did not contain node-v24.21" after a successful
+# download, checksum and extraction. -DryRun keeps this check download-free.
+$bootRoot = Join-Path $env:TEMP 'rea-verify-bootstrap'
+# -Encoding UTF8: the manifest carries non-ASCII text and PowerShell 5.1 would
+# otherwise read a BOM-less file as ANSI and fail ConvertFrom-Json.
+$manifest = Get-Content (Join-Path $root 'manifest\bundle.manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+$bootLayoutName = [System.IO.Path]::GetFileNameWithoutExtension(
+  [System.IO.Path]::GetFileName(([uri]$manifest.components.node.sources.'win32-x64'.url).AbsolutePath))
+$bootLayout = Join-Path (Join-Path $bootRoot 'stack') $bootLayoutName
+New-Item -ItemType Directory -Path $bootLayout -Force | Out-Null
+$hostNode = (Get-Command node -ErrorAction SilentlyContinue).Source
+if ($hostNode) {
+  $target = Join-Path $bootLayout 'node.exe'
+  if (Test-Path $target) { Remove-Item $target -Force }
+  try { New-Item -ItemType HardLink -Path $target -Target $hostNode -ErrorAction Stop | Out-Null }
+  catch { Copy-Item $hostNode $target -Force }
+}
+$bootOut = & powershell -NoProfile -Command "`$env:PATH='C:\Windows\System32;C:\Windows'; & '$root\scripts\rea-bundle-bootstrap.ps1' -Root '$bootRoot' -Reuse -DryRun" 2>&1
+Check 'bootstrap finds the portable Node in the official layout' (@($bootOut | Select-String 'portable Node present').Count -ge 1) (($bootOut | Select-Object -Last 2) -join ' ')
+Check 'bootstrap plans no download when one is present' (@($bootOut | Select-String 'plan: download').Count -eq 0) (@($bootOut | Select-String 'plan:').Line -join ' | ')
+for ($i = 0; $i -lt 5; $i++) {
+  try { Remove-Item -Recurse -Force $bootRoot -ErrorAction Stop; break } catch { Start-Sleep -Milliseconds 300 }
+}
+
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'ALL CHECKS PASSED' -ForegroundColor Green }
 else { Write-Host "$fail CHECK(S) FAILED" -ForegroundColor Red }

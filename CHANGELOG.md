@@ -54,6 +54,17 @@
   供给之前该行以 `MODULE_NOT_FOUND` 退出 —— 没有任何东西能启动后台供给。首次必须手动跑一次
   `setup.mjs`，此后才由 shim 自动补供给。
 
+### 🔴 真机验证（Windows 11 x64，Electron 宿主 0.2.0-rc.2）当场抓到的
+
+- **bootstrap 的便携 Node 路径必崩。** `$nodeFolder` 被连续剥了两次扩展名：`node-v24.21.0-win-x64.zip`
+  → `node-v24.21`，而官方 zip 解出来的目录是 `node-v24.21.0-win-x64`。于是在**没有任何 Node 的机器**上
+  —— 也就是这个脚本唯一的读者 —— 它会先成功下载（35 MiB）、校验通过、解压完成，然后抛
+  `the Node zip did not contain node-v24.21`。本机有 Node，永远走不到这段分支，所以单测、审计、WSL 与
+  沙箱端到端全都看不见它；真机复现（清空 PATH 模拟无 Node）一次即中。
+  现在只剥一次，且解压后**接受任何真的带 `node.exe` 的目录**：已经付过下载代价的机器不该因为一次命名
+  漂移而卡住。`-DryRun` 也会去认已经解压好的便携 Node（只认、不下载），这正是下面那条回归检查能
+  **零下载**判定它的原因。
+
 ### 回归防护
 
 - `audit-manifest.mjs` 新增六项，全部做过反向验证（**故意写坏 6/6 都被抓住**）：`!!js` 裸标量 mapping
@@ -66,6 +77,9 @@
   **CI 一直是红的**）；行契约步骤断言 `args[0]` 是标量、不是 mapping；新增 `bundle:test` 与 `bundle:audit` 两步。
 - `verify-branch.ps1`：dry-run 断言改为**不带 `--reuse`**（旧写法在本机 adopt 成功时正好掩盖了上面那个
   裸机缺陷），并新增"不得出现依赖不可用"一条；它现在也检查**自己**的 BOM，因为它是被编辑得最频繁的脚本。
+- `verify-branch.ps1` 新增第 8 节：**空 PATH + 官方 zip 布局**下，bootstrap 必须认出已解压的便携 Node、
+  且不得计划下载（`-DryRun`，零下载、零副作用）。反向验证：把该脚本 checkout 回 HEAD 版（双重剥离）
+  → 两条断言立刻变红（`2 CHECK(S) FAILED`／`plan: download and extract ...`）。
 - 单元测试新增四条**真的去 spawn shim**的用例（镜像布局、checkout 布局、`REA_BUNDLE_ROOT` 覆盖、裸跑只
   打印用法），并逐条做过反向验证：把 shim 改回"一律用自身位置"时 checkout 那条会红；去掉裸跑守卫时裸跑
   那条会红（后者自带桩保护，即使回退也只会跑到桩、不会下载）。

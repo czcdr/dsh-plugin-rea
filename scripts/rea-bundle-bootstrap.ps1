@@ -73,7 +73,14 @@ $nodeVersion = $nodeSource.version
 $nodeSha256 = $nodeSource.sha256
 $nodeUrl = $nodeSource.url
 $nodeZipName = [System.IO.Path]::GetFileName(([uri]$nodeUrl).AbsolutePath)
-$nodeFolder = [System.IO.Path]::GetFileNameWithoutExtension([System.IO.Path]::GetFileNameWithoutExtension($nodeZipName))
+# The official archive unpacks to exactly one top-level directory named after the
+# zip: node-v24.21.0-win-x64.zip -> node-v24.21.0-win-x64. The extension is
+# therefore stripped EXACTLY ONCE. Stripping twice yielded 'node-v24.21', so the
+# checks below looked for <stack>\node-v24.21\node.exe and the run threw
+# "the Node zip did not contain node-v24.21" *after* a successful download,
+# checksum and extraction — on every machine that had no Node, which is the only
+# audience this script has. Invisible wherever a Node is already on PATH.
+$nodeFolder = [System.IO.Path]::GetFileNameWithoutExtension($nodeZipName)
 if ($nodeSha256 -eq 'unverified') { throw "the manifest pins no checksum for $hostKey; refusing to download unverified bytes" }
 Write-Step "Node source: $hostKey v$nodeVersion"
 
@@ -94,10 +101,26 @@ function Test-NodeUsable([string]$Exe) {
   return [pscustomobject]@{ Path = (Resolve-Path $Exe).Path; Version = $clean }
 }
 
-function Get-PortableNode {
-  $exe = Join-Path (Join-Path $stack $nodeFolder) 'node.exe'
+# The directory the zip actually created. The derived name is preferred, but any
+# directory carrying node.exe is accepted: a naming drift must not strand a machine
+# that has already downloaded and checksum-verified the bytes.
+function Get-PortableNodeDir {
+  $exact = Join-Path $stack $nodeFolder
+  if (Test-Path (Join-Path $exact 'node.exe')) { return $exact }
+  $found = Get-ChildItem -Path $stack -Directory -ErrorAction SilentlyContinue |
+    Where-Object { Test-Path (Join-Path $_.FullName 'node.exe') } |
+    Select-Object -First 1
+  if ($found) { return $found.FullName }
+  return $exact
+}
+
+function Get-PortableNode([switch]$NoDownload) {
+  $exe = Join-Path (Get-PortableNodeDir) 'node.exe'
   $found = Test-NodeUsable $exe
   if ($found) { Write-Step "portable Node present: $($found.Path) (v$($found.Version))"; return $found }
+  # -DryRun still *looks* for the portable copy (that is the only way the plan can
+  # tell the truth about whether a download is needed) but never fetches anything.
+  if ($NoDownload) { return $null }
 
   $zip = Join-Path $cache $nodeZipName
   if (Test-Path $zip) {
@@ -119,8 +142,8 @@ function Get-PortableNode {
 
   Write-Step "extracting into $stack"
   Expand-Archive -LiteralPath $zip -DestinationPath $stack -Force
-  $unpacked = Join-Path $stack $nodeFolder
-  if (-not (Test-Path $unpacked)) { throw "the Node zip did not contain $nodeFolder" }
+  $unpacked = Get-PortableNodeDir
+  if (-not (Test-Path (Join-Path $unpacked 'node.exe'))) { throw "the Node zip left no node.exe under $stack (expected $nodeFolder)" }
   $found = Test-NodeUsable (Join-Path $unpacked 'node.exe')
   if (-not $found) { throw "the extracted node.exe could not be executed" }
   Write-Step "portable Node ready: $($found.Path) (v$($found.Version))"
@@ -137,8 +160,13 @@ foreach ($candidate in $candidates) {
   if ($node) { Write-Step "using existing Node: $($node.Path) (v$($node.Version))"; break }
 }
 
+# A portable Node already unpacked next to the bundle counts as an existing
+# install, and asking about it is what makes the -DryRun plan tell the truth.
+if (-not $node) { $node = Get-PortableNode -NoDownload:$DryRun }
+
 if ($DryRun) {
-  if (-not $node) { Write-Step "plan: download and extract $nodeZipName into $stack" }
+  if ($node) { Write-Step "plan: use Node $($node.Path) (v$($node.Version))" }
+  else { Write-Step "plan: download and extract $nodeZipName into $stack" }
   Write-Step "plan: node `"$setupScript`" --root `"$Root`"$(if ($Reuse) { ' --reuse' })"
   Write-Step "dry run complete; nothing was changed."
   exit 0
