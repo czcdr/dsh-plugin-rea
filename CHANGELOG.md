@@ -37,8 +37,11 @@
   "未供给"，而裸跑 `node bin/rea-shim.mjs mcp` 会把约 800 MB 下载进**插件目录**。现在用
   `cordis.patch.yml`（只有 checkout 会带）区分两者：镜像副本用自身位置（MCP 子进程里读不到
   `DSH_HOME`），checkout 副本按与 setup 相同的规则解析。setup 结尾打印的 `status:` 命令也改为指向
-  镜像副本，这样它对自定义 `--root` 同样成立。（`package.json` 的 `rea-bundle-status` bin 入口指向的
-  就是同一份 checkout 副本，因此一并修好。）
+  镜像副本，这样它对自定义 `--root` 同样成立。
+- **裸跑 shim 不再启动任何东西。** `package.json` 把这个文件暴露为 `rea-bundle-status` bin，而 npm 的 bin
+  转发只能原样传参、**无法追加 flag**，于是"裸跑一个叫 status 的命令"会掉进启动路径：在已供给的机器上
+  启动 REA，在未供给的机器上**开始约 800 MB 下载** —— 与这个名字承诺的正好相反。现在无参数时打印用法并
+  退出（真实退出码 0），MCP 行不受影响，因为它始终显式传 `mcp`。
 - **README 的「先装插件也可以」改为诚实描述。** 发布的行指向的镜像 shim **由 setup 创建**，所以在第一次
   供给之前该行以 `MODULE_NOT_FOUND` 退出 —— 没有任何东西能启动后台供给。首次必须手动跑一次
   `setup.mjs`，此后才由 shim 自动补供给。
@@ -52,10 +55,11 @@
   行为**钉成 warn（此前无覆盖）：该情形下该行报 `MODULE_NOT_FOUND`，不写文件、不下载，harness 照常。
 - `validate.yml`：YAML 步骤注册 `!!js` 标量构造器（原先 `safe_load` 直接拒绝这个仓库要发布的行 ——
   **CI 一直是红的**）；行契约步骤断言 `args[0]` 是标量、不是 mapping；新增 `bundle:test` 与 `bundle:audit` 两步。
-- 单元测试新增三条**真的去 spawn shim**的用例（镜像布局、checkout 布局、`REA_BUNDLE_ROOT` 覆盖），
-  并做了反向验证：把 shim 改回"一律用自身位置"时，checkout 那条会红。
+- 单元测试新增四条**真的去 spawn shim**的用例（镜像布局、checkout 布局、`REA_BUNDLE_ROOT` 覆盖、裸跑只
+  打印用法），并逐条做过反向验证：把 shim 改回"一律用自身位置"时 checkout 那条会红；去掉裸跑守卫时裸跑
+  那条会红（后者自带桩保护，即使回退也只会跑到桩、不会下载）。
 - 单元测试里的 POSIX 退化断言加平台守卫（`EXE` 为空时 `endsWith("java")` 恒真，在 Linux 上必红；
-  WSL 实测修前 12/13、修后 16/16）。
+  WSL 实测修前 12/13、修后 17/17）。
 
 ### 升级说明
 

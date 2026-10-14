@@ -12,7 +12,7 @@
  */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -255,6 +255,43 @@ test("REA_BUNDLE_ROOT still overrides both layouts", () => {
     writeFileSync(path.join(checkout, "cordis.patch.yml"), "- insert: []\n");
     const forced = path.join(root, "forced");
     assert.equal(shimBundleRoot(path.join(checkout, "bin", "rea-shim.mjs"), { REA_BUNDLE_ROOT: forced }), forced);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a bare invocation reports usage instead of starting anything", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "rea-shim-bare-"));
+  try {
+    const checkout = path.join(root, "checkout");
+    mkdirSync(path.join(checkout, "bin"), { recursive: true });
+    copyFileSync(SHIM_SOURCE, path.join(checkout, "bin", "rea-shim.mjs"));
+    writeFileSync(path.join(checkout, "cordis.patch.yml"), "- insert: []\n");
+    // The test guards itself: package.json exposes this file as the
+    // `rea-bundle-status` bin, npm cannot append a flag for it, and a regression
+    // here would start REA — or begin an ~800 MB download on an unprovisioned
+    // machine. So setup is a stub that exits immediately.
+    mkdirSync(path.join(checkout, "scripts"), { recursive: true });
+    mkdirSync(path.join(checkout, "manifest"), { recursive: true });
+    writeFileSync(path.join(checkout, "scripts", "setup.mjs"), "process.exit(0);\n");
+    writeFileSync(path.join(checkout, "manifest", "bundle.manifest.json"), "{}\n");
+
+    const home = path.join(root, "dsh-home");
+    const env = { ...process.env, DSH_HOME: home };
+    // Deliberately left at its default: the point is that a bare run must not reach
+    // the provisioning branch at all, not that provisioning is switched off.
+    delete env.REA_BUNDLE_AUTO_PROVISION;
+
+    const run = spawnSync(process.execPath, [path.join(checkout, "bin", "rea-shim.mjs")], {
+      encoding: "utf8",
+      env,
+      timeout: 60000,
+    });
+    assert.equal(run.status, 0, run.stderr);
+    assert.match(run.stdout, /--shim-status/);
+    // A lock would mean a provisioning run was started, which a stray
+    // `rea-bundle-status` must never do.
+    assert.equal(existsSync(path.join(home, "plugins", "rea-bundle", "setup.lock")), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

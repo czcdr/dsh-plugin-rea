@@ -245,23 +245,35 @@ function childEnvironment(config) {
   return env;
 }
 
+/**
+ * Usage text, also what a bare invocation prints.
+ *
+ * `package.json` exposes this file as the `rea-bundle-status` bin, and npm's bin
+ * shim can only forward the arguments a user typed — it cannot append a flag. So a
+ * bare `rea-bundle-status`, which is exactly what that name invites, used to fall
+ * through to the launch path: it started REA, and on an unprovisioned machine it
+ * began an ~800 MB download. Reporting usage instead makes the command's behaviour
+ * match its name, and the row is unaffected because it always passes `mcp`.
+ */
+function usage() {
+  return [
+    "rea-shim: launches the vendored REA MCP server for a DSH MCP row.",
+    "",
+    "  node bin/rea-shim.mjs [rea arguments...]   (normal use: 'mcp')",
+    "  node bin/rea-shim.mjs --shim-status        provisioning status, no launch",
+    "  node bin/rea-shim.mjs --shim-print-env     the environment it would export",
+    "",
+    `  bundle root: ${bundleRoot()}`,
+    `  plugin root: ${PLUGIN_ROOT}`,
+    "",
+  ].join("\n");
+}
+
 function main() {
   const argv = process.argv.slice(2);
 
-  if (argv.includes("--shim-help")) {
-    process.stdout.write(
-      [
-        "rea-shim: launches the vendored REA MCP server for a DSH MCP row.",
-        "",
-        "  node bin/rea-shim.mjs [rea arguments...]   (normal use: 'mcp')",
-        "  node bin/rea-shim.mjs --shim-status        provisioning status, no launch",
-        "  node bin/rea-shim.mjs --shim-print-env     the environment it would export",
-        "",
-        `  bundle root: ${bundleRoot()}`,
-        `  plugin root: ${PLUGIN_ROOT}`,
-        "",
-      ].join("\n"),
-    );
+  if (argv.includes("--shim-help") || argv.length === 0) {
+    process.stdout.write(usage());
     return 0;
   }
 
