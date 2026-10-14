@@ -369,6 +369,27 @@ if (manifest) {
     }
   }
 
+  /* ---------------------------------- 9b. the two READMEs stay parallel */
+
+  // They are maintained by hand, and an edit that lands in only one of them leaves
+  // half the readers with stale instructions — the patch expression above is the
+  // one piece already compared, but sections drift the same way. The prose differs
+  // by language, so the check compares the structure that must stay parallel.
+  const headingCounts = (doc) => {
+    const text = readFileSync(path.join(HERE, "..", doc), "utf8");
+    const count = (marker) => (text.match(new RegExp(`^${marker} `, "gm")) ?? []).length;
+    return { sections: count("##"), subsections: count("###") };
+  };
+  const englishHeadings = headingCounts("README.md");
+  const chineseHeadings = headingCounts("README.zh-CN.md");
+  if (englishHeadings.sections !== chineseHeadings.sections || englishHeadings.subsections !== chineseHeadings.subsections) {
+    add(
+      "error",
+      "README.md",
+      `the two READMEs drifted apart in structure: README.md has ${englishHeadings.sections} sections / ${englishHeadings.subsections} subsections, README.zh-CN.md has ${chineseHeadings.sections} / ${chineseHeadings.subsections}`,
+    );
+  }
+
   /* ------------------------------------------- 10. the mirror list is complete */
 
   // Another real bug: mirrorLauncher() copied the shim and setup.mjs but not the

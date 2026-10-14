@@ -18,7 +18,9 @@ foreach ($f in @('bin\rea-shim.mjs','scripts\setup.mjs','scripts\audit-manifest.
 }
 
 Write-Host "`n=== 2. PowerShell parse + BOM ===" -ForegroundColor Cyan
-foreach ($f in @('check-updates.ps1','assets\make-screenshots.ps1','scripts\rea-bundle-bootstrap.ps1')) {
+# This script checks itself too: it is edited as often as the others, and an editor
+# that drops the BOM would otherwise go unnoticed until someone adds CJK text here.
+foreach ($f in @('check-updates.ps1','assets\make-screenshots.ps1','scripts\rea-bundle-bootstrap.ps1','scripts\verify-branch.ps1')) {
   $p = Join-Path $root $f
   $bytes = [System.IO.File]::ReadAllBytes($p)
   $bom = ($bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
@@ -80,10 +82,17 @@ foreach ($script in @('bundle:setup', 'bundle:status', 'bundle:audit', 'bundle:t
 
 Write-Host "`n=== 7. dry-run still plans the whole chain ===" -ForegroundColor Cyan
 $env:REA_BUNDLE_ROOT = Join-Path $env:TEMP 'rea-verify-dryrun'
-$dry = & node scripts\setup.mjs --root $env:REA_BUNDLE_ROOT --reuse --dry-run 2>&1
+# Deliberately WITHOUT --reuse. Adoption of whatever this machine happens to have
+# installed used to hide a defect that only a bare machine sees: every planned
+# component returned `{ planned: true }` with no path, so the dependents of each
+# plan entry were reported as "required component is unavailable" and the command
+# exited 1 — for the exact reader the README sends to `--dry-run`.
+$dry = & node scripts\setup.mjs --root $env:REA_BUNDLE_ROOT --dry-run 2>&1
 $planned = @($dry | Select-String -Pattern '^\[plan\]').Count
-Check 'dry-run exits 0' ($LASTEXITCODE -eq 0) (($dry | Select-Object -Last 3) -join ' ')
+$unmet = @($dry | Select-String -Pattern 'is unavailable').Count
+Check 'dry-run exits 0 without --reuse' ($LASTEXITCODE -eq 0) (($dry | Select-Object -Last 3) -join ' ')
 Check 'dry-run plans every component' ($planned -ge 4) "planned=$planned"
+Check 'dry-run reports no unavailable dependency' ($unmet -eq 0) "unavailable=$unmet"
 Remove-Item Env:\REA_BUNDLE_ROOT -ErrorAction SilentlyContinue
 
 Write-Host ''

@@ -1157,8 +1157,13 @@ for (const name of INSTALL_ORDER) {
   }
   const resolvedValue = await provisionComponent(name, component, context);
   results[name] = resolvedValue;
-  // Only a real path may satisfy another component's `requires`.
-  if (resolvedValue && typeof resolvedValue.path === "string") {
+  // A component satisfies another's `requires` when it has a real path — or when
+  // this run only *planned* it. In dry-run every component returns
+  // `{ planned: true }` with no path, so counting only real paths made each
+  // dependent plan entry look like a missing dependency: on a bare machine, which
+  // is exactly the machine the README tells to run `--dry-run` first, the whole
+  // chain reported FAIL and the command exited 1.
+  if (resolvedValue && (typeof resolvedValue.path === "string" || resolvedValue.planned === true)) {
     context.resolved[name] = resolvedValue;
   }
 }

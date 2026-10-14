@@ -46,6 +46,10 @@ function Test-NodeEngines([string]$node, [string]$engines) {
   # 之后 $node.Major 为 $null，所有 ^ / ~ 分支都会判假（曾因此把 Node 24 判成不满足）。
   $v = Get-NumericVersion $node
   if (-not $v) { return $null }
+  # 只要有一个 term 的形态不认识，整个判断就只能给"无法解析"：返回 $false 会把
+  # `22.x` / `>=22` 这类合法但未实现的 pattern 误报成"不满足"，让用户去升级一个
+  # 本来就满足的 Node。
+  $recognized = $true
   foreach ($term in ($engines -split '\|\|')) {
     $t = $term.Trim()
     if ($t -match '^\^(\d+\.\d+\.\d+)$') {
@@ -56,8 +60,11 @@ function Test-NodeEngines([string]$node, [string]$engines) {
     } elseif ($t -match '^~(\d+\.\d+\.\d+)$') {
       $base = [version]$Matches[1]
       if ($v.Major -eq $base.Major -and $v.Minor -eq $base.Minor -and $v -ge $base) { return $true }
+    } else {
+      $recognized = $false
     }
   }
+  if (-not $recognized) { return $null }
   return $false
 }
 

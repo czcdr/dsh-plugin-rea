@@ -42,19 +42,30 @@
   转发只能原样传参、**无法追加 flag**，于是"裸跑一个叫 status 的命令"会掉进启动路径：在已供给的机器上
   启动 REA，在未供给的机器上**开始约 800 MB 下载** —— 与这个名字承诺的正好相反。现在无参数时打印用法并
   退出（真实退出码 0），MCP 行不受影响，因为它始终显式传 `mcp`。
+- **`--dry-run` 在裸机上误报失败并退出 1。** 计划项返回 `{ planned: true }`（没有 `path`），而只有真实
+  `path` 才被计入 `context.resolved`，于是每个依赖前序组件的计划项都被判成"依赖不可用"：在**裸机** —— 恰恰
+  是 README 建议先跑 `--dry-run` 的那台机器 —— 整条链报 4 条 FAIL 且退出码为 1。现在计划项同样满足下游的
+  `requires`。（本机 `--reuse` 会 adopt 成功，所以这个缺陷只在干净机器上可见。）
+- **`release.yml` 的 npm 自更新**由 `npm@latest` 钉到 `npm@^11`：发布当天不该让流水线获得新行为。
+- **`check-updates.ps1` 的 engines 判定**：不认识的 pattern（`22.x`、`>=22` 之类）此前返回"不满足"，误导
+  用户去升级一个本来就满足的 Node；现在返回"无法解析"。三条实测：`22.x` → 无法解析、`>=99.0.0` → 不满足、
+  `^24.11.0` → 满足。
 - **README 的「先装插件也可以」改为诚实描述。** 发布的行指向的镜像 shim **由 setup 创建**，所以在第一次
   供给之前该行以 `MODULE_NOT_FOUND` 退出 —— 没有任何东西能启动后台供给。首次必须手动跑一次
   `setup.mjs`，此后才由 shim 自动补供给。
 
 ### 回归防护
 
-- `audit-manifest.mjs` 新增五项，全部做过反向验证（**故意写坏 5/5 都被抓住**）：`!!js` 裸标量 mapping
+- `audit-manifest.mjs` 新增六项，全部做过反向验证（**故意写坏 6/6 都被抓住**）：`!!js` 裸标量 mapping
   检测、`DSH_HOME` 三态（未设/空/已设）求值一致性、README 与 patch 表达式不得漂移、镜像清单必须含
   manifest、镜像清单**不得**携带 `cordis.patch.yml`（它是 shim 区分两份副本的判据，被镜像进去会让镜像
-  副本退回 `DSH_HOME` 规则）。另外把「`DSH_HOME`/`USERPROFILE`/`HOME` 全空 → 根路径」这个**已知无害
-  行为**钉成 warn（此前无覆盖）：该情形下该行报 `MODULE_NOT_FOUND`，不写文件、不下载，harness 照常。
+  副本退回 `DSH_HOME` 规则）、**两份 README 结构平行**（节/子节数量，双语靠手工同步）。另外把
+  「`DSH_HOME`/`USERPROFILE`/`HOME` 全空 → 根路径」这个**已知无害行为**钉成 warn（此前无覆盖）：该情形下
+  该行报 `MODULE_NOT_FOUND`，不写文件、不下载，harness 照常。
 - `validate.yml`：YAML 步骤注册 `!!js` 标量构造器（原先 `safe_load` 直接拒绝这个仓库要发布的行 ——
   **CI 一直是红的**）；行契约步骤断言 `args[0]` 是标量、不是 mapping；新增 `bundle:test` 与 `bundle:audit` 两步。
+- `verify-branch.ps1`：dry-run 断言改为**不带 `--reuse`**（旧写法在本机 adopt 成功时正好掩盖了上面那个
+  裸机缺陷），并新增"不得出现依赖不可用"一条；它现在也检查**自己**的 BOM，因为它是被编辑得最频繁的脚本。
 - 单元测试新增四条**真的去 spawn shim**的用例（镜像布局、checkout 布局、`REA_BUNDLE_ROOT` 覆盖、裸跑只
   打印用法），并逐条做过反向验证：把 shim 改回"一律用自身位置"时 checkout 那条会红；去掉裸跑守卫时裸跑
   那条会红（后者自带桩保护，即使回退也只会跑到桩、不会下载）。

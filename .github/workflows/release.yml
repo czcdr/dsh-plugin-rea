@@ -71,7 +71,12 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
 
       - name: npm CLI must support OIDC trusted publishing (>= 11.15.0)
-        run: npm install -g npm@latest && npm --version
+        # Pinned to the major that provides trusted publishing. `npm@latest` would
+        # silently follow npm into a future major on release day, which is the one
+        # moment a publishing pipeline should not acquire new behaviour.
+        run: |
+          npm install -g 'npm@^11'
+          npm --version
 
       - name: Publish to npm via trusted publishing
         run: npm publish --provenance --access public
