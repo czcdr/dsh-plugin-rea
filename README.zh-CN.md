@@ -96,17 +96,21 @@ harness 永远不会被卡住 —— `failOnStartupError: false` 是刻意的。
         transport: stdio
         command: !!js process.execPath
         args:
-          - !!js (process.env.DSH_HOME && process.env.DSH_HOME.trim() !== "" ? process.env.DSH_HOME : process.env.USERPROFILE || process.env.HOME || "") + '/plugins/rea-bundle/bin/rea-shim.mjs'
+          - !!js "(process.env.DSH_HOME && process.env.DSH_HOME.trim() !== '' ? process.env.DSH_HOME : (process.env.USERPROFILE || process.env.HOME || '') + '/.dsh') + '/plugins/rea-bundle/bin/rea-shim.mjs'"
           - mcp
         env:
           ELECTRON_RUN_AS_NODE: '1'
         failOnStartupError: false
 ```
 
-这一行里有两个"承重"细节，而且**两个都先以 bug 的形式出现过**：
+这一行里有四个"承重"细节，而且**都先以 bug 的形式出现过**：
 
+- **`!!js` 标量必须加引号。** 裸标量里同时出现 `? ` 和 `: ` 时，它就不是一个标量了：YAML 会把它读成显式键值对，于是 loader 拿到的是一个 **mapping** 而不是表达式节点。用 harness 自己的方言实测（`JSON_SCHEMA` + `app.asar` 里的 `!!js` 类型），不加引号时 `args[0]` 变成 `{"[object Object]": "..."}` —— 一个行根本无法用来启动的对象。加引号消除歧义，内部的 JS 字符串改用单引号。
 - **必须用正斜杠，不能用反斜杠。** YAML 单引号标量会保留 `\` 字面量，接着 JavaScript 会把它吃掉：`'\plugins'` 不是路径而是 BEL 控制字符，`'\rea-bundle'` 变成回车、`'\bin'` 变成退格 —— 路径被静默摧毁。正斜杠在 Windows 与 POSIX 上都成立。
+- **`DSH_HOME` 的兜底是 `<home>/.dsh`，不是 `<home>`。** shim、`setup.mjs`、`bootstrap.ps1` 三者都把未设置的 `DSH_HOME` 解析到 `<home>/.dsh/...`；兜底少这一层，行就会指向供给永远不会写的位置 —— 而在 `DSH_HOME` 恰好被设置的机器上，这个错误完全不可见。
 - **`!!js` 表达式里没有 `path`/`require`**：`ctx` 是 loader 作用域，所以 DSH_HOME 的兜底写成纯字符串拼接。
+
+`npm run bundle:audit` 会把前三条钉住：它用「`DSH_HOME` 未设 / 为空 / 已设」三种情形求值这个表达式，并拒绝会被 YAML 读成 mapping 的裸标量。
 
 `ELECTRON_RUN_AS_NODE` 只在 harness 本身跑在 Electron 上时才有意义；对纯 Node 宿主无害，而显式写出来胜过依赖它恰好能在子进程环境清洗中存活。
 
@@ -169,6 +173,10 @@ shim** 的 MCP `initialize` 握手返回 `serverInfo {name: rea, version: 6.4.0}
 ## 更新 —— 三件互相独立的事
 
 - **本插件**从不自更新。从市场装的就在市场更新；从 `file:` 检出的就覆盖目录重装。
+- **从 `2.0.0-bundle.1` 升级**：那一版镜像了 shim 与 `setup.mjs`，却漏了 manifest，也没有留下插件 checkout
+  的记录，所以它供给出来的 bundle **无法自愈** —— 后台供给会因缺 manifest 而崩溃且完全不可见，而它自己写下的
+  lock 又会让重试被抑制六小时。请**从插件目录**重跑一次 `node scripts/setup.mjs`：它会重新镜像三个文件，
+  并写下让后续运行找到真源的记录。`check-updates.ps1` 会报告这个状态。
 - **供给的组件**：重跑 `node scripts/setup.mjs`，它会重新校验盘上的东西，只补缺失或不对的。
   版本钉在 `manifest/bundle.manifest.json`。
 - **上游 REA / Ghidra**：改清单里的钉子再重跑 setup。REA 对 Ghidra 有版本闸门（目前 12.1.x），

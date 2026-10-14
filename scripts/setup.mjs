@@ -39,11 +39,39 @@ const PLUGIN_ROOT = path.resolve(HERE, "..");
 const IS_WINDOWS = process.platform === "win32";
 const EXE = IS_WINDOWS ? ".exe" : "";
 
+/** Windows treats two spellings of one path as equal; the mirror checks must too. */
+function samePath(left, right) {
+  const a = path.resolve(left);
+  const b = path.resolve(right);
+  return IS_WINDOWS ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
 /* ------------------------------------------------------------------ options */
+
+/**
+ * DSH home, by the same rule bin/rea-shim.mjs and the published patch use:
+ * the environment first, then the conventional location. Both checks are
+ * trim-based, because `??` treats an empty variable as a value: with
+ * DSH_HOME="" the old expression built the relative root
+ * "plugins/rea-bundle", and the shim would then look for bundle.json in the
+ * harness's cwd instead of the home the rest of the system agrees on.
+ */
+function dshHome() {
+  const fromEnv = process.env.DSH_HOME;
+  if (fromEnv && fromEnv.trim() !== "") return path.resolve(fromEnv);
+  return path.join(homedir(), ".dsh");
+}
+
+/** Bundle root: explicit override first, then <DSH_HOME>/plugins/rea-bundle. */
+function defaultBundleRoot() {
+  const override = process.env.REA_BUNDLE_ROOT;
+  if (override && override.trim() !== "") return path.resolve(override);
+  return path.join(dshHome(), "plugins", "rea-bundle");
+}
 
 function parseArgs(argv) {
   const options = {
-    root: process.env.REA_BUNDLE_ROOT ?? path.join(process.env.DSH_HOME ?? path.join(homedir(), ".dsh"), "plugins", "rea-bundle"),
+    root: defaultBundleRoot(),
     cache: null,
     reuse: false,
     dryRun: false,
@@ -60,8 +88,8 @@ function parseArgs(argv) {
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
-    if (arg === "--root") options.root = argv[++i];
-    else if (arg === "--cache") options.cache = argv[++i];
+    if (arg === "--root") options.root = argv[++i] ?? "";
+    else if (arg === "--cache") options.cache = argv[++i] ?? "";
     else if (arg === "--reuse") options.reuse = true;
     else if (arg === "--dry-run") options.dryRun = true;
     else if (arg === "--json") options.json = true;
@@ -71,7 +99,14 @@ function parseArgs(argv) {
     else if (arg === "--help" || arg === "-h") options.help = true;
     else throw new Error(`unknown option: ${arg}`);
   }
-  if (!options.cache) options.cache = path.join(options.root, "cache");
+  // Absolute, always. bundle.json records these paths and the shim resolves them
+  // against whatever cwd the harness happens to have, so a relative --root would
+  // make every recorded component look deleted — the shim reports "the recorded
+  // Node runtime is gone" and starts provisioning again, on every single start.
+  if (String(options.root).trim() === "") throw new Error("--root needs a directory");
+  options.root = path.resolve(options.root);
+  if (!options.cache || String(options.cache).trim() === "") options.cache = path.join(options.root, "cache");
+  options.cache = path.resolve(options.cache);
   return options;
 }
 
@@ -754,8 +789,39 @@ function reuseExisting(name, root) {
 
 /* ------------------------------------------------------------------- manifest */
 
+/**
+ * Where this run's plugin files actually live.
+ *
+ * Two layouts exist. Normally setup runs from the plugin checkout and
+ * PLUGIN_ROOT is the truth. But the row launches the *mirrored* copy at
+ * <bundle>/bin/rea-shim.mjs, whose remediation text tells the operator to run
+ * <bundle>/scripts/setup.mjs — and in that layout PLUGIN_ROOT *is* the bundle
+ * root, so the mirror step would copy every file onto itself and loadManifest()
+ * would read a manifest that only the mirror step can create.
+ *
+ * setup therefore records the real checkout in <bundle>/mirror.json and a
+ * mirrored run reads it back. The record is advisory: it is honoured only while
+ * that directory still holds a manifest, so a moved or deleted plugin degrades
+ * to the mirrored copy instead of failing.
+ */
+function sourceRoot() {
+  const self = path.resolve(PLUGIN_ROOT);
+  if (!samePath(self, options.root)) return self;
+  try {
+    const record = JSON.parse(readFileSync(path.join(options.root, "mirror.json"), "utf8"));
+    const recorded = record?.pluginRoot;
+    if (typeof recorded === "string" && recorded.trim() !== "") {
+      const candidate = path.resolve(recorded);
+      if (existsSync(path.join(candidate, "manifest", "bundle.manifest.json"))) return candidate;
+    }
+  } catch {
+    /* no record, or not readable: the mirrored copy is the only source left */
+  }
+  return self;
+}
+
 function loadManifest() {
-  const file = path.join(PLUGIN_ROOT, "manifest", "bundle.manifest.json");
+  const file = path.join(sourceRoot(), "manifest", "bundle.manifest.json");
   const parsed = JSON.parse(readFileSync(file, "utf8"));
   return parsed;
 }
@@ -1063,7 +1129,7 @@ mkdirSync(options.root, { recursive: true });
 mkdirSync(options.cache, { recursive: true });
 
 log(`rea bundle setup`);
-log(`  plugin   ${PLUGIN_ROOT}`);
+log(`  plugin   ${sourceRoot()}`);
 log(`  root     ${options.root}`);
 log(`  cache    ${options.cache}`);
 log(`  host     ${hostKey()}  node ${process.versions.node}`);
@@ -1128,7 +1194,7 @@ if (!options.dryRun) {
     schema: 1,
     provisionedAt: new Date().toISOString(),
     host: { platform: process.platform, arch: process.arch, node: process.versions.node },
-    plugin: { name: "dsh-plugin-rea", root: PLUGIN_ROOT },
+    plugin: { name: "dsh-plugin-rea", root: sourceRoot() },
     paths,
     versions: {
       reaAgents: results.reaAgents?.version ?? null,
@@ -1219,24 +1285,66 @@ if (!options.dryRun) {
  * Runs before the probe so the probe tests what the row actually launches.
  */
 function mirrorLauncher(context) {
+  const source = sourceRoot();
   const sources = [
     ["bin/rea-shim.mjs", path.join("bin", "rea-shim.mjs")],
     ["scripts/setup.mjs", path.join("scripts", "setup.mjs")],
+    // The manifest travels with the mirrored setup: that copy resolves its own
+    // plugin root to the bundle root, so loadManifest() would otherwise read
+    // <bundle>/manifest/bundle.manifest.json — a file only this step can create.
+    // Without it, every later run of the mirror dies in loadManifest() with a
+    // bare ENOENT (invisible when the shim started it detached), and the shim's
+    // own remediation text sends the operator straight into that failure.
+    ["manifest/bundle.manifest.json", path.join("manifest", "bundle.manifest.json")],
   ];
   const copied = [];
   for (const [from, to] of sources) {
-    const source = path.join(PLUGIN_ROOT, ...from.split("/"));
-    if (!existsSync(source)) {
-      step("mirror", "FAIL", `cannot mirror ${from}: not found in the plugin`);
+    const origin = path.join(source, ...from.split("/"));
+    if (!existsSync(origin)) {
+      step("mirror", "FAIL", `cannot mirror ${from}: not found in ${source}`);
       return false;
     }
     const target = path.join(context.root, ...to.split("/"));
-    mkdirSync(path.dirname(target), { recursive: true });
-    copyFileSync(source, target);
+    if (samePath(origin, target)) {
+      // Running from the mirror, with no usable record of the original checkout:
+      // the file is already the one the row launches. Copying it onto itself
+      // would report success while doing nothing.
+      copied.push(`${to.replaceAll("\\", "/")} (in place)`);
+      continue;
+    }
+    try {
+      mkdirSync(path.dirname(target), { recursive: true });
+      copyFileSync(origin, target);
+    } catch (error) {
+      // A read-only or occupied bundle root must produce a readable step failure
+      // rather than a raw stack — when the shim starts this detached, stderr is
+      // discarded and the log is the only channel the operator has.
+      step("mirror", "FAIL", `cannot write ${target}: ${String(error && error.message)}`);
+      return false;
+    }
     copied.push(to.replaceAll("\\", "/"));
   }
+  writeMirrorRecord(context, source);
   step("mirror", "ok", `${path.join(context.root, "bin", "rea-shim.mjs")} (${copied.join(", ")})`);
   return true;
+}
+
+/**
+ * Remember which checkout these files came from, so a later mirrored run — or a
+ * plugin upgrade, which replaces the checkout but not the bundle — can go back
+ * to the real source instead of copying the bundle onto itself and provisioning
+ * the previous manifest forever. Advisory only; see sourceRoot().
+ */
+function writeMirrorRecord(context, source) {
+  const record = { schema: 1, pluginRoot: source, mirroredAt: new Date().toISOString() };
+  try {
+    mkdirSync(context.root, { recursive: true });
+    writeFileSync(path.join(context.root, "mirror.json"), JSON.stringify(record, null, 2) + "\n");
+  } catch (error) {
+    // An unwritable root must not fail provisioning; the only cost is that a
+    // mirrored run cannot find the original checkout again.
+    log(`       mirror.json not written: ${String(error && error.message)}`);
+  }
 }
 
 /* -------------------------------------------------------------------- summary */

@@ -258,7 +258,121 @@ if (manifest) {
     add("error", "cordis.patch.yml", "the patch does not reference rea-shim.mjs");
   }
   if (!/DSH_HOME/.test(patchText) || !/USERPROFILE|HOME/.test(patchText)) {
-    add("warn", "cordis.patch.yml", "no fallback for an unset DSH_HOME was found");
+    add("error", "cordis.patch.yml", "no fallback for an unset DSH_HOME was found");
+  }
+
+  /* --------------------------- 9. the row, the shim and setup agree on DSH_HOME */
+
+  // This check exists because of a real bug: the row fell back to the bare home
+  // directory while the shim, setup.mjs and bootstrap.ps1 all fall back to
+  // `<home>/.dsh`. setup therefore mirrored the launcher one level below where
+  // the row looked for it, and the row could never start — but only on a machine
+  // where DSH_HOME happened to be unset, so it stayed invisible. Evaluating the
+  // published expression is the only way to catch it.
+  // A bare `!!js` scalar containing "? " and ": " is not one scalar at all: YAML
+  // reads `? a : b` as an explicit key/value pair, so the loader receives a
+  // mapping instead of an expression node. Reproduced against the harness's own
+  // schema (JSON_SCHEMA + the !!js Type from app.asar): args[0] became
+  // {"[object Object]": "..."} and the row could not start. Quoting the scalar
+  // removes the ambiguity, so this check requires quotes around any expression
+  // that would otherwise be read as a mapping.
+  for (const match of patchText.matchAll(/^[ \t]*-[ \t]*!!js[ \t]+(\S.*)$/gm)) {
+    const scalar = match[1].trim();
+    if (scalar.startsWith('"') || scalar.startsWith("'")) continue;
+    if (/\?\s/.test(scalar) && /:\s/.test(scalar)) {
+      add(
+        "error",
+        "cordis.patch.yml",
+        `a bare !!js scalar contains "? " and ": " (${scalar.slice(0, 48)}...), which YAML reads as a mapping: quote the scalar so the loader receives an expression`,
+      );
+    }
+  }
+
+  // Pull the shim-path expression out of the row — quoted (required for a ternary)
+  // or bare. The trailing YAML quote follows the expression's own closing quote,
+  // so the match takes the rest of the line and strips the outer quoting.
+  const rowMatch = patchText.match(/^[ \t]*-[ \t]*!!js[ \t]+(.+rea-shim\.mjs.*)$/m);
+  let jsExpression = rowMatch ? rowMatch[1].trim() : null;
+  if (jsExpression) {
+    const first = jsExpression[0];
+    const last = jsExpression[jsExpression.length - 1];
+    if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
+      jsExpression = jsExpression.slice(1, -1);
+    }
+  }
+  const shimSuffix = "/.dsh/plugins/rea-bundle/bin/rea-shim.mjs";
+  if (!jsExpression) {
+    add("error", "cordis.patch.yml", "the !!js expression that computes the shim path was not found");
+  } else {
+    const evaluate = (env) => {
+      // eslint-disable-next-line no-new-func
+      return new Function("process", `return ${jsExpression}`)({ env });
+    };
+    for (const [label, env] of [
+      ["DSH_HOME unset", { USERPROFILE: "C:\\Users\\probe", HOME: "/home/probe" }],
+      ["DSH_HOME empty", { DSH_HOME: "   ", USERPROFILE: "C:\\Users\\probe", HOME: "/home/probe" }],
+      ["DSH_HOME unset, POSIX only", { HOME: "/home/probe" }],
+    ]) {
+      let value;
+      try {
+        value = evaluate(env);
+      } catch (error) {
+        add("error", "cordis.patch.yml", `the !!js expression throws with ${label}: ${error && error.message}`);
+        continue;
+      }
+      if (typeof value !== "string" || !value.endsWith(shimSuffix)) {
+        add(
+          "error",
+          "cordis.patch.yml",
+          `with ${label} the row resolves to ${JSON.stringify(value)}; it must end in ${shimSuffix} — the shim, setup.mjs and bootstrap.ps1 all fall back to <home>/.dsh, so the row would look one level too high for a file provisioning writes`,
+        );
+      }
+    }
+    let withHome;
+    try {
+      withHome = evaluate({ DSH_HOME: "/custom/home" });
+    } catch (error) {
+      withHome = `threw: ${error && error.message}`;
+    }
+    if (withHome !== "/custom/home/plugins/rea-bundle/bin/rea-shim.mjs") {
+      add("error", "cordis.patch.yml", `with DSH_HOME set the row resolves to ${JSON.stringify(withHome)}, expected /custom/home/plugins/rea-bundle/bin/rea-shim.mjs`);
+    }
+
+    // Both READMEs print this row so a reader can copy it, and a documented row
+    // that has drifted from the shipped one is what people actually install.
+    for (const doc of ["README.md", "README.zh-CN.md"]) {
+      const text = readFileSync(path.join(HERE, "..", doc), "utf8");
+      if (!text.includes(jsExpression)) {
+        add("error", doc, "the documented !!js expression differs from cordis.patch.yml, so copied instructions would install the wrong row");
+      }
+    }
+  }
+
+  /* ------------------------------------------- 10. the mirror list is complete */
+
+  // Another real bug: mirrorLauncher() copied the shim and setup.mjs but not the
+  // manifest. The mirrored setup.mjs derives its plugin root from its own
+  // location, so loadManifest() then read <bundle>/manifest/bundle.manifest.json
+  // — a file nothing created — and every later run died with a bare ENOENT that
+  // the detached auto-provision swallowed.
+  const setupText = readFileSync(path.join(HERE, "..", "scripts", "setup.mjs"), "utf8");
+  const mirrorBody = setupText.match(/function mirrorLauncher\(context\) \{([\s\S]*?)\n\}/)?.[1] ?? "";
+  if (!mirrorBody) {
+    add("error", "scripts/setup.mjs", "mirrorLauncher() was not found, so the mirror list can no longer be verified");
+  } else {
+    // Only the array literal counts. Scanning the whole function body would also
+    // match the explanatory comment above it, which is exactly how this check
+    // first let a sabotaged mirror list pass.
+    const sourcesBody = mirrorBody.match(/const sources = \[([\s\S]*?)\];/)?.[1];
+    if (sourcesBody === undefined) {
+      add("error", "scripts/setup.mjs", "the mirror list (const sources = [...]) was not found");
+    } else {
+      for (const needed of ["bin/rea-shim.mjs", "scripts/setup.mjs", "manifest/bundle.manifest.json"]) {
+        if (!sourcesBody.includes(`"${needed}"`)) {
+          add("error", "scripts/setup.mjs", `mirrorLauncher() does not mirror ${needed}, which the mirrored copy reads at run time`);
+        }
+      }
+    }
   }
 
   /* ------------------------------------------------------------- summary */

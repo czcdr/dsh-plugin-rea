@@ -16,7 +16,6 @@
  */
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -25,18 +24,57 @@ const EX_CONFIG = 78;
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = path.resolve(HERE, "..");
 
-/** DSH home: env first, then the conventional location. */
-function dshHome() {
-  const fromEnv = process.env.DSH_HOME;
-  if (fromEnv && fromEnv.trim() !== "") return path.resolve(fromEnv);
-  return path.join(homedir(), ".dsh");
-}
-
-/** Where setup writes the machine-local truth. Overridable for testing. */
+/**
+ * Where setup writes the machine-local truth.
+ *
+ * The authoritative answer is this file's own location: the row launches
+ * `<bundle>/bin/rea-shim.mjs`, so the bundle root is the directory above `bin/`.
+ *
+ * DSH_HOME must NOT be consulted here. The harness strips every `DSH_*` name from
+ * an MCP child's environment (case-insensitively, because Windows is), so this
+ * process never sees a custom DSH_HOME: falling back to `~/.dsh` would look for
+ * bundle.json in the wrong home, report "not provisioned" for a bundle sitting
+ * right next to it, and then start a second ~800 MB provisioning run there.
+ *
+ * REA_BUNDLE_ROOT stays as an explicit override for tests and unusual layouts.
+ */
 function bundleRoot() {
   const override = process.env.REA_BUNDLE_ROOT;
   if (override && override.trim() !== "") return path.resolve(override);
-  return path.join(dshHome(), "plugins", "rea-bundle");
+  return PLUGIN_ROOT;
+}
+
+/**
+ * A directory can provision only when it holds both files a run reads: the script
+ * and the manifest it loads at startup. A bundle provisioned before the manifest
+ * was mirrored has the script but not the manifest, so recommending that copy
+ * would send the operator straight into an ENOENT.
+ */
+function usableSetup(dir) {
+  if (typeof dir !== "string" || dir.trim() === "") return null;
+  const base = path.resolve(dir);
+  const script = path.join(base, "scripts", "setup.mjs");
+  const manifest = path.join(base, "manifest", "bundle.manifest.json");
+  return existsSync(script) && existsSync(manifest) ? script : null;
+}
+
+/**
+ * Which setup.mjs to run.
+ *
+ * The mirrored copy is a snapshot: after a plugin upgrade it still holds the
+ * previous manifest, so it would provision the previous versions forever. setup
+ * writes <bundle>/mirror.json naming the real checkout; prefer that while it is
+ * usable, and fall back to the local copy — which is also all a first run has.
+ */
+function provisioningScript(root) {
+  try {
+    const record = JSON.parse(readFileSync(path.join(root, "mirror.json"), "utf8"));
+    const recorded = usableSetup(record && record.pluginRoot);
+    if (recorded) return recorded;
+  } catch {
+    /* no record, or not readable: the local copy is the only option */
+  }
+  return usableSetup(PLUGIN_ROOT);
 }
 
 /**
@@ -50,8 +88,8 @@ function bundleRoot() {
  */
 function maybeAutoProvision(root) {
   if (process.env.REA_BUNDLE_AUTO_PROVISION === "0") return null;
-  const setupScript = path.join(PLUGIN_ROOT, "scripts", "setup.mjs");
-  if (!existsSync(setupScript)) return null;
+  const setupScript = provisioningScript(root);
+  if (!setupScript) return null;
   const lock = path.join(root, "setup.lock");
   const logPath = path.join(root, "logs", "setup.log");
   if (existsSync(lock)) {
@@ -96,10 +134,22 @@ function fail(message, detail) {
     "  " + message,
   ];
   if (detail) lines.push("", "  detail: " + detail);
+  // Point at the real checkout when the record allows it: running the mirrored
+  // copy is fine, but it can only ever provision the manifest it was mirrored
+  // with — and a bundle mirrored before the manifest travelled with it has no
+  // usable copy at all, so the honest answer is then "run the plugin's own script".
+  const setupScript = provisioningScript(bundleRoot());
   lines.push(
     "",
     "  Finish setup with:",
-    "    node \"" + path.join(PLUGIN_ROOT, "scripts", "setup.mjs") + "\"",
+    setupScript
+      ? "    node \"" + setupScript + "\""
+      : "    node \"<installed plugin directory>/scripts/setup.mjs\"",
+  );
+  if (!setupScript) {
+    lines.push("", "  (Run it from the installed plugin directory: the copy in this bundle has no manifest.)");
+  }
+  lines.push(
     "",
     "  Then restart DSH (or reload the profile) so the MCP row reconnects.",
     "",

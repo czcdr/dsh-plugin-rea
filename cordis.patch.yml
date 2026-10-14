@@ -16,8 +16,12 @@
 #     expression serves every platform.
 #   * `path`/`require` are not in scope for a `!!js` expression (`ctx` is the
 #     loader scope), hence plain string concatenation.
-#   * No DSH_HOME (undefined/absent) falls back to the portable default rather
-#     than producing the literal "undefined/plugins/...".
+#   * No DSH_HOME (undefined/absent/empty) falls back to the SAME rule the shim
+#     and setup.mjs use — `<home>/.dsh` — never to the bare home directory.
+#     Getting this wrong is silent: setup would mirror the shim into
+#     `<home>/.dsh/plugins/rea-bundle/bin/` while the row looked for it one level
+#     up, so the row could never start on a machine that merely happened to have
+#     DSH_HOME unset.
 #
 # One row may use serverName: rea in a profile. To pin a different launch
 # command on this machine, override `mcp-rea` from the profile's own
@@ -31,7 +35,13 @@
         transport: stdio
         command: !!js process.execPath
         args:
-          - !!js (process.env.DSH_HOME && process.env.DSH_HOME.trim() !== "" ? process.env.DSH_HOME : process.env.USERPROFILE || process.env.HOME || "") + '/plugins/rea-bundle/bin/rea-shim.mjs'
+          # DOUBLE-QUOTED on purpose. A bare scalar containing "? " and ": " is not
+          # one scalar at all: YAML reads `? a : b` as an explicit key/value pair,
+          # so js-yaml hands the loader a mapping instead of an expression node and
+          # args[0] becomes an object the launcher cannot use. Quoting makes the
+          # scalar unambiguous; the JS string literals inside use single quotes so
+          # they cannot collide with the YAML ones.
+          - !!js "(process.env.DSH_HOME && process.env.DSH_HOME.trim() !== '' ? process.env.DSH_HOME : (process.env.USERPROFILE || process.env.HOME || '') + '/.dsh') + '/plugins/rea-bundle/bin/rea-shim.mjs'"
           - mcp
         env:
           # Only meaningful when the harness itself runs on Electron; harmless

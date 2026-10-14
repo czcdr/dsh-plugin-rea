@@ -2,6 +2,51 @@
 
 本插件遵循语义化版本。版本号变化说明「配置组合」这层的变化，与 REA 自身的版本无关。
 
+## 2.0.0-bundle.2 — 2026-10-14
+
+一体包分支的**正确性修复**。这一轮把「装一个插件、它自己供给」这条链路从"永远启不动"修到实测可用，
+并把每一个修掉的坑都变成审计或 CI 能自动抓住的检查。
+
+### 🔴 三个致命缺陷（按旧版说明走的用户每一步都会撞上）
+
+- **MCP 行里的 `!!js` 标量没有加引号。** 裸标量同时含 `? ` 与 `: ` 时，YAML 把它读成**显式键值对**，
+  loader 拿到的是 mapping 而不是表达式节点。用 harness 自己的方言实测（`JSON_SCHEMA` + `app.asar` 里的
+  `!!js` 类型定义），`args[0]` 变成 `{"[object Object]": "..."}` —— 这一行**从来没有可能启动**。
+  现改为双引号标量，内部 JS 字符串用单引号。
+- **`DSH_HOME` 的兜底少了一层 `.dsh`。** 行回退到裸 home，而 shim、`setup.mjs`、`bootstrap.ps1` 都回退到
+  `<home>/.dsh`。全归档扫描确认 **DSH 从不设置 `DSH_HOME`**（宿主进程内 0 处写入，只在 shell 工具子进程的
+  执行覆盖层注入），所以这是**默认路径**而不是边缘情况：行永远指向供给不会写的位置。
+- **镜像副本缺 manifest。** 镜像后的 `setup.mjs` 用它自己所在的位置推导 plugin root，于是 `loadManifest()`
+  去读 `<bundle>/manifest/bundle.manifest.json` —— 一个只有镜像步骤才能创建的文件。由 shim 触发的后台供给
+  会以裸 ENOENT 崩溃；`stdio: "ignore"` 让它完全不可见，而它已写下的 lock 又让重试被抑制六小时。
+
+### 🟡 一并修掉的
+
+- **shim 改用自身位置定位 bundle。** MCP 子进程的环境会剥掉所有 `DSH_*`（大小写不敏感），所以自定义
+  `DSH_HOME` 时旧 shim 会去 `~/.dsh` 找 `bundle.json`、报"未供给"，然后**在错位置再供给一次 800 MB**。
+  `bundleRoot()` 现在返回 `<shim 所在目录>/..`，与 `DSH_HOME` 是否可见无关。
+- **新增镜像记录 `mirror.json`。** 真源运行会写下插件 checkout 的位置；镜像副本据此回到真源，插件升级后
+  不会永远用旧 manifest 供给。记录失效（目录被移动/删除）时优雅回退到本地副本。
+- **空值环境变量。** `REA_BUNDLE_ROOT=""` / `DSH_HOME=""` 原先会把 root 算成 `""` 或相对路径 —— 前者
+  `mkdir ''` 崩在任何日志之前，后者把 bundle 装进 cwd。现在统一 trim 后回退；`--root`/`--cache` 一律
+  `path.resolve`（相对 root 会让 `bundle.json` 记下相对路径，shim 随即误判组件"已消失"并重新供给）。
+- **`fail()` 的修复命令**不再指向"存在但必然崩溃"的镜像副本；没有可信副本时给出明确指引。
+- **`check-updates.ps1`** 增加「镜像 manifest 是否就位」检查，指向上面那条升级路径。
+
+### 回归防护
+
+- `audit-manifest.mjs` 新增四项，全部做过反向验证（**故意写坏 4/4 都被抓住**）：`!!js` 裸标量 mapping
+  检测、`DSH_HOME` 三态（未设/空/已设）求值一致性、README 与 patch 表达式不得漂移、镜像清单必须含 manifest。
+- `validate.yml`：YAML 步骤注册 `!!js` 标量构造器（原先 `safe_load` 直接拒绝这个仓库要发布的行 ——
+  **CI 一直是红的**）；行契约步骤断言 `args[0]` 是标量、不是 mapping；新增 `bundle:test` 与 `bundle:audit` 两步。
+- 单元测试里的 POSIX 退化断言加平台守卫（`EXE` 为空时 `endsWith("java")` 恒真，在 Linux 上必红；
+  WSL 实测修前 12/13、修后 13/13）。
+
+### 升级说明
+
+已部署过 `2.0.0-bundle.1` 的机器**无法自愈**（旧镜像既缺 manifest 也没有真源记录）：请从**插件目录**
+重跑一次 `node scripts/setup.mjs`。
+
 ## 1.0.6 — 2026-10-13
 
 文档结构调整，无行为变更。

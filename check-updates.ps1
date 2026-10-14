@@ -260,6 +260,12 @@ if (-not (Test-Path $manifestPath)) {
       $mirrored = Join-Path $bundleRoot 'bin\rea-shim.mjs'
       if (Test-Path $mirrored) { Ok 'MCP 行指向的 shim 已就位' }
       else { Bad "缺少 MCP 行指向的 shim: $mirrored —— 重跑 setup --reuse" }
+      # 镜像副本的 setup 用它自己所在的位置推 plugin root，所以 manifest 必须
+      # 一起镜像。旧版镜像缺这个文件：auto-provision 会以 ENOENT 崩掉且不可见，
+      # 而且它已写下的 lock 会让重试被抑制 6 小时。
+      $mirroredManifest = Join-Path $bundleRoot 'manifest\bundle.manifest.json'
+      if (Test-Path $mirroredManifest) { Ok '镜像副本的 manifest 已就位' }
+      else { Bad "镜像副本缺少 manifest: $mirroredManifest —— 请从插件目录重跑一次 node scripts/setup.mjs（旧镜像无法自愈）" }
     } else {
       Warn "尚未供给：$bundleJson 不存在 —— 运行 node scripts/setup.mjs（或直接装插件，行会自行触发）"
     }

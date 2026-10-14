@@ -103,17 +103,21 @@ The shipped row carries **no machine path**:
         transport: stdio
         command: !!js process.execPath
         args:
-          - !!js (process.env.DSH_HOME && process.env.DSH_HOME.trim() !== "" ? process.env.DSH_HOME : process.env.USERPROFILE || process.env.HOME || "") + '/plugins/rea-bundle/bin/rea-shim.mjs'
+          - !!js "(process.env.DSH_HOME && process.env.DSH_HOME.trim() !== '' ? process.env.DSH_HOME : (process.env.USERPROFILE || process.env.HOME || '') + '/.dsh') + '/plugins/rea-bundle/bin/rea-shim.mjs'"
           - mcp
         env:
           ELECTRON_RUN_AS_NODE: '1'
         failOnStartupError: false
 ```
 
-Two details in that row are load-bearing, and both were bugs first:
+Three details in that row are load-bearing, and all three were bugs first:
 
+- **The `!!js` scalar is quoted.** A bare scalar containing `? ` and `: ` is not one scalar: YAML reads it as an explicit key/value pair, so the loader receives a *mapping* where an expression belongs. Measured against the harness's own dialect (`JSON_SCHEMA` plus the `!!js` type from `app.asar`), the unquoted form made `args[0]` into `{"[object Object]": "..."}` — an object the row cannot launch with. Quoting removes the ambiguity, and the JS string literals inside then use single quotes.
 - **Forward slashes, never backslashes.** A single-quoted YAML scalar keeps `\` literal, and JavaScript then consumes it: `'\plugins'` is not a path but the BEL control character, `'\rea-bundle'` becomes a carriage return and `'\bin'` a backspace — the path is destroyed silently. Forward slashes work on Windows and on POSIX.
+- **The `DSH_HOME` fallback is `<home>/.dsh`, not `<home>`.** The shim, `setup.mjs` and `bootstrap.ps1` all resolve an unset `DSH_HOME` to `<home>/.dsh/...`; a fallback that stopped one level higher made the row point at a file provisioning never writes — invisible on any machine where `DSH_HOME` happens to be set.
 - **No `path`/`require` in a `!!js` expression**: `ctx` is the loader scope, so the DSH_HOME fallback is written as plain concatenation.
+
+`npm run bundle:audit` enforces the first three: it evaluates this exact expression with `DSH_HOME` unset, empty and set, and rejects a bare scalar that YAML would read as a mapping.
 
 `ELECTRON_RUN_AS_NODE` only matters if the harness itself runs on Electron; it is harmless for a plain Node host, and stating it explicitly beats relying on it surviving the child-env scrub.
 
@@ -178,6 +182,11 @@ Exercised live: a clean `setup.mjs --reuse` run reached `setup complete`; an MCP
 
 - **This plugin** never updates itself. Installed from a market? Update it there. Installed from a `file:`
   checkout? Overwrite the directory and reinstall.
+- **Upgrading from `2.0.0-bundle.1`**: that release mirrored the shim and `setup.mjs` but not the manifest,
+  and recorded nothing about the plugin checkout, so a bundle it provisioned cannot repair itself — its
+  background provisioning dies on the missing manifest, invisibly, and its own lock suppresses retries for
+  six hours. Re-run `node scripts/setup.mjs` **from the plugin directory** once; it re-mirrors all three
+  files and writes the record that lets later runs find the checkout. `check-updates.ps1` reports this state.
 - **Provisioned components**: re-run `node scripts/setup.mjs`; it re-verifies what is on disk and only
   fetches what is missing or wrong. Pins live in `manifest/bundle.manifest.json`.
 - **Upstream REA / Ghidra**: update the pins in the manifest, then re-run setup. REA version-gates Ghidra

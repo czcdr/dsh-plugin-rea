@@ -67,7 +67,16 @@ jobs:
         run: |
           python3 -m pip install --quiet --disable-pip-version-check pyyaml
           python3 - <<'PY'
-          import glob, sys, yaml
+          import glob, yaml
+          # Every shipped row carries a `!!js` tag whose scalar the DSH loader
+          # evaluates at runtime. safe_load knows nothing about it and rejects the
+          # file this repository exists to ship, so register a scalar passthrough:
+          # indentation, quoting and structure are still validated, which is what
+          # this step is for.
+          yaml.SafeLoader.add_constructor(
+              'tag:yaml.org,2002:js',
+              lambda loader, node: loader.construct_scalar(node),
+          )
           files = ['cordis.patch.yml', 'docs/marketplace-entry.yml'] + sorted(glob.glob('examples/*.yml')) + sorted(glob.glob('.github/workflows/*.yml'))
           for f in files:
               with open(f, encoding='utf-8') as fh:
@@ -96,6 +105,12 @@ jobs:
         run: |
           python3 - <<'PY'
           import sys, yaml
+          # The row carries `!!js` scalars, which the harness evaluates at load
+          # time. Register a passthrough so this step can inspect the structure.
+          yaml.SafeLoader.add_constructor(
+              'tag:yaml.org,2002:js',
+              lambda loader, node: loader.construct_scalar(node),
+          )
           doc = yaml.safe_load(open('cordis.patch.yml', encoding='utf-8'))
           row = doc[0]['insert'][0]
           assert row['id'] == 'mcp-rea', row
@@ -104,5 +119,47 @@ jobs:
           assert cfg['serverName'] == 'rea', cfg
           assert cfg['transport'] == 'stdio', cfg
           assert 'command' in cfg and 'args' in cfg, cfg
+          # A bare `? a : b` scalar is read as an explicit key/value pair, so the
+          # loader receives a mapping and the row cannot launch. Keep args[0] a
+          # scalar: this is the exact shape that shipped broken once.
+          for i, arg in enumerate(cfg['args']):
+              assert isinstance(arg, str), f'args[{i}] is not a scalar: {arg!r} — quote the !!js scalar'
           print('row ok:', cfg['command'], cfg['args'])
           PY
+
+      - name: The harness's own dialect still parses the row
+        run: |
+          # The steps above use pyyaml; this one loads the row through the same
+          # library the harness uses (js-yaml) with its own !!js type, so a shape
+          # that only pyyaml tolerates cannot ship.
+          npm install --no-save --silent --no-audit --no-fund js-yaml@4
+          node - <<'JS'
+          const { readFileSync } = require('node:fs');
+          const yaml = require('js-yaml');
+          const JsExpr = new yaml.Type('tag:yaml.org,2002:js', {
+            kind: 'scalar',
+            resolve: (data) => typeof data === 'string',
+            construct: (data) => ({ __jsExpr: data }),
+          });
+          const doc = yaml.load(readFileSync('cordis.patch.yml', 'utf8'), { schema: yaml.JSON_SCHEMA.extend([JsExpr]) });
+          const cfg = doc[0].insert[0].config;
+          const args = cfg.args;
+          if (typeof cfg.command !== 'object' || typeof cfg.command.__jsExpr !== 'string') throw new Error('command is not an expression node');
+          if (typeof args[0] !== 'object' || typeof args[0].__jsExpr !== 'string') {
+            throw new Error(`args[0] is not an expression node: ${JSON.stringify(args[0])}`);
+          }
+          const path = new Function('process', `return (${args[0].__jsExpr})`)({ env: { USERPROFILE: 'C:\\Users\\probe', HOME: '/home/probe' } });
+          if (!path.endsWith('/.dsh/plugins/rea-bundle/bin/rea-shim.mjs')) throw new Error(`unset DSH_HOME resolves to ${path}`);
+          console.log('dialect ok:', cfg.command.__jsExpr, '->', path);
+          JS
+
+      - name: Unit tests for the pure logic
+        # Probe-token substitution and root stripping broke silently during
+        # development; these tests pin them. They are platform-sensitive by
+        # design, which is exactly why they must run on Linux too.
+        run: npm run bundle:test
+
+      - name: Bundle manifest audit
+        # Checksum coverage, unresolved tokens, duplicate JSON keys, and the
+        # patch-wiring agreement between the row, the shim and setup.mjs.
+        run: npm run bundle:audit

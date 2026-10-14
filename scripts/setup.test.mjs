@@ -100,7 +100,10 @@ test("{exe} is expanded for tokens that need it and not for those that carry it"
   // leaving "adb{exe}" behind fails the probe with ENOENT on Linux and macOS.
   assert.equal(adb.includes("{exe}"), false, "{exe} must be consumed even when it expands to nothing");
   assert.equal(substituteProbe("{jvm}", context).endsWith(`java${EXE}`), true);
-  assert.equal(substituteProbe("{jvm}", context).endsWith(`java${EXE}${EXE}`), false);
+  // Only meaningful where {exe} expands to something: on POSIX EXE is "", so
+  // `java${EXE}${EXE}` degenerates to "java" and endsWith is true by
+  // construction — an assertion that can only ever fail on Windows.
+  if (EXE) assert.equal(substituteProbe("{jvm}", context).endsWith(`java${EXE}${EXE}`), false);
 });
 
 test("an unresolved token stays literal instead of throwing", () => {
