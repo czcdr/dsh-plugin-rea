@@ -62,6 +62,7 @@ lives in one small JSON file under the DSH home.
 ```
 <dsh home>/plugins/rea-bundle/
   bundle.json          # machine-local truth: resolved paths + versions + hashes
+  mirror.json          # which plugin checkout the mirrored files came from
   cache/               # downloaded archives (resumable, checksum-verified)
   vendor/              # unpacked payloads (node, jdk, ghidra, apktool, jadx, adb)
   logs/setup.log
@@ -79,12 +80,17 @@ through `failOnStartupError: false` without breaking the harness.
 
 ```
 dsh starts
-  └─ MCP row: node <plugin>/bin/rea-shim.mjs
+  └─ MCP row: node <bundle root>/bin/rea-shim.mjs   (setup mirrors it there)
        ├─ bundle.json present & components verify  → exec REA (normal path)
        ├─ missing, auto-provision allowed         → start setup detached, print
        │                                            remediation, exit non-zero
        └─ missing, auto-provision refused         → print exact command, exit
 ```
+
+The shim resolves its bundle root from **its own location**, not from `DSH_HOME`:
+the harness strips every `DSH_*` name from an MCP child's environment, so with a
+custom `DSH_HOME` the shim would look in `~/.dsh`, find nothing, and start a second
+provisioning run there.
 
 `setup` stages, each idempotent and individually verifiable:
 
@@ -106,7 +112,21 @@ Two notes on stages that exist because their absence was a bug:
   bundle root. Without this, provisioning could succeed and the row would still
   fail — and the "install the plugin first, it provisions itself" path could
   never start, because the shim that does the provisioning would not exist at
-  the path being launched.
+  the path being launched. The copy list is exactly what a mirrored run reads
+  back, **including `manifest/bundle.manifest.json`**: a mirrored `setup.mjs`
+  resolves its plugin root to the bundle root, so `loadManifest()` reads
+  `<bundle>/manifest/bundle.manifest.json` — a file only this stage can create.
+  It also writes `<bundle>/mirror.json`, naming the checkout the files came
+  from: the bundle outlives any particular checkout location, and without that
+  record a later mirrored run can only copy the bundle onto itself (provisioning
+  the manifest it was mirrored with, forever) and its remediation text would
+  point the operator at a copy that cannot start.
+- **The row's `!!js` scalar is quoted.** A bare scalar containing `? ` and `: `
+  is not one scalar: YAML reads it as an explicit key/value pair, so the loader
+  receives a mapping where an expression belongs — measured against the
+  harness's own dialect, `args[0]` became `{"[object Object]": "..."}` and the
+  row could not launch at all. Any future expression with a ternary needs the
+  quotes; `audit-manifest.mjs` rejects the bare form.
 - **3 (fetch).** Route order is deliberate and environment-dependent: direct
   first, then the system proxy, and on Windows the .NET route ahead of both
   because it follows the GitHub release-asset redirect that the Node routes
