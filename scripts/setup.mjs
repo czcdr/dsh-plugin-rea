@@ -740,16 +740,56 @@ function candidateSource(component) {
   return sources[key] ?? sources.all ?? null;
 }
 
+/**
+ * A reused Node must satisfy REA's engines, not merely exist.
+ *
+ * `manifest.components.node.probe` is the contract and its `why` says the reuse
+ * path must reject an incompatible runtime *here*: adopting Node 20 recorded it
+ * in bundle.json and the failure surfaced much later as an unexplained REA start
+ * failure. A candidate that cannot be run at all is rejected for the same reason
+ * — on Windows a `.cmd`/`.bat` wrapper fails execFile with EINVAL, so it could
+ * never have launched REA either.
+ */
+function reusableNodeChecked(candidate) {
+  const probe = manifest.components?.node?.probe ?? {};
+  const argv = (probe.argv ?? []).map((token) => (token === "{node}" ? candidate : token));
+  if (argv.length === 0) return { ok: true };
+  const run = spawnSync(argv[0], argv.slice(1), { encoding: "utf8", timeout: 30000, windowsHide: true });
+  if (run.error || run.status !== 0) {
+    return { ok: false, detail: `it could not be run (${run.error?.code ?? `exit ${run.status}`})` };
+  }
+  const stdout = String(run.stdout ?? "");
+  const firstLine = stdout.trim().split(/\r?\n/)[0] ?? "";
+  const regex = probe.expect?.regex;
+  if (typeof regex === "string" && regex !== "" && !new RegExp(regex, "u").test(stdout)) {
+    return { ok: false, detail: `it reports "${firstLine}", which REA's engines reject` };
+  }
+  return { ok: true };
+}
+
 /** Adopt an existing installation instead of downloading a duplicate. */
 function reuseExisting(name, root) {
   if (!options.reuse) return null;
   const fileExists = (file) => file && existsSync(file);
   if (name === "node") {
-    const candidate = process.env.REA_BUNDLE_NODE ?? null;
-    if (fileExists(candidate)) return { path: candidate, how: "REA_BUNDLE_NODE" };
+    const candidates = [];
+    const override = process.env.REA_BUNDLE_NODE ?? null;
+    if (fileExists(override)) candidates.push({ path: override, how: "REA_BUNDLE_NODE" });
+    // Every PATH hit is considered, not just the first: a machine with an
+    // incompatible Node earlier on PATH still has a usable one later on.
     const found = spawnSync(IS_WINDOWS ? "where" : "which", ["node"], { encoding: "utf8" });
-    const first = (found.stdout ?? "").split(/\r?\n/).map((s) => s.trim()).filter(Boolean)[0];
-    if (fileExists(first)) return { path: first, how: "PATH" };
+    for (const line of String(found.stdout ?? "").split(/\r?\n/).map((s) => s.trim()).filter(Boolean)) {
+      candidates.push({ path: line, how: "PATH" });
+    }
+    const seen = new Set();
+    for (const candidate of candidates) {
+      const key = path.resolve(candidate.path);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const checked = reusableNodeChecked(candidate.path);
+      if (checked.ok) return candidate;
+      step("node", "plan", `not reusing ${candidate.how} node ${candidate.path}: ${checked.detail}`);
+    }
     return null;
   }
   if (name === "jdk") {
@@ -1354,13 +1394,46 @@ function writeMirrorRecord(context, source) {
 
 /* -------------------------------------------------------------------- summary */
 
-const failed = state.steps.filter((entry) => entry.status === "FAIL");
+/**
+ * The manifest may declare a component optional (adb today: without a device
+ * those tools simply report no devices). Ignoring that field made an unreachable
+ * dl.google.com fail the whole run — on a machine where everything REA actually
+ * needs had provisioned fine. An optional failure is reported, never hidden, and
+ * it never fails the run; the component is simply left unrecorded, so the next
+ * run retries it.
+ *
+ * A component that another component `requires` is never treated as optional,
+ * whatever the manifest says: exiting 0 because a dependency "was optional"
+ * would strand the dependent component with no diagnostic.
+ */
+const requiredByOthers = (name) =>
+  INSTALL_ORDER.some((other) => other !== name && (manifest.components?.[other]?.requires ?? []).includes(name));
+const optionalFailure = (entry) => {
+  const component = String(entry.name).split(":")[0];
+  return manifest.components?.[component]?.optional === true && !requiredByOthers(component);
+};
+
+const failures = state.steps.filter((entry) => entry.status === "FAIL");
+const failed = failures.filter((entry) => !optionalFailure(entry));
+const optionalUnavailable = failures.filter(optionalFailure);
+
 if (options.json) {
-  process.stdout.write(JSON.stringify({ ok: failed.length === 0, steps: state.steps, log: state.log }, null, 2) + "\n");
+  process.stdout.write(
+    JSON.stringify(
+      { ok: failed.length === 0, steps: state.steps, log: state.log, optionalUnavailable: optionalUnavailable.map((entry) => entry.name) },
+      null,
+      2,
+    ) + "\n",
+  );
 } else {
   log("");
   log(failed.length === 0 ? "setup complete." : `setup finished with ${failed.length} unmet step(s).`);
   for (const entry of failed) log(`  unmet: ${entry.name} — ${entry.detail}`);
+  if (optionalUnavailable.length > 0) {
+    log("");
+    log("optional component(s) unavailable — the bundle works without them:");
+    for (const entry of optionalUnavailable) log(`  optional: ${entry.name} — ${entry.detail}`);
+  }
   log("");
   if (failed.length === 0) {
     // Release the provisioning lock the shim set, so a later first run on a new

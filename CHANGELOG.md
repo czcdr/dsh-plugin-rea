@@ -65,6 +65,23 @@
   漂移而卡住。`-DryRun` 也会去认已经解压好的便携 Node（只认、不下载），这正是下面那条回归检查能
   **零下载**判定它的原因。
 
+### 🟡 真机验证顺带修掉的（判据都来自仓库自身）
+
+- **manifest 的 `optional: true` 被忽略。** `androidPlatformTools` 明写可选（"没有设备时这些工具只是报告
+  没有设备"），而 `setup.mjs` 里 `optional` 出现 **0 次**：dl.google.com 不可达时整轮 exit 1 —— 其余组件
+  都供给好了，却因为 adb 失败。现在可选组件的失败**照实报告**（`optional component(s) unavailable`），但
+  不计入退出码、也不写进 `bundle.json`（shim 因此不会导出 `REA_ADB_PATH`）；被别的组件 `requires` 的组件
+  永不被当作可选，免得"依赖失败却退出 0"。
+- **`--reuse` 采纳 Node 只看"文件存在"。** manifest 的 `probe.why` 明写"reuse 路径必须在这里拒绝"，但旧代码
+  只做 `fileExists`：PATH 上第一个是 Node 20 的机器会把它记进 `bundle.json`，失败推迟到 REA 启动才以难读的
+  形式出现。现在每个候选（`REA_BUNDLE_NODE` 与**每一个** PATH 命中）都要先过 manifest 的版本闸门；跑不起来
+  的候选（Windows 上 `.cmd`/`.bat` 包装器即 EINVAL）同样拒绝，并把原因打出来。
+- **README：apktool 在 Windows 上实际不可用**（能力矩阵新增一行）——上游 `execFile` 不加 shell 直接起该命令，
+  而 Windows 不能这样执行 `.bat`/`.cmd`。setup 的 apktool 探针走 `java -jar`（绕过包装器）所以报 `[ok]`，
+  落差只在运行时暴露。
+- **README：Electron 宿主不能用 `dsh plugin --profile desktop …`**（CLI 硬编码拒绝 `desktop` 这个 profile 名），
+  改为指向应用内插件管理器。
+
 ### 回归防护
 
 - `audit-manifest.mjs` 新增六项，全部做过反向验证（**故意写坏 6/6 都被抓住**）：`!!js` 裸标量 mapping
@@ -85,6 +102,10 @@
   那条会红（后者自带桩保护，即使回退也只会跑到桩、不会下载）。
 - 单元测试里的 POSIX 退化断言加平台守卫（`EXE` 为空时 `endsWith("java")` 恒真，在 Linux 上必红；
   WSL 实测修前 12/13、修后 17/17）。
+- 单元测试新增四条（共 **21** 条；Windows 21/21、WSL 真 Linux 21/21）：`--reuse` 仍采纳兼容 Node、拒绝
+  manifest 版本闸门不认的候选（用**改了正则的合成 manifest** 判定，跨平台确定，不依赖机器上恰好有什么）、
+  拒绝跑不起来的候选、以及"可选组件失败不致命"。反向验证：把可选记账改回旧行为 → 那条立刻变红；把复用
+  检查改回旧行为 → 另两条立刻变红；两次都确认了源码按字节复原。
 
 ### 升级说明
 

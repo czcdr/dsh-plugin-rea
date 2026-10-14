@@ -64,6 +64,7 @@ The analysis is upstream's; this section only restates upstream's own contract s
 | native mitmproxy captures | Linux (`REA_MITMDUMP_COMMAND`); HAR needs no engine |
 | Apple toolchain (Mach-O, plist, asset catalog, LLDB) | macOS only |
 | `capture_process_scenario` | Linux/macOS PTY |
+| apktool (Android resource decoding) | available only when `REA_APKTOOL_COMMAND` points at something Node can **execute directly**: upstream `execFile`s that command without a shell, and Windows cannot execute a `.bat`/`.cmd` that way (EINVAL). This bundle wires the official `apktool.bat` as upstream documents, so on Windows the launcher reports no version and the capability stays unavailable; JADX (a jar) is unaffected |
 
 ## Install
 
@@ -79,6 +80,11 @@ releases, checksum-verified). Then install the plugin for your profile:
 ```
 dsh plugin --profile <profile> add github:czcdr/dsh-plugin-rea#feat/one-plugin-bundle
 ```
+
+> **On an Electron host (the DeepSeek Harness desktop app) the profile is owned by the application.**
+> `dsh plugin --profile desktop …` is refused by the CLI (`profile "desktop" is managed exclusively by
+> the Electron application`) — install or update through the in-app plugin manager instead. The CLI form
+> above is for a profile you created yourself with the CLI under another name.
 
 If Node is already installed, you can skip the bootstrap and run provisioning directly:
 

@@ -58,6 +58,7 @@ patch 里不含任何机器路径**。
 | 原生 mitmproxy 抓包 | 仅 Linux（`REA_MITMDUMP_COMMAND`）；HAR 不需要引擎 |
 | 苹果工具链（Mach-O、plist、资源目录、LLDB） | 仅 macOS |
 | `capture_process_scenario` | 仅 Linux/macOS 的 PTY |
+| apktool（Android 资源解码） | 仅当 `REA_APKTOOL_COMMAND` 指向 Node 能**直接执行**的文件时才可用：上游用 `execFile` 不加 shell 直接起这个命令，而 Windows 上 Node 无法直接执行 `.bat`/`.cmd`（EINVAL）。本包按上游文档接的是官方 `apktool.bat`，所以在 Windows 上它拿不到版本、该能力不可用；JADX 走 jar，不受影响 |
 
 ## 安装
 
@@ -73,6 +74,10 @@ profile 安装插件：
 ```
 dsh plugin --profile <profile> add github:czcdr/dsh-plugin-rea#feat/one-plugin-bundle
 ```
+
+> **Electron 宿主（DeepSeek Harness 桌面版）的 profile 由应用独占。** 那种机器上 `dsh plugin --profile desktop …`
+> 会被 CLI 直接拒绝（`profile "desktop" is managed exclusively by the Electron application`），请改用**应用内的
+> 插件管理器**安装/更新；上面这条 CLI 只适用于你自己用 CLI 建的非 `desktop` profile。
 
 如果机器上已经有 Node，可以跳过引导脚本直接供给：
 

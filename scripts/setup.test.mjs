@@ -12,7 +12,7 @@
  */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -292,6 +292,126 @@ test("a bare invocation reports usage instead of starting anything", () => {
     // A lock would mean a provisioning run was started, which a stray
     // `rea-bundle-status` must never do.
     assert.equal(existsSync(path.join(home, "plugins", "rea-bundle", "setup.lock")), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+/* ------------------------------------------- reusing a Node must check engines */
+
+// `manifest.components.node.probe.expect.regex` is the contract, and its `why`
+// says the reuse path must reject an incompatible runtime *there*. Adoption used
+// to be `fileExists` only, so a Node 20 on PATH was recorded in bundle.json and
+// the failure surfaced much later as an unexplained REA start failure.
+//
+// The tests below run setup.mjs for real (dry-run, node only, temp root: no
+// network, no writes outside the temp directory) and keep the fix honest in both
+// directions — a compatible node must still be adopted, so this cannot pass by
+// rejecting everything.
+const SETUP_SOURCE = path.join(path.dirname(fileURLToPath(import.meta.url)), "setup.mjs");
+const MANIFEST_SOURCE = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "manifest", "bundle.manifest.json");
+
+function runSetupNodeOnly(setupPath, root, env) {
+  return spawnSync(process.execPath, [setupPath, "--reuse", "--dry-run", "--only", "node", "--root", root], {
+    encoding: "utf8",
+    timeout: 120000,
+    env: { ...process.env, ...env },
+  });
+}
+
+test("--reuse still adopts a compatible node", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "rea-node-ok-"));
+  try {
+    const run = runSetupNodeOnly(SETUP_SOURCE, root, { REA_BUNDLE_NODE: process.execPath });
+    assert.equal(run.status, 0, run.stderr);
+    assert.match(run.stdout, /reusing existing node from REA_BUNDLE_NODE/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("--reuse rejects a candidate the manifest's node probe rejects", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "rea-node-reject-"));
+  try {
+    // A synthetic plugin tree whose manifest rejects the *running* Node, so the
+    // version branch is exercised deterministically on every platform instead of
+    // depending on which OS built-ins happen to exist.
+    const plugin = path.join(root, "plugin");
+    mkdirSync(path.join(plugin, "scripts"), { recursive: true });
+    mkdirSync(path.join(plugin, "manifest"), { recursive: true });
+    copyFileSync(SETUP_SOURCE, path.join(plugin, "scripts", "setup.mjs"));
+    const manifest = JSON.parse(readFileSync(MANIFEST_SOURCE, "utf8"));
+    manifest.components.node.probe.expect.regex = "^v99\\.";
+    writeFileSync(path.join(plugin, "manifest", "bundle.manifest.json"), JSON.stringify(manifest, null, 2));
+
+    const run = runSetupNodeOnly(path.join(plugin, "scripts", "setup.mjs"), path.join(root, "bundle"), {
+      REA_BUNDLE_NODE: process.execPath,
+    });
+    assert.equal(run.status, 0, run.stderr);
+    assert.doesNotMatch(run.stdout, /reusing existing node from REA_BUNDLE_NODE/);
+    assert.match(run.stdout, /not reusing REA_BUNDLE_NODE node/);
+    assert.match(run.stdout, /which REA's engines reject/);
+    // ...and it falls through to provisioning rather than giving up.
+    assert.match(run.stdout, /\[plan\] node —/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("--reuse rejects a candidate that cannot be run at all", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "rea-node-broken-"));
+  try {
+    // A file that exists but is not an executable: on Windows a .bat/.cmd wrapper
+    // reaches the same rejection (execFile cannot spawn one without a shell), and
+    // such a Node could never have launched REA either.
+    const broken = path.join(root, EXE ? "broken-node.exe" : "broken-node");
+    writeFileSync(broken, "this is not an executable\n");
+    if (!EXE) chmodSync(broken, 0o644);
+    const run = runSetupNodeOnly(SETUP_SOURCE, path.join(root, "bundle"), { REA_BUNDLE_NODE: broken });
+    assert.equal(run.status, 0, run.stderr);
+    // Not adopted from the override. (A compatible node later on PATH may still be
+    // adopted — that is the fallback working, not the check being bypassed.)
+    assert.doesNotMatch(run.stdout, /reusing existing node from REA_BUNDLE_NODE/);
+    assert.match(run.stdout, /not reusing REA_BUNDLE_NODE node/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+/* ------------------------------------ an optional component cannot fail the run */
+
+// `manifest.components.androidPlatformTools` declares `"optional": true` ("without
+// a device these tools simply report no devices"), but setup.mjs never read that
+// field: an unreachable dl.google.com — the only Google-hosted component — failed
+// the whole run on a machine where everything REA needs had provisioned fine.
+// --offline reproduces exactly that failure with no network: the archive is simply
+// not in the cache.
+test("an unavailable optional component is reported, not fatal", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "rea-optional-"));
+  try {
+    // A stub REA, so the probe/shim stages have something to run: this test is
+    // about the optional accounting, not about REA.
+    const stub = path.join(root, "vendor", "node_modules", "rea-agents", "scripts");
+    mkdirSync(stub, { recursive: true });
+    writeFileSync(
+      path.join(stub, "rea.mjs"),
+      'if (process.argv.includes("--version")) { console.log("6.4.0"); } else { console.log(JSON.stringify({ checks: [], tools: [] })); }\n',
+    );
+
+    const run = spawnSync(process.execPath, [SETUP_SOURCE, "--offline", "--only", "androidPlatformTools", "--root", root], {
+      encoding: "utf8",
+      timeout: 120000,
+    });
+    assert.equal(run.status, 0, `${run.stdout}\n${run.stderr}`);
+    assert.match(run.stdout, /optional component\(s\) unavailable/);
+    assert.match(run.stdout, /optional: androidPlatformTools/);
+    assert.doesNotMatch(run.stdout, /setup finished with/);
+
+    // Reported, never invented: no adb path is recorded, and the component is
+    // marked unavailable so the shim exports no REA_ADB_PATH at all.
+    const written = JSON.parse(readFileSync(path.join(root, "bundle.json"), "utf8"));
+    assert.equal(written.paths.adb, null);
+    assert.equal(written.components.androidPlatformTools.unavailable, true);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
