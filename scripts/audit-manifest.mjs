@@ -338,6 +338,27 @@ if (manifest) {
       add("error", "cordis.patch.yml", `with DSH_HOME set the row resolves to ${JSON.stringify(withHome)}, expected /custom/home/plugins/rea-bundle/bin/rea-shim.mjs`);
     }
 
+    // A machine with no DSH_HOME, USERPROFILE and HOME resolves the row to the
+    // filesystem root. That is a known, harmless divergence rather than a bug: the
+    // row reports MODULE_NOT_FOUND, writes and downloads nothing, and the harness
+    // carries on (`failOnStartupError: false`). It cannot be reconciled from inside
+    // a `!!js` expression either — setup.mjs resolves such a machine through
+    // `os.homedir()`, which falls back to the passwd entry on POSIX. Pinned as a
+    // warning so the behaviour stays known instead of being rediscovered as a bug.
+    let rootless;
+    try {
+      rootless = evaluate({});
+    } catch (error) {
+      rootless = `threw: ${error && error.message}`;
+    }
+    if (rootless !== "/.dsh/plugins/rea-bundle/bin/rea-shim.mjs") {
+      add(
+        "warn",
+        "cordis.patch.yml",
+        `with DSH_HOME, USERPROFILE and HOME all absent the row resolves to ${JSON.stringify(rootless)}; the documented behaviour is "/.dsh/plugins/rea-bundle/bin/rea-shim.mjs"`,
+      );
+    }
+
     // Both READMEs print this row so a reader can copy it, and a documented row
     // that has drifted from the shipped one is what people actually install.
     for (const doc of ["README.md", "README.zh-CN.md"]) {

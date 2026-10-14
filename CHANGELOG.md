@@ -37,7 +37,8 @@
   "未供给"，而裸跑 `node bin/rea-shim.mjs mcp` 会把约 800 MB 下载进**插件目录**。现在用
   `cordis.patch.yml`（只有 checkout 会带）区分两者：镜像副本用自身位置（MCP 子进程里读不到
   `DSH_HOME`），checkout 副本按与 setup 相同的规则解析。setup 结尾打印的 `status:` 命令也改为指向
-  镜像副本，这样它对自定义 `--root` 同样成立。
+  镜像副本，这样它对自定义 `--root` 同样成立。（`package.json` 的 `rea-bundle-status` bin 入口指向的
+  就是同一份 checkout 副本，因此一并修好。）
 - **README 的「先装插件也可以」改为诚实描述。** 发布的行指向的镜像 shim **由 setup 创建**，所以在第一次
   供给之前该行以 `MODULE_NOT_FOUND` 退出 —— 没有任何东西能启动后台供给。首次必须手动跑一次
   `setup.mjs`，此后才由 shim 自动补供给。
@@ -47,7 +48,8 @@
 - `audit-manifest.mjs` 新增五项，全部做过反向验证（**故意写坏 5/5 都被抓住**）：`!!js` 裸标量 mapping
   检测、`DSH_HOME` 三态（未设/空/已设）求值一致性、README 与 patch 表达式不得漂移、镜像清单必须含
   manifest、镜像清单**不得**携带 `cordis.patch.yml`（它是 shim 区分两份副本的判据，被镜像进去会让镜像
-  副本退回 `DSH_HOME` 规则）。
+  副本退回 `DSH_HOME` 规则）。另外把「`DSH_HOME`/`USERPROFILE`/`HOME` 全空 → 根路径」这个**已知无害
+  行为**钉成 warn（此前无覆盖）：该情形下该行报 `MODULE_NOT_FOUND`，不写文件、不下载，harness 照常。
 - `validate.yml`：YAML 步骤注册 `!!js` 标量构造器（原先 `safe_load` 直接拒绝这个仓库要发布的行 ——
   **CI 一直是红的**）；行契约步骤断言 `args[0]` 是标量、不是 mapping；新增 `bundle:test` 与 `bundle:audit` 两步。
 - 单元测试新增三条**真的去 spawn shim**的用例（镜像布局、checkout 布局、`REA_BUNDLE_ROOT` 覆盖），
