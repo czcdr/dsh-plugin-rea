@@ -32,15 +32,28 @@
   `path.resolve`（相对 root 会让 `bundle.json` 记下相对路径，shim 随即误判组件"已消失"并重新供给）。
 - **`fail()` 的修复命令**不再指向"存在但必然崩溃"的镜像副本；没有可信副本时给出明确指引。
 - **`check-updates.ps1`** 增加「镜像 manifest 是否就位」检查，指向上面那条升级路径。
+- **shim 的两份副本各自解析出正确的 bundle root。** 上面那条"用自身位置"只在**镜像副本**上成立：
+  插件 checkout 里的那份是插件而不是 bundle，于是 `npm run bundle:status` 会在已供给的机器上报
+  "未供给"，而裸跑 `node bin/rea-shim.mjs mcp` 会把约 800 MB 下载进**插件目录**。现在用
+  `cordis.patch.yml`（只有 checkout 会带）区分两者：镜像副本用自身位置（MCP 子进程里读不到
+  `DSH_HOME`），checkout 副本按与 setup 相同的规则解析。setup 结尾打印的 `status:` 命令也改为指向
+  镜像副本，这样它对自定义 `--root` 同样成立。
+- **README 的「先装插件也可以」改为诚实描述。** 发布的行指向的镜像 shim **由 setup 创建**，所以在第一次
+  供给之前该行以 `MODULE_NOT_FOUND` 退出 —— 没有任何东西能启动后台供给。首次必须手动跑一次
+  `setup.mjs`，此后才由 shim 自动补供给。
 
 ### 回归防护
 
-- `audit-manifest.mjs` 新增四项，全部做过反向验证（**故意写坏 4/4 都被抓住**）：`!!js` 裸标量 mapping
-  检测、`DSH_HOME` 三态（未设/空/已设）求值一致性、README 与 patch 表达式不得漂移、镜像清单必须含 manifest。
+- `audit-manifest.mjs` 新增五项，全部做过反向验证（**故意写坏 5/5 都被抓住**）：`!!js` 裸标量 mapping
+  检测、`DSH_HOME` 三态（未设/空/已设）求值一致性、README 与 patch 表达式不得漂移、镜像清单必须含
+  manifest、镜像清单**不得**携带 `cordis.patch.yml`（它是 shim 区分两份副本的判据，被镜像进去会让镜像
+  副本退回 `DSH_HOME` 规则）。
 - `validate.yml`：YAML 步骤注册 `!!js` 标量构造器（原先 `safe_load` 直接拒绝这个仓库要发布的行 ——
   **CI 一直是红的**）；行契约步骤断言 `args[0]` 是标量、不是 mapping；新增 `bundle:test` 与 `bundle:audit` 两步。
+- 单元测试新增三条**真的去 spawn shim**的用例（镜像布局、checkout 布局、`REA_BUNDLE_ROOT` 覆盖），
+  并做了反向验证：把 shim 改回"一律用自身位置"时，checkout 那条会红。
 - 单元测试里的 POSIX 退化断言加平台守卫（`EXE` 为空时 `endsWith("java")` 恒真，在 Linux 上必红；
-  WSL 实测修前 12/13、修后 13/13）。
+  WSL 实测修前 12/13、修后 16/16）。
 
 ### 升级说明
 

@@ -1363,7 +1363,10 @@ if (options.json) {
     // lock, but the shim treats a lock older than six hours as stale.
     rmSync(path.join(options.root, "setup.lock"), { force: true });
     log("restart DSH (or reload the profile) so the MCP row reconnects.");
-    log(`status: node ${path.join(PLUGIN_ROOT, "bin", "rea-shim.mjs")} --shim-status`);
+    // Point at the mirrored copy, not at this checkout's: the mirror resolves its
+    // bundle from its own location, so this command is right for the root this run
+    // actually provisioned — including a custom --root.
+    log(`status: node ${path.join(options.root, "bin", "rea-shim.mjs")} --shim-status`);
   } else {
     log("some components are unmet; fix the cause and re-run this command.");
   }

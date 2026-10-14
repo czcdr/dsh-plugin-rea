@@ -372,6 +372,19 @@ if (manifest) {
           add("error", "scripts/setup.mjs", `mirrorLauncher() does not mirror ${needed}, which the mirrored copy reads at run time`);
         }
       }
+      // The shim tells its two copies apart by `cordis.patch.yml`, which only the
+      // checkout ships: a mirrored copy resolves its bundle from its own location
+      // (an MCP child has no DSH_HOME to consult), a checkout copy resolves the
+      // same root setup writes. Mirroring the discriminator would silently flip a
+      // mirrored copy back to the DSH_HOME rule — wrong wherever DSH_HOME is
+      // custom, and wrong in every MCP child, where it is stripped.
+      if (/cordis\.patch\.yml/.test(sourcesBody)) {
+        add(
+          "error",
+          "scripts/setup.mjs",
+          "the mirror list ships cordis.patch.yml, which bin/rea-shim.mjs uses to tell a checkout from a mirrored copy — a mirrored copy would then resolve its bundle through DSH_HOME, which an MCP child does not have",
+        );
+      }
     }
   }
 

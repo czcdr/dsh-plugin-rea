@@ -86,9 +86,12 @@ If Node is already installed, you can skip the bootstrap and run provisioning di
 node scripts/setup.mjs --reuse      # or --dry-run to see the plan first
 ```
 
-To install the plugin **first** instead, that also works: the MCP row starts, finds no bundle state, reports
-exactly what to run, and starts provisioning in the background. The harness is never blocked —
-`failOnStartupError: false` is deliberate.
+Installing the plugin **first** also works, but it takes two steps. The row resolves to
+`<DSH_HOME>/plugins/rea-bundle/bin/rea-shim.mjs`, and that file is created by setup — so until the first
+provisioning run the row exits with `MODULE_NOT_FOUND`, and nothing is there to start a background
+provisioning (the harness itself is unaffected: `failOnStartupError: false` is deliberate). Run
+`node scripts/setup.mjs` once; from then on the shim is in place, and every later missing state is picked up
+by the shim itself, which provisions in the background.
 
 ## Configure — nothing
 
@@ -129,6 +132,11 @@ on Windows, macOS and Linux without a PATH entry. Everything machine-specific li
 node bin/rea-shim.mjs --shim-status      # resolved paths, versions, verification state
 node bin/rea-shim.mjs --shim-print-env   # the environment the MCP child will see
 ```
+
+Both commands answer with the same bundle whether you run them from the plugin directory (the checkout copy)
+or from `<DSH_HOME>/plugins/rea-bundle` (the mirrored copy): the checkout resolves the location by the same
+rule setup uses, while the mirror uses its own position — it cannot rely on `DSH_HOME`, which the harness
+strips from an MCP child's environment.
 
 Setting `REA_BUNDLE_AUTO_PROVISION=0` disables the first-run background provisioning.
 

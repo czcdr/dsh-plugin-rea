@@ -11,10 +11,12 @@
  * Runs with `node --test`. No network, no filesystem writes outside a temp dir.
  */
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 /* ------------------------------------------------- probe token substitution */
 
@@ -190,4 +192,70 @@ test("byte sizes format without a floating-point surprise", () => {
   const mib = (bytes) => (bytes / 1048576).toFixed(1);
   assert.equal(mib(569649598), "543.3");
   assert.equal(mib(8044989), "7.7");
+});
+
+/* ------------------------------------------------------ the shim's two homes */
+
+// The shim runs from two places and must answer differently in each:
+//   * the mirrored copy the published row launches sits at <bundle>/bin/ and must
+//     use its own location — an MCP child has no DSH_HOME to consult, because the
+//     harness strips every DSH_* name from it;
+//   * the checkout copy a human runs (`npm run bundle:status`) is a plugin, not a
+//     bundle, and must resolve the same root setup.mjs writes.
+// Both mistakes are silent: the checkout claims "not provisioned" on a machine
+// that is provisioned, and a bare `node bin/rea-shim.mjs mcp` provisions ~800 MB
+// into the plugin directory.
+const SHIM_SOURCE = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "bin", "rea-shim.mjs");
+
+function shimBundleRoot(shimFile, env) {
+  const run = spawnSync(process.execPath, [shimFile, "--shim-status"], {
+    encoding: "utf8",
+    env: { ...process.env, REA_BUNDLE_AUTO_PROVISION: "0", ...env },
+  });
+  // --shim-status prints its report even when no bundle exists yet (exit 78).
+  return JSON.parse(run.stdout).bundleRoot;
+}
+
+test("a mirrored shim takes its bundle root from its own location, not DSH_HOME", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "rea-shim-mirror-"));
+  try {
+    const mirror = path.join(root, "plugins", "rea-bundle");
+    mkdirSync(path.join(mirror, "bin"), { recursive: true });
+    copyFileSync(SHIM_SOURCE, path.join(mirror, "bin", "rea-shim.mjs"));
+    assert.equal(shimBundleRoot(path.join(mirror, "bin", "rea-shim.mjs"), { DSH_HOME: path.join(root, "elsewhere") }), mirror);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a checkout shim resolves the bundle root setup.mjs would write", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "rea-shim-checkout-"));
+  try {
+    const checkout = path.join(root, "checkout");
+    mkdirSync(path.join(checkout, "bin"), { recursive: true });
+    copyFileSync(SHIM_SOURCE, path.join(checkout, "bin", "rea-shim.mjs"));
+    // The discriminator: only a plugin checkout ships cordis.patch.yml.
+    writeFileSync(path.join(checkout, "cordis.patch.yml"), "- insert: []\n");
+    const home = path.join(root, "dsh-home");
+    assert.equal(
+      shimBundleRoot(path.join(checkout, "bin", "rea-shim.mjs"), { DSH_HOME: home }),
+      path.join(home, "plugins", "rea-bundle"),
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("REA_BUNDLE_ROOT still overrides both layouts", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "rea-shim-override-"));
+  try {
+    const checkout = path.join(root, "checkout");
+    mkdirSync(path.join(checkout, "bin"), { recursive: true });
+    copyFileSync(SHIM_SOURCE, path.join(checkout, "bin", "rea-shim.mjs"));
+    writeFileSync(path.join(checkout, "cordis.patch.yml"), "- insert: []\n");
+    const forced = path.join(root, "forced");
+    assert.equal(shimBundleRoot(path.join(checkout, "bin", "rea-shim.mjs"), { REA_BUNDLE_ROOT: forced }), forced);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

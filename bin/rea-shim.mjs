@@ -16,6 +16,7 @@
  */
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -24,24 +25,39 @@ const EX_CONFIG = 78;
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = path.resolve(HERE, "..");
 
+/** DSH home, by the same rule setup.mjs and the published patch use. */
+function dshHome() {
+  const fromEnv = process.env.DSH_HOME;
+  if (fromEnv && fromEnv.trim() !== "") return path.resolve(fromEnv);
+  return path.join(homedir(), ".dsh");
+}
+
 /**
  * Where setup writes the machine-local truth.
  *
- * The authoritative answer is this file's own location: the row launches
- * `<bundle>/bin/rea-shim.mjs`, so the bundle root is the directory above `bin/`.
+ * Two copies of this file exist and they need different answers, so the copy has
+ * to be identified before the root can be:
  *
- * DSH_HOME must NOT be consulted here. The harness strips every `DSH_*` name from
- * an MCP child's environment (case-insensitively, because Windows is), so this
- * process never sees a custom DSH_HOME: falling back to `~/.dsh` would look for
- * bundle.json in the wrong home, report "not provisioned" for a bundle sitting
- * right next to it, and then start a second ~800 MB provisioning run there.
+ *  * The **mirrored** copy at `<bundle>/bin/rea-shim.mjs` is what the published
+ *    row launches, and its own location is the bundle root. It must not consult
+ *    DSH_HOME: the harness strips every `DSH_*` name from an MCP child's
+ *    environment (case-insensitively, because Windows is), so a custom DSH_HOME
+ *    would send it to `~/.dsh`, where it would report "not provisioned" for a
+ *    bundle sitting right next to it — and start a second ~800 MB run there.
+ *  * The **checkout** copy (`<plugin>/bin/rea-shim.mjs`) is what a human runs, e.g.
+ *    `npm run bundle:status`, from a shell where DSH_HOME *is* visible. Its own
+ *    directory is the plugin, not the bundle, so resolving to itself would report
+ *    "not provisioned" on a fully provisioned machine — and a bare
+ *    `node bin/rea-shim.mjs mcp` would provision ~800 MB into the checkout.
  *
+ * Only the checkout ships `cordis.patch.yml`, so that file is the discriminator.
  * REA_BUNDLE_ROOT stays as an explicit override for tests and unusual layouts.
  */
 function bundleRoot() {
   const override = process.env.REA_BUNDLE_ROOT;
   if (override && override.trim() !== "") return path.resolve(override);
-  return PLUGIN_ROOT;
+  if (!existsSync(path.join(PLUGIN_ROOT, "cordis.patch.yml"))) return PLUGIN_ROOT;
+  return path.join(dshHome(), "plugins", "rea-bundle");
 }
 
 /**

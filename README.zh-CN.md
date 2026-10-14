@@ -80,8 +80,10 @@ dsh plugin --profile <profile> add github:czcdr/dsh-plugin-rea#feat/one-plugin-b
 node scripts/setup.mjs --reuse      # 或先 --dry-run 看计划
 ```
 
-反过来**先装插件**也可以：那一行会启动、发现没有本机状态、把该跑的命令原样告诉你，并在后台开始供给。
-harness 永远不会被卡住 —— `failOnStartupError: false` 是刻意的。
+反过来**先装插件**也可以，但要分两步：发布的行指向 `<DSH_HOME>/plugins/rea-bundle/bin/rea-shim.mjs`，
+而那个文件**只有 setup 会创建**——所以在第一次供给之前，该行会以 `MODULE_NOT_FOUND` 退出，也就没有
+任何东西能去启动后台供给（harness 本身不受影响：`failOnStartupError: false` 是刻意的）。先手动跑一次
+`node scripts/setup.mjs`；此后 shim 就位，之后每一次「状态缺失」都由它自己发现并在后台补供给。
 
 ## 配置 —— 不需要
 
@@ -122,6 +124,10 @@ Windows、macOS、Linux 上都成立，且不依赖 PATH 上的 `rea`。所有�
 node bin/rea-shim.mjs --shim-status      # 解析到的路径、版本、校验状态
 node bin/rea-shim.mjs --shim-print-env   # MCP 子进程将看到的环境变量
 ```
+
+这两个命令在**插件目录**（checkout 副本）或 `<DSH_HOME>/plugins/rea-bundle`（镜像副本）里跑都给出同一
+答案：checkout 副本按与 setup 相同的规则解析供给位置，镜像副本用自身位置（因为 MCP 子进程的环境里
+`DSH_*` 会被剥掉，它不能依赖 `DSH_HOME`）。
 
 设 `REA_BUNDLE_AUTO_PROVISION=0` 可关掉首次运行的后台自动供给。
 
