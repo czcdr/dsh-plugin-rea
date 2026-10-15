@@ -233,6 +233,21 @@ node scripts/setup.mjs          # 或：powershell -File scripts\rea-bundle-boot
 
 `check-updates.ps1`（Windows PowerShell）会一次性报告以上各项的状态。
 
+## 还想用纯配置的 1.x 线？
+
+1.x 是**不带供给**的适配器：一行配置，从 PATH 上启动 `rea mcp`，并假设 Ghidra 由你自己装好。这些情况它是更合适的选择 ——
+你已经自己管理 REA 与 Ghidra、不希望插件去下载任何东西、或者想让那一行继续指向你自己的 `rea`：
+
+```
+dsh plugin --profile <profile> add dsh-plugin-rea@1.0.6
+# 或钉住分支而不是版本号：
+dsh plugin --profile <profile> add github:czcdr/dsh-plugin-rea#v1.0.6
+```
+
+两条线发布的 patch 形态与 `mcp__rea__*` 工具面完全相同。1.x 维护在
+[`v1` 分支](https://github.com/czcdr/dsh-plugin-rea/tree/v1)，它自己的安装说明也在那里（Node 满足 REA engines、
+`npm i -g rea-agents`、原生分析需要 Ghidra 12.1.x）。
+
 ## 许可证
 
 MIT（本适配器）。REA 是 MIT、归其作者；Ghidra 是 Apache-2.0、归 NSA；Temurin 是 GPLv2+CE；Node.js 是

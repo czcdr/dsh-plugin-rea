@@ -248,6 +248,22 @@ back on the next start.
 
 `check-updates.ps1` (Windows PowerShell) reports the state of all of these at once.
 
+## Still prefer the configuration-only 1.x line?
+
+1.x is the adapter **without** provisioning: one row that launches `rea mcp` from PATH and expects Ghidra to be
+installed by you. It is the right choice when you already manage REA and Ghidra yourself, when you do not want
+the plugin fetching anything, or when you want the row to keep pointing at your own `rea` binary:
+
+```
+dsh plugin --profile <profile> add dsh-plugin-rea@1.0.6
+# or pin the branch instead of the version:
+dsh plugin --profile <profile> add github:czcdr/dsh-plugin-rea#v1.0.6
+```
+
+Both lines publish the same patch shape and the same `mcp__rea__*` surface. 1.x is maintained on the
+[`v1` branch](https://github.com/czcdr/dsh-plugin-rea/tree/v1), where its own install notes live (Node on REA's
+engines, `npm i -g rea-agents`, Ghidra 12.1.x for native analysis).
+
 ## License
 
 MIT (this adapter). REA is MIT and owned by its authors; Ghidra is Apache-2.0 and owned by the NSA; Temurin
