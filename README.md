@@ -7,12 +7,13 @@
 Brings the upstream **[REA — Reverse Engineer Anything](https://github.com/morluto/rea)** MCP server into
 **DeepSeek Harness** (dsh), so its tools show up in a session as `mcp__rea__*`.
 
-![dsh-plugin-rea: a session calls the local rea mcp through the official MCP client row, and the Evidence comes back](assets/screenshot-1.png)
+![dsh-plugin-rea: the session calls the official MCP client row, which launches the bundle's shim; the shim starts the provisioned REA and the Evidence comes back](assets/screenshot-1.png)
 
-> **This branch (`feat/one-plugin-bundle`) is the all-in-one variant.** `main` stays the original
-> configuration-only adapter, which assumes you installed Node, `rea-agents` and Ghidra yourself. This
-> branch keeps that patch shape but adds a provisioning layer: install the plugin on a bare machine and it
-> prepares the runtime, then wires the row itself.
+> **This is the 2.x line, and `main` is it.** The all-in-one variant: it provisions the runtime (Node, the REA
+> CLI, a JDK, Ghidra) and then wires the row itself. The original configuration-only adapter — 1.x, which
+> assumed you had installed Node, `rea-agents` and Ghidra yourself — is preserved on the
+> [`v1` branch](https://github.com/czcdr/dsh-plugin-rea/tree/v1) and on npm as `dsh-plugin-rea@1.0.6`.
+> The two lines are compared in [Two lines: 1.x and 2.x](#two-lines-1x-and-2x).
 
 ## What this is
 
@@ -66,6 +67,21 @@ The analysis is upstream's; this section only restates upstream's own contract s
 | `capture_process_scenario` | Linux/macOS PTY |
 | apktool (Android resource decoding) | available only when `REA_APKTOOL_COMMAND` points at something Node can **execute directly**: upstream `execFile`s that command without a shell, and Windows cannot execute a `.bat`/`.cmd` that way (EINVAL). This bundle wires the official `apktool.bat` as upstream documents, so on Windows the launcher reports no version and the capability stays unavailable; JADX (a jar) is unaffected |
 
+## Two lines: 1.x and 2.x
+
+| | **2.x** — this line, `main` | **1.x** — [`v1`](https://github.com/czcdr/dsh-plugin-rea/tree/v1) |
+|---|---|---|
+| What it is | the adapter **plus provisioning**: it prepares Node, the REA CLI, a JDK and Ghidra, then wires the row | configuration-only adapter: one MCP row pointing at a `rea` you installed yourself |
+| What you need first | nothing for the runtime — provisioning fetches what is missing (with `--reuse` it adopts an existing Ghidra/JDK instead) | Node.js on REA's engines, `npm i -g rea-agents`, and Ghidra 12.1.x for native analysis |
+| First run | run `scripts/setup.mjs` (or the bootstrap) once, then restart dsh | nothing to run |
+| The row launches | the running Node executable plus `<DSH_HOME>/plugins/rea-bundle/bin/rea-shim.mjs`, which reads that machine's state | `cmd.exe /c rea mcp` on Windows, `rea mcp` on macOS/Linux |
+| Machine state | `<DSH_HOME>/plugins/rea-bundle/` — `bundle.json`, `vendor/`, `cache/` | your own REA and Ghidra installs |
+| Install | `dsh plugin --profile <profile> add dsh-plugin-rea` (npm `latest` ≥ 2.0.0) | `… add dsh-plugin-rea@1.0.6`, or `github:czcdr/dsh-plugin-rea#v1.0.6` |
+
+Both lines ship the **same patch shape** — one `insert` row of `@deepseek-ai/dsh-mcp-client` — and offer the
+same `mcp__rea__*` surface; they differ in who prepares the runtime. Moving from 1.x to 2.x takes two
+commands: see [Upgrading from 1.x](#upgrading-from-1x).
+
 ## Install
 
 **Nothing to install first.** On a bare Windows x64 machine:
@@ -78,7 +94,9 @@ powershell -ExecutionPolicy Bypass -File scripts\rea-bundle-bootstrap.ps1 -Reuse
 releases, checksum-verified). Then install the plugin for your profile:
 
 ```
-dsh plugin --profile <profile> add github:czcdr/dsh-plugin-rea#feat/one-plugin-bundle
+dsh plugin --profile <profile> add dsh-plugin-rea
+# or pin this release instead of tracking npm latest:
+dsh plugin --profile <profile> add github:czcdr/dsh-plugin-rea#v2.0.0
 ```
 
 > **On an Electron host (the DeepSeek Harness desktop app) the profile is owned by the application.**
@@ -161,7 +179,7 @@ exact shim launch the MCP row will use.
 
 ## Verified against
 
-Author's machine, 2026-10-13:
+Author's machine, 2026-10-13 / 14:
 
 | Component | Version |
 |---|---|
@@ -174,7 +192,14 @@ Author's machine, 2026-10-13:
 | Host | Windows 11 x64 (build 26200) |
 
 Exercised live: a clean `setup.mjs --reuse` run reached `setup complete`; an MCP `initialize` handshake
-**through the shim with no `rea` on PATH** answered `serverInfo {name: rea, version: 6.4.0}`.
+**through the shim with no `rea` on PATH** answered `serverInfo {name: rea, version: 6.4.0}`; and the whole
+chain ran under the real desktop host — its own Electron binary launched
+`<DSH_HOME>/plugins/rea-bundle/bin/rea-shim.mjs mcp`, the shim started the **vendored** REA, and a live tool
+call reported `path_source: environment` for a path only that machine's `bundle.json` knows.
+
+Not exercised end to end here, and therefore not claimed: the ~775 MB JDK + Ghidra download branch (planned
+by `--dry-run`, but this machine adopted its existing installs with `--reuse`), and first runs on
+macOS/Linux.
 
 ## Scope and caveats
 
@@ -193,6 +218,21 @@ Exercised live: a clean `setup.mjs --reuse` run reached `setup complete`; an MCP
   skipped on purpose during provisioning.
 
 ## Updating — three independent things
+
+### Upgrading from 1.x
+
+Install 2.x, then run provisioning **once** before restarting dsh:
+
+```
+node scripts/setup.mjs          # or: powershell -File scripts\rea-bundle-bootstrap.ps1 -Reuse
+```
+
+Why it matters: the 1.x row launched `rea mcp` from PATH, while the 2.x row launches
+`<DSH_HOME>/plugins/rea-bundle/bin/rea-shim.mjs` — a file only `setup.mjs` creates. Upgrade and restart
+without provisioning and that row exits with `MODULE_NOT_FOUND`: the harness stays up
+(`failOnStartupError: false` is deliberate), but the `mcp__rea__*` tools are gone and you get **no
+remediation message**, because the shim that prints one does not exist yet. After the setup run they are
+back on the next start.
 
 - **This plugin** never updates itself. Installed from a market? Update it there. Installed from a `file:`
   checkout? Overwrite the directory and reinstall.

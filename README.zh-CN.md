@@ -7,11 +7,12 @@
 把上游 **[REA — Reverse Engineer Anything](https://github.com/morluto/rea)** 的 MCP 服务接入
 **DeepSeek Harness**（dsh），让它的工具在会话里以 `mcp__rea__*` 出现。
 
-![dsh-plugin-rea：会话经官方 MCP 客户端行调用本机 rea mcp，再把 Evidence 带回会话](assets/screenshot-1.png)
+![dsh-plugin-rea：会话经官方 MCP 客户端行启动本包供给的 shim，再由 shim 拉起 bundle 内置的 REA，最后把 Evidence 带回会话](assets/screenshot-1.png)
 
-> **本分支（`feat/one-plugin-bundle`）是"一体包"版本。** `main` 保留原本的纯配置型适配器 —— 它假设
-> Node、`rea-agents`、Ghidra 都是你自己装好的。本分支保留同样的 patch 形态，但加了一层供给能力：
-> 在一台干净机器上装上插件，它会自己把运行时准备好，然后把那一行接好。
+> **这是 2.x 线，而 `main` 就是它。** 一体包版本：它会自己准备运行时（Node、REA CLI、JDK、Ghidra），
+> 再把那一行接好。原本的纯配置适配器（1.x —— 假设 Node、`rea-agents`、Ghidra 都是你自己装好的）保留在
+> [`v1` 分支](https://github.com/czcdr/dsh-plugin-rea/tree/v1)，npm 上仍是 `dsh-plugin-rea@1.0.6`。
+> 两条线的对比见[两条线：1.x 与 2.x](#两条线1x-与-2x)。
 
 ## 这是什么
 
@@ -60,6 +61,21 @@ patch 里不含任何机器路径**。
 | `capture_process_scenario` | 仅 Linux/macOS 的 PTY |
 | apktool（Android 资源解码） | 仅当 `REA_APKTOOL_COMMAND` 指向 Node 能**直接执行**的文件时才可用：上游用 `execFile` 不加 shell 直接起这个命令，而 Windows 上 Node 无法直接执行 `.bat`/`.cmd`（EINVAL）。本包按上游文档接的是官方 `apktool.bat`，所以在 Windows 上它拿不到版本、该能力不可用；JADX 走 jar，不受影响 |
 
+## 两条线：1.x 与 2.x
+
+| | **2.x** —— 当前这条，`main` | **1.x** —— [`v1`](https://github.com/czcdr/dsh-plugin-rea/tree/v1) |
+|---|---|---|
+| 是什么 | 适配器**加供给**：自己准备 Node、REA CLI、JDK、Ghidra，再把那一行接好 | 纯配置适配器：一行 MCP 行，指向你自己装好的 `rea` |
+| 前置 | 运行时什么都不用装 —— 缺什么它去取（`--reuse` 则复用机器上已有的 Ghidra/JDK） | Node.js（满足 REA engines）、`npm i -g rea-agents`，原生分析还要 Ghidra 12.1.x |
+| 首次运行 | 先跑一次 `scripts/setup.mjs`（或引导脚本），再重启 dsh | 不用跑任何东西 |
+| 那一行启动什么 | 当前 Node 可执行文件 + `<DSH_HOME>/plugins/rea-bundle/bin/rea-shim.mjs`（由 shim 读本机状态） | Windows 上 `cmd.exe /c rea mcp`，macOS/Linux 上 `rea mcp` |
+| 机器状态 | `<DSH_HOME>/plugins/rea-bundle/` —— `bundle.json`、`vendor/`、`cache/` | 你自己的 REA 与 Ghidra 安装 |
+| 安装 | `dsh plugin --profile <profile> add dsh-plugin-rea`（npm `latest` ≥ 2.0.0） | `… add dsh-plugin-rea@1.0.6`，或 `github:czcdr/dsh-plugin-rea#v1.0.6` |
+
+两条线发布的是**同一种 patch 形态**（一条 `insert` 行，`@deepseek-ai/dsh-mcp-client`），对外也提供同一套
+`mcp__rea__*` 工具面；区别只在"谁准备运行时"。从 1.x 到 2.x 只要两条命令，见
+[从 1.x 升级](#从-1x-升级)。
+
 ## 安装
 
 **前置什么都不用装。** 在干净的 Windows x64 机器上：
@@ -72,7 +88,9 @@ powershell -ExecutionPolicy Bypass -File scripts\rea-bundle-bootstrap.ps1 -Reuse
 profile 安装插件：
 
 ```
-dsh plugin --profile <profile> add github:czcdr/dsh-plugin-rea#feat/one-plugin-bundle
+dsh plugin --profile <profile> add dsh-plugin-rea
+# 或钉住这个版本，而不是跟着 npm latest 走：
+dsh plugin --profile <profile> add github:czcdr/dsh-plugin-rea#v2.0.0
 ```
 
 > **Electron 宿主（DeepSeek Harness 桌面版）的 profile 由应用独占。** 那种机器上 `dsh plugin --profile desktop …`
@@ -151,7 +169,7 @@ shim 启动**。
 
 ## 实测环境
 
-作者机器，2026-10-13：
+作者机器，2026-10-13 / 14：
 
 | 组件 | 版本 |
 |---|---|
@@ -164,7 +182,12 @@ shim 启动**。
 | 宿主 | Windows 11 x64（build 26200） |
 
 实测跑过：一次干净的 `setup.mjs --reuse` 走到 `setup complete`；一次**不经 PATH 上的 `rea`、完全经由
-shim** 的 MCP `initialize` 握手返回 `serverInfo {name: rea, version: 6.4.0}`。
+shim** 的 MCP `initialize` 握手返回 `serverInfo {name: rea, version: 6.4.0}`；以及**真实桌面宿主下的完整链路** ——
+宿主自己的 Electron 二进制启动 `<DSH_HOME>/plugins/rea-bundle/bin/rea-shim.mjs mcp`，shim 拉起 **bundle 内置**
+的 REA，随后一次真实工具调用报出 `path_source: environment`，而那个路径只有该机的 `bundle.json` 知道。
+
+本机**没有**端到端跑过、因此不做承诺的：约 775 MB 的 JDK + Ghidra 下载分支（`--dry-run` 有计划，本机用
+`--reuse` 复用了已有安装），以及 macOS/Linux 的首次运行。
 
 ## 边界与注意事项
 
@@ -182,6 +205,20 @@ shim** 的 MCP `initialize` 握手返回 `serverInfo {name: rea, version: 6.4.0}
   `node_modules`，必须解析依赖闭包；而供给过程中**刻意跳过包的 lifecycle 脚本**。
 
 ## 更新 —— 三件互相独立的事
+
+### 从 1.x 升级
+
+装上 2.x 后，**先跑一次供给**，再重启 dsh：
+
+```
+node scripts/setup.mjs          # 或：powershell -File scripts\rea-bundle-bootstrap.ps1 -Reuse
+```
+
+为什么必须先跑：1.x 的行从 PATH 上启动 `rea mcp`，而 2.x 的行启动
+`<DSH_HOME>/plugins/rea-bundle/bin/rea-shim.mjs` —— 那个文件**只有 `setup.mjs` 会创建**。升级后直接重启，
+该行会以 `MODULE_NOT_FOUND` 退出：harness 本身照常（`failOnStartupError: false` 是刻意的），但
+`mcp__rea__*` 工具会消失，而且**不会有任何修复提示** —— 会打提示的 shim 本身还不存在。跑完 setup 再启动，
+工具就回来了。
 
 - **本插件**从不自更新。从市场装的就在市场更新；从 `file:` 检出的就覆盖目录重装。
 - **从 `2.0.0-bundle.1` 升级**：那一版镜像了 shim 与 `setup.mjs`，却漏了 manifest，也没有留下插件 checkout

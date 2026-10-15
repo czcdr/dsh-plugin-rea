@@ -11,7 +11,13 @@
   （用 pwsh 7 编辑则无此限制，但保持 BOM 对两者都安全）。
 #>
 [CmdletBinding()]
-param([string]$OutDir = (Join-Path $PSScriptRoot '.'))
+param([string]$OutDir)
+
+# The documented invocation (`powershell -File .\make-screenshots.ps1`) died right here:
+# "Cannot bind argument to parameter 'Path' because it is an empty string" — $PSScriptRoot
+# is not reliably populated while parameter defaults are bound, so this script had never
+# actually regenerated a screenshot. Resolve the default in the body instead.
+if (-not $OutDir -or $OutDir.Trim() -eq '') { $OutDir = $PSScriptRoot }
 
 Add-Type -AssemblyName System.Drawing
 
@@ -73,7 +79,7 @@ function Save-Png($bmp, $g, $path) { $g.Dispose(); $bmp.Save($path, [System.Draw
 # ---------------------------------------------------------------- 图 1：插件做了什么
 $r = New-Canvas; $bmp = $r[0]; $g = $r[1]
 Draw-Text $g 'dsh-plugin-rea：把 REA 接入 DeepSeek Harness' $fTitle $ink 60 46
-Draw-Text $g '第三方适配 · 自身不做逆向分析 · 只插入一条 MCP 客户端记录，并把引擎环境变量限制在该子进程内' $fSub $muted 62 98
+Draw-Text $g '第三方适配 · 自身不做逆向分析 · 自供给 Node/REA/JDK/Ghidra 后自动接好那一行' $fSub $muted 62 98
 
 $rowY = 180; $boxH = 158; $boxW = 250
 Draw-Box $g 60 $rowY $boxW $boxH $([System.Drawing.Color]::White) $line
@@ -82,16 +88,16 @@ Draw-Text $g "mcp__rea__* 工具`n（6.4.0 暴露 170+）`n工具随会话注入
 
 Draw-Box $g 360 $rowY $boxW $boxH $([System.Drawing.Color]::FromArgb(255,239,246,255)) $accent
 Draw-Text $g '官方 MCP 客户端行' $fBox $accent 380 ($rowY + 18)
-Draw-Text $g "@deepseek-ai/dsh-mcp-client`nserverName = rea`ntransport = stdio`ncommand = node" $fBody $muted 380 ($rowY + 50)
+Draw-Text $g "@deepseek-ai/dsh-mcp-client`nserverName = rea / transport = stdio`ncommand = 当前 Node 可执行文件`nargs[0] = <DSH_HOME>/plugins/rea-bundle/`n             bin/rea-shim.mjs" $fBody $muted 380 ($rowY + 50)
 Draw-Text $g '↑ 本插件插入的就是这一行' $fSmall $accent 360 ($rowY + $boxH + 8)
 
 Draw-Box $g 660 $rowY $boxW $boxH $([System.Drawing.Color]::White) $line
-Draw-Text $g 'rea mcp（本机进程）' $fBox $ink 680 ($rowY + 18)
-Draw-Text $g "node …`n  \rea-agents\scripts`n  \rea.mjs  mcp`nenv: GHIDRA_INSTALL_DIR`n      JAVA_HOME（仅此处）" $fBody $muted 680 ($rowY + 50)
+Draw-Text $g 'rea-shim（供给后镜像到此）' $fBox $ink 680 ($rowY + 18)
+Draw-Text $g "读 bundle.json 里的本机真相`n导出 GHIDRA_INSTALL_DIR /`n  JAVA_HOME / REA_*`n再拉起 bundle 内置的 REA" $fBody $muted 680 ($rowY + 50)
 
 Draw-Box $g 960 $rowY $boxW $boxH $([System.Drawing.Color]::FromArgb(255,240,253,244)) $accent2
-Draw-Text $g '分析引擎' $fBox $accent2 980 ($rowY + 18)
-Draw-Text $g "Ghidra 12.1.4（本机已装）`nHopper / IDA（可选，`n各自需授权）`n静态 JS / .NET 无需引擎" $fBody $muted 980 ($rowY + 50)
+Draw-Text $g '分析引擎（供给或复用）' $fBox $accent2 980 ($rowY + 18)
+Draw-Text $g "Ghidra 12.1.x / JDK 21：`n缺则下载并校验，`n已有则 --reuse 复用`n静态 JS / .NET 无需引擎" $fBody $muted 980 ($rowY + 50)
 
 Draw-Arrow $g 310 ($rowY + 40) 358 ($rowY + 40) $muted
 Draw-Arrow $g 610 ($rowY + 40) 658 ($rowY + 40) $muted
@@ -106,7 +112,7 @@ Draw-Line  $g 358 446 150 446 $muted
 Draw-Arrow $g 150 446 150 342 $muted
 
 Draw-Text $g '上游 REA（MIT）：github.com/morluto/rea      本插件：github.com/czcdr/dsh-plugin-rea' $fSmall $muted 60 620
-Draw-Text $g '实测 REA 6.4.0 + DSH 桌面运行时 0.2.0-rc.2 + Ghidra 12.1.4 + Node 24.21.0（Windows 11 x64，2026-10-12）' $fSmall $muted 60 646
+Draw-Text $g '实测 REA 6.4.0 + DSH 桌面运行时 0.2.0-rc.2 + Ghidra 12.1.4 + Node 24.21.0（Windows 11 x64，2026-10-14）' $fSmall $muted 60 646
 Draw-Text $g 'Ghidra 为 Apache-2.0（NSA）；REA 为 MIT。本仓库不分发上游代码。' $fSmall $muted 60 672
 Save-Png $bmp $g (Join-Path $OutDir 'screenshot-1.png')
 

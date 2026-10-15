@@ -2,12 +2,26 @@
 
 本插件遵循语义化版本。版本号变化说明「配置组合」这层的变化，与 REA 自身的版本无关。
 
-## 2.0.0-bundle.2 — 2026-10-14
+## 2.0.0 — 2026-10-15
 
-一体包分支的**正确性修复**。这一轮把「装一个插件、它自己供给」这条链路从"永远启不动"修到实测可用，
-并把每一个修掉的坑都变成审计或 CI 能自动抓住的检查。
+**一体包线的首个正式版**（此前的 `2.0.0-bundle.1` / `2.0.0-bundle.2` 是它的两个预发布）。
+`main` 现在就是这一条；1.x 的纯配置适配器保留在
+[`v1` 分支](https://github.com/czcdr/dsh-plugin-rea/tree/v1)，npm 上仍可装 `dsh-plugin-rea@1.0.6`。
 
-### 🔴 三个致命缺陷（按旧版说明走的用户每一步都会撞上）
+### 🔴 从 1.x 升级：先跑一次供给，再重启
+
+1.x 的行指向 PATH 上的 `rea mcp`；2.x 的行指向 `<DSH_HOME>/plugins/rea-bundle/bin/rea-shim.mjs`，
+而**那个文件只有 `setup.mjs` 会创建**。所以从 1.x 升上来后直接重启会：
+
+- 让该行以 `MODULE_NOT_FOUND` 退出（harness 本身不受影响 —— `failOnStartupError: false` 是刻意的），
+  于是 `mcp__rea__*` 工具消失，而且**不会得到任何修复提示**：会打提示的 shim 本身还不存在；
+- 正确做法是在插件目录跑一次 `node scripts/setup.mjs`（或 `scripts\rea-bundle-bootstrap.ps1 -Reuse`），
+  再重启 dsh，工具就回来了。此后每一次「状态缺失」都由 shim 自己发现并在后台补供给。
+
+（如果你在 profile 的 `cordis.patch.yml` 里按 id 覆盖过 `mcp-rea`（例如钉 `cmd.exe /c rea mcp`），
+那条覆盖会继续生效，升级不影响你。）
+
+### 三个致命缺陷（按旧版说明走的用户每一步都会撞上）
 
 - **MCP 行里的 `!!js` 标量没有加引号。** 裸标量同时含 `? ` 与 `: ` 时，YAML 把它读成**显式键值对**，
   loader 拿到的是 mapping 而不是表达式节点。用 harness 自己的方言实测（`JSON_SCHEMA` + `app.asar` 里的
