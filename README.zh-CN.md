@@ -4,15 +4,16 @@
 
 [English](README.md) · **简体中文**
 
+> **这是哪个版本？2.x —— 而 `main` 就是它。** 2.x 自己准备运行时（Node、REA CLI、JDK、Ghidra）再把那一行接好：
+> 装插件 → 跑一次 `scripts/setup.mjs` → 重启 dsh。
+> **1.x** 是更早的纯配置适配器 —— 它假设 `rea` 在 PATH 上、Ghidra 由你自己装好 —— 保留在
+> [`v1` 分支](https://github.com/czcdr/dsh-plugin-rea/tree/v1)，npm 上仍是 `dsh-plugin-rea@1.0.6`。
+> 完整对比：[两条线：1.x 与 2.x](#两条线1x-与-2x) · 升级：[从 1.x 升级](#从-1x-升级)。
+
 把上游 **[REA — Reverse Engineer Anything](https://github.com/morluto/rea)** 的 MCP 服务接入
 **DeepSeek Harness**（dsh），让它的工具在会话里以 `mcp__rea__*` 出现。
 
 ![dsh-plugin-rea：会话经官方 MCP 客户端行启动本包供给的 shim，再由 shim 拉起 bundle 内置的 REA，最后把 Evidence 带回会话](assets/screenshot-1.png)
-
-> **这是 2.x 线，而 `main` 就是它。** 一体包版本：它会自己准备运行时（Node、REA CLI、JDK、Ghidra），
-> 再把那一行接好。原本的纯配置适配器（1.x —— 假设 Node、`rea-agents`、Ghidra 都是你自己装好的）保留在
-> [`v1` 分支](https://github.com/czcdr/dsh-plugin-rea/tree/v1)，npm 上仍是 `dsh-plugin-rea@1.0.6`。
-> 两条线的对比见[两条线：1.x 与 2.x](#两条线1x-与-2x)。
 
 ## 这是什么
 

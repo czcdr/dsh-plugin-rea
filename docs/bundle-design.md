@@ -3,9 +3,10 @@
 Goal: a fresh machine installs **one DSH plugin** and gets a working `mcp__rea__*`
 tool surface, without first installing Node, REA, a JDK, or Ghidra by hand.
 
-`main` keeps the original **config-only adapter** (a single MCP row pointing at a
-`rea` the user installed themselves). This branch adds the self-provisioning
-variant next to it. Nothing on `main` changes.
+`main` **is** this variant: the self-provisioning one-plugin bundle. The earlier
+**config-only adapter** (a single MCP row pointing at a `rea` the user installed
+themselves) is preserved on the [`v1` branch](https://github.com/czcdr/dsh-plugin-rea/tree/v1)
+and on npm as `dsh-plugin-rea@1.0.6`; nothing here changes that line.
 
 ---
 
@@ -52,7 +53,7 @@ Three responsibilities, kept strictly apart:
    the component manifest, downloads what is missing into a cache, verifies
    checksums, unpacks, runs the readiness probe, and writes `bundle.json`.
    Idempotent and re-runnable; `--reuse` adopts pre-existing installs.
-3. **Patch (wiring, published).** `cordis.patch.yml` from this branch, carrying
+3. **Patch (wiring, published).** `cordis.patch.yml` on `main`, carrying
    **no machine path**: the row points at `<plugin>/bin/rea-shim.mjs` and the
    shim is responsible for the rest.
 
@@ -173,7 +174,7 @@ Ghidra itself is **not** redistributed inside the plugin package: the release is
 ~570 MB, which no npm package can carry. It is fetched from the official release
 and checksum-verified, or adopted from an existing install with `--reuse`.
 
-## 8. Honest limits of this branch
+## 8. Honest limits of this approach
 
 - npm's per-package limits (unpacked/compressed size) rule out shipping the JDK
   and Ghidra inside the tarball. "One plugin install" therefore means *one

@@ -4,16 +4,16 @@
 
 **English** · [简体中文](README.zh-CN.md)
 
+> **Which version is this? 2.x — and `main` is it.** 2.x provisions the runtime itself (Node, the REA CLI, a
+> JDK, Ghidra) and then wires the row: install the plugin, run `scripts/setup.mjs` once, restart dsh.
+> **1.x** is the older configuration-only adapter — it expects `rea` on PATH and Ghidra installed by you —
+> kept on the [`v1` branch](https://github.com/czcdr/dsh-plugin-rea/tree/v1) and on npm as `dsh-plugin-rea@1.0.6`.
+> Full comparison: [Two lines: 1.x and 2.x](#two-lines-1x-and-2x) · upgrading: [Upgrading from 1.x](#upgrading-from-1x).
+
 Brings the upstream **[REA — Reverse Engineer Anything](https://github.com/morluto/rea)** MCP server into
 **DeepSeek Harness** (dsh), so its tools show up in a session as `mcp__rea__*`.
 
 ![dsh-plugin-rea: the session calls the official MCP client row, which launches the bundle's shim; the shim starts the provisioned REA and the Evidence comes back](assets/screenshot-1.png)
-
-> **This is the 2.x line, and `main` is it.** The all-in-one variant: it provisions the runtime (Node, the REA
-> CLI, a JDK, Ghidra) and then wires the row itself. The original configuration-only adapter — 1.x, which
-> assumed you had installed Node, `rea-agents` and Ghidra yourself — is preserved on the
-> [`v1` branch](https://github.com/czcdr/dsh-plugin-rea/tree/v1) and on npm as `dsh-plugin-rea@1.0.6`.
-> The two lines are compared in [Two lines: 1.x and 2.x](#two-lines-1x-and-2x).
 
 ## What this is
 

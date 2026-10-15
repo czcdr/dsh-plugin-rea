@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-rea",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "One-plugin bundle: provisions Node/REA/JDK/Ghidra for you, then registers the upstream REA MCP server as mcp__rea__* tools. · 一体包：自动准备 Node/REA/JDK/Ghidra，并把上游 REA 的 MCP 服务接入 DeepSeek Harness。",
   "type": "module",
   "license": "MIT",
