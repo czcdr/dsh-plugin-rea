@@ -49,7 +49,7 @@ Author's machine, 2026-10-12/13:
 
 | Component | Version |
 |---|---|
-| REA (`rea-agents`) | **6.4.0** |
+| REA (`rea-agents`) | **6.5.0** |
 | DeepSeek Harness | desktop runtime **0.2.0-rc.2**, with its bundled dsh CLI 0.1.7-rc.2 |
 | `@deepseek-ai/dsh-mcp-client` (row provider) | bundled by the harness; npm latest `0.0.1-rc.1` |
 | Ghidra | 12.1.4 (REA currently accepts 12.1.x) |
@@ -119,7 +119,7 @@ Ask for a `mcp__rea__*` call — `binary_session` reports the engine checks
 
 ## Scope and caveats
 
-REA exposes 170+ tools at 6.4.0, so every session's tool list grows; the row sets
+REA exposes 207 tools at 6.5.0, so every session's tool list grows; the row sets
 `failOnStartupError: false` so a missing REA never blocks harness startup. Some REA tools launch processes,
 write files and access the network — DSH's permission policy applies. Analyse only artifacts you are
 authorized to inspect.

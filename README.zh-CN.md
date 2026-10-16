@@ -48,7 +48,7 @@
 
 | 组件 | 版本 |
 |---|---|
-| REA（`rea-agents`） | **6.4.0** |
+| REA（`rea-agents`） | **6.5.0** |
 | DeepSeek Harness | 桌面运行时 **0.2.0-rc.2**，自带 dsh CLI 0.1.7-rc.2 |
 | `@deepseek-ai/dsh-mcp-client`（行提供方） | 由 harness 自带；npm 最新 `0.0.1-rc.1` |
 | Ghidra | 12.1.4（REA 当前接受 12.1.x） |
@@ -116,7 +116,7 @@ dsh plugin --profile <profile> add dsh-plugin-rea
 
 ## 范围与注意
 
-REA 在 6.4.0 暴露 170+ 个工具，注入后每个会话的工具列表都会变大；行内设置
+REA 在 6.5.0 暴露 207 个工具，注入后每个会话的工具列表都会变大；行内设置
 `failOnStartupError: false`，因此 REA 缺失也不会阻塞 harness 启动。部分 REA 工具会启动进程、
 写文件、访问网络，按 DSH 的权限策略执行。请仅分析你已获得授权的目标。
 
