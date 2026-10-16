@@ -54,8 +54,9 @@ Three responsibilities, kept strictly apart:
    checksums, unpacks, runs the readiness probe, and writes `bundle.json`.
    Idempotent and re-runnable; `--reuse` adopts pre-existing installs.
 3. **Patch (wiring, published).** `cordis.patch.yml` on `main`, carrying
-   **no machine path**: the row points at `<plugin>/bin/rea-shim.mjs` and the
-   shim is responsible for the rest.
+   **no machine path**: the row computes `<DSH_HOME>/plugins/rea-bundle/bin/rea-shim.mjs`
+   at load time from `DSH_HOME` alone, and that mirrored shim is responsible for the
+   rest. (The checkout's own copy is what a human runs; the row never points at it.)
 
 The published plugin therefore stays portable, while the machine-specific truth
 lives in one small JSON file under the DSH home.
@@ -161,7 +162,7 @@ Windows and is what this bundle targets to complete.
 | Component | Needed for | Provisioned as |
 | --- | --- | --- |
 | Node runtime | running REA at all | reuse a compatible existing node, else portable `node.exe` |
-| `rea-agents` | the MCP server itself | vendored copy under `vendor/rea-agents` |
+| `rea-agents` | the MCP server itself | vendored copy under `vendor/node_modules/rea-agents` |
 | Temurin JDK 21/25 | Ghidra headless + JADX bridge | portable JDK zip (full JDK, not a JRE) |
 | Ghidra 12.1.x | native analysis | official release zip, extracted |
 | apktool | Android resource decode | `apktool.bat` + jar in one directory |

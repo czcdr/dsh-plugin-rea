@@ -204,7 +204,15 @@ shim** 的 MCP `initialize` 握手返回 `serverInfo {name: rea, version: 6.5.0}
   （环境变量优先，Windows 上回退读注册表）并用 CONNECT 隧道，`NO_PROXY` 也照常生效。
 - REA 的部分工具会启动进程、写文件、访问网络 —— DSH 的权限策略照常适用。只分析你有权检视的样本。
 - `scripts/setup.mjs` 为 REA CLI 跑的是带 `--ignore-scripts` 的 `npm install`：官方 tarball 不带
-  `node_modules`，必须解析依赖闭包；而供给过程中**刻意跳过包的 lifecycle 脚本**。
+  `node_modules`，必须解析依赖闭包；而供给过程中**刻意跳过包的 lifecycle 脚本**。这一步也是**唯一**用不上
+  本插件自己的路由/代理回退的环节 —— npm 只从环境读 `HTTPS_PROXY`/`HTTP_PROXY` 与
+  `NPM_CONFIG_REGISTRY`，所以网络需要镜像时请先设其中一个（例如
+  `NPM_CONFIG_REGISTRY=https://registry.npmmirror.com`）。带 `--offline` 时这一步会被**直接拒绝**，
+  而不是悄悄联网。
+- POSIX 上解压有兜底：zip 依次尝试 `unzip` → `python3 -m zipfile` → 已供给 JDK 自带的 `jar`；tar 包依次
+  尝试 `tar` → `python3`。三者都没有的最小镜像会得到一句明确的「no zip extractor available」，而不是
+  干巴巴的「extraction failed」。Ghidra 在所有平台都只有 zip，而 `unzip` 并非每个发行版默认安装，
+  所以这条不是理论问题。
 
 ## 更新 —— 三件互相独立的事
 

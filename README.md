@@ -215,7 +215,16 @@ macOS/Linux.
   Analyse only artifacts you are authorized to inspect.
 - `scripts/setup.mjs` runs `npm install` for the REA CLI with `--ignore-scripts`: the published tarball
   carries no `node_modules`, so a dependency closure must be resolved, and package lifecycle scripts are
-  skipped on purpose during provisioning.
+  skipped on purpose during provisioning. That step is also the **only** one that cannot use this bundle's
+  own route/proxy resolution — npm reads `HTTPS_PROXY`/`HTTP_PROXY` and `NPM_CONFIG_REGISTRY` from the
+  environment, so on a network that needs a mirror, set one of those before provisioning
+  (`NPM_CONFIG_REGISTRY=https://registry.npmmirror.com`). With `--offline` the step is refused outright
+  instead of quietly going online.
+- On POSIX, extraction falls back when the usual tools are missing: a zip is opened with `unzip`, then
+  `python3 -m zipfile`, then the provisioned JDK's `jar`; a tarball with `tar`, then `python3`. A minimal
+  image that has none of them fails with an explicit "no zip extractor available" line rather than a bare
+  "extraction failed". This matters because Ghidra is a zip on every platform and `unzip` is not installed
+  everywhere by default.
 
 ## Updating — three independent things
 

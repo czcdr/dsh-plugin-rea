@@ -343,9 +343,9 @@
           "format": "zip",
           "size": 16110554,
           "sha256": "ee39ad5967e95c2a07f04dbcbde96b1a0c916ba376096db5d2f498b7727a5d1d",
-          "sha256Source": "Same darwin archive as x64 (measured 2026-10-13); it serves Intel and Apple silicon.",
+          "sha256Source": "Same darwin archive as x64 (measured 2026-10-13); Google publishes one darwin zip for both architectures.",
           "sha256VerifiedOn": "2026-10-13",
-          "note": "The same darwin archive serves Intel and Apple silicon."
+          "note": "The darwin archive contains x86_64 binaries. On Apple silicon they run only through Rosetta 2; without it adb cannot start and this optional component is reported unavailable."
         },
         "linux-x64": {
           "version": "latest",
@@ -355,7 +355,7 @@
           "sha256": "d230f13842f60f782a8645f9c813f8f845bf36089ea7289f28c48f17979313f1",
           "sha256Source": "Google publishes no checksum for this rolling asset; measured on 2026-10-13 by downloading the archive and hashing it locally (9,054,187 bytes)",
           "sha256VerifiedOn": "2026-10-13",
-          "note": "The same linux archive serves x86-64 and arm64."
+          "note": "The linux archive contains x86_64 binaries. Google publishes no arm64 platform-tools and this bundle does not emulate one, so on linux-arm64 the entry below is offered but its probe is expected to fail — reported as an optional component being unavailable, never as a broken install."
         },
         "linux-arm64": {
           "version": "latest",
@@ -363,8 +363,9 @@
           "format": "zip",
           "size": 9054187,
           "sha256": "d230f13842f60f782a8645f9c813f8f845bf36089ea7289f28c48f17979313f1",
-          "sha256Source": "Same linux archive as x64 (measured 2026-10-13).",
-          "sha256VerifiedOn": "2026-10-13"
+          "sha256Source": "Google publishes no arm64 platform-tools; this is the same x86_64 linux archive as x64 (measured 2026-10-13), recorded so the mismatch is explicit instead of implied.",
+          "sha256VerifiedOn": "2026-10-13",
+          "note": "Kept so an arm64 host reports a precise failure instead of \"no source\". adb here is x86_64: it runs under qemu/binfmt where the host provides it, and otherwise the probe fails and the report names it."
         }
       }
     },

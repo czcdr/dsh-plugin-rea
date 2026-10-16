@@ -43,8 +43,7 @@
     "CHANGELOG.md",
     "check-updates.ps1",
     "screenshots.json",
-    "assets/",
-    "examples/"
+    "assets/"
   ],
   "dsh": {
     "bundle": {

@@ -26,7 +26,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFileSync, chmodSync, closeSync, copyFileSync, createWriteStream, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, closeSync, copyFileSync, createWriteStream, existsSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { homedir } from "node:os";
@@ -69,6 +69,22 @@ function defaultBundleRoot() {
   return path.join(dshHome(), "plugins", "rea-bundle");
 }
 
+/**
+ * A numeric environment override, or the default.
+ *
+ * `Number("abc")` is NaN, and NaN does not stay local: `REA_BUNDLE_FETCH_RETRIES=abc`
+ * produced "gave up after NaN attempt(s)", and a NaN socket timeout behaves as 0
+ * (immediate expiry) rather than as "no override". Anything that is not a positive
+ * finite number is therefore ignored, and the effective values are logged below so
+ * an override is never invisible.
+ */
+function envNumber(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || String(raw).trim() === "") return fallback;
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
 function parseArgs(argv) {
   const options = {
     root: defaultBundleRoot(),
@@ -82,9 +98,9 @@ function parseArgs(argv) {
     // be declared dead quickly when the socket never opens, but a slow-but-alive
     // transfer must not be killed for taking long overall (measured here:
     // 0.35–0.54 MiB/s, where 570 MB legitimately takes ~30 minutes).
-    connectTimeoutMs: Number(process.env.REA_BUNDLE_CONNECT_TIMEOUT_MS ?? 15000),
-    idleTimeoutMs: Number(process.env.REA_BUNDLE_IDLE_TIMEOUT_MS ?? 120000),
-    retries: Number(process.env.REA_BUNDLE_FETCH_RETRIES ?? 4),
+    connectTimeoutMs: envNumber("REA_BUNDLE_CONNECT_TIMEOUT_MS", 15000),
+    idleTimeoutMs: envNumber("REA_BUNDLE_IDLE_TIMEOUT_MS", 120000),
+    retries: envNumber("REA_BUNDLE_FETCH_RETRIES", 4),
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -494,7 +510,6 @@ async function download(url, destination, expected, label) {
         throw new Error(`sha256 mismatch: got ${digest}, expected ${expected.sha256}`);
       }
       rmSync(destination, { force: true });
-      const { renameSync } = await import("node:fs");
       renameSync(temporary, destination);
       return { sha256: digest, size: produced, tofu: !expected.sha256 || expected.sha256 === "unverified" };
     } catch (error) {
@@ -512,14 +527,17 @@ async function download(url, destination, expected, label) {
 }
 
 /**
- * Windows fallback route: let PowerShell/.NET perform the transfer.
+ * The PowerShell/.NET route: on Windows this is the **primary** route (see
+ * `tryPowerShellFirst` in download()), and everywhere else it exists only as the
+ * last-resort fallback.
  *
- * Measured here, this is not redundant with the Node routes. The local proxy
+ * Measured here, it is not redundant with the Node routes. The local proxy
  * rewrites GitHub's release-asset redirect back to itself (an infinite 301
  * loop), while a direct Node connection to github.com times out or is reset.
  * The .NET stack honours the system proxy, follows the redirect chain to
  * release-assets.githubusercontent.com correctly, and reports the full asset
- * length. It is slower (~0.13 MiB/s vs ~0.5 MiB/s), so it is a fallback, and
+ * length. It is slower (~0.13 MiB/s vs ~0.5 MiB/s), which is why the routes are
+ * ordered per platform rather than universally, and
  * the result is verified by the same size + checksum gate as every other route.
  */
 function downloadViaPowerShell(url, destination, have = 0) {
@@ -647,30 +665,72 @@ async function writeBody(stream, headers, temporary, have, status, label) {
   return seen;
 }
 
-/** Extract with the platform's own tools. Returns true on success. */
-function extract(archive, destination, format) {
+/** The provisioned JDK's own `jar`, when one is resolved — a guaranteed unzipper. */
+function jdkJarCommand(context) {
+  const jdk = context?.resolved?.jdk?.path;
+  if (typeof jdk !== "string" || jdk === "") return null;
+  const home = /[\\/]bin[\\/][^\\/]+$/.test(jdk) ? path.dirname(path.dirname(jdk)) : jdk;
+  const candidate = path.join(home, "bin", `jar${EXE}`);
+  return existsSync(candidate) ? candidate : null;
+}
+
+/**
+ * Extract with whatever the host actually has.
+ *
+ * Ghidra ships only as a zip on every platform, so "no unzip" was a certain
+ * failure on a minimal Linux image rather than an occasional one. The fallbacks
+ * are `python3 -m zipfile` and — since a JDK is provisioned before Ghidra — that
+ * JDK's own `jar`. Tarballs fall back to python3, whose tarfile reads xz without
+ * the xz binary. A host with none of them is told which tools were tried instead
+ * of getting a bare "extraction failed".
+ */
+function extract(archive, destination, format, context) {
   mkdirSync(destination, { recursive: true });
+  const stdio = options.json ? "ignore" : "inherit";
+  const attempts = [];
   if (format === "zip") {
     if (IS_WINDOWS) {
       // bsdtar ships with Windows 10+ and unpacks a zip far faster than
       // Expand-Archive's single-threaded .NET implementation — the 543 MB Ghidra
-      // archive is the case that matters. Expand-Archive stays as the fallback so
-      // a host without tar.exe still provisions.
-      const viaTar = spawnSync("tar", ["-xf", archive, "-C", destination], { stdio: options.json ? "ignore" : "inherit" });
-      if (viaTar.status === 0) return true;
-      const result = spawnSync("powershell", ["-NoProfile", "-NonInteractive", "-Command",
-        `Expand-Archive -LiteralPath '${archive.replace(/'/g, "''")}' -DestinationPath '${destination.replace(/'/g, "''")}' -Force`],
-        { stdio: options.json ? "ignore" : "inherit" });
-      return result.status === 0;
+      // archive is the case that matters. A failing tar still falls through to
+      // Expand-Archive.
+      attempts.push({ command: "tar", args: ["-xf", archive, "-C", destination] });
+      attempts.push({
+        command: "powershell",
+        args: [
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          `Expand-Archive -LiteralPath '${archive.replace(/'/g, "''")}' -DestinationPath '${destination.replace(/'/g, "''")}' -Force`,
+        ],
+      });
+    } else {
+      attempts.push({ command: "unzip", args: ["-q", "-o", archive, "-d", destination] });
+      attempts.push({ command: "python3", args: ["-m", "zipfile", "-e", archive, destination] });
+      const jar = jdkJarCommand(context);
+      // `jar xf` unpacks into the working directory, hence cwd.
+      if (jar) attempts.push({ command: jar, args: ["xf", archive], cwd: destination });
     }
-    const result = spawnSync("unzip", ["-q", "-o", archive, "-d", destination], { stdio: options.json ? "ignore" : "inherit" });
-    return result.status === 0;
+  } else if (format === "tar.gz" || format === "tar.xz" || format === "tar") {
+    attempts.push({ command: "tar", args: ["-xf", archive, "-C", destination] });
+    attempts.push({
+      command: "python3",
+      args: ["-c", "import sys,tarfile;tarfile.open(sys.argv[1]).extractall(sys.argv[2])", archive, destination],
+    });
+  } else {
+    throw new Error(`unsupported archive format: ${format}`);
   }
-  if (format === "tar.gz" || format === "tar.xz") {
-    const result = spawnSync("tar", ["-xf", archive, "-C", destination], { stdio: options.json ? "ignore" : "inherit" });
-    return result.status === 0;
+
+  let anyToolRan = false;
+  for (const attempt of attempts) {
+    const result = spawnSync(attempt.command, attempt.args, { stdio, cwd: attempt.cwd });
+    if (result.status === 0) return true;
+    if (!(result.error && result.error.code === "ENOENT")) anyToolRan = true;
   }
-  throw new Error(`unsupported archive format: ${format}`);
+  if (!anyToolRan) {
+    log(`       no ${format === "zip" ? "zip" : "tar"} extractor available (tried ${attempts.map((attempt) => path.basename(attempt.command)).join(", ")}); install unzip or python3`);
+  }
+  return false;
 }
 
 /* --------------------------------------------------------------- host probing */
@@ -1057,7 +1117,6 @@ async function provisionComponent(name, component, context) {
       }
       mkdirSync(targetDirectory, { recursive: true });
       const target = path.join(targetDirectory, entry.saveAs ?? archiveName);
-      const { copyFileSync } = await import("node:fs");
       copyFileSync(archivePath, target);
       // A wrapper script has to be executable. copyFileSync lands the 0644 that
       // the archive carries and nothing else in this file changes a mode, while
@@ -1129,7 +1188,6 @@ async function provisionComponent(name, component, context) {
     const targetDirectory = path.join(vendor, component.unpack?.moveTo ?? name);
     mkdirSync(targetDirectory, { recursive: true });
     const target = path.join(targetDirectory, source.saveAs ?? archiveName);
-    const { copyFileSync } = await import("node:fs");
     copyFileSync(archivePath, target);
     const probe = runProbe(component.probe ?? {}, context);
     step(name, probe.ok ? "ok" : "FAIL", `${target}${probe.ok ? "" : " — " + probe.detail}`);
@@ -1140,7 +1198,7 @@ async function provisionComponent(name, component, context) {
   rmSync(target, { recursive: true, force: true });
   const staging = target + ".staging";
   rmSync(staging, { recursive: true, force: true });
-  const unpacked = extract(archivePath, staging, source.format);
+  const unpacked = extract(archivePath, staging, source.format, context);
   if (!unpacked) {
     step(name, "FAIL", `extraction failed for ${archiveName}`);
     return null;
@@ -1150,12 +1208,10 @@ async function provisionComponent(name, component, context) {
   for (let level = 0; level < strip; level += 1) {
     // Descend into the archive's single root directory. If the level is not a
     // single directory (some archives are already flat), stop rather than guess.
-    const { readdirSync } = await import("node:fs");
     const entries = readdirSync(effective).filter((entry) => !entry.startsWith("."));
     if (entries.length !== 1 || !statSync(path.join(effective, entries[0])).isDirectory()) break;
     effective = path.join(effective, entries[0]);
   }
-  const { renameSync } = await import("node:fs");
   rmSync(target, { recursive: true, force: true });
   renameSync(effective, target);
   rmSync(staging, { recursive: true, force: true });
@@ -1206,6 +1262,15 @@ async function provisionReaAgents(component, context) {
   if (options.dryRun) {
     step("reaAgents", "plan", `npm install ${component.sources.npm.registry.replace("https://registry.npmjs.org/", "")}@${version} --prefix ${installRoot}`);
     return { planned: true, version };
+  }
+
+  // `--offline is a promise, not a hint` — and this is the one step that cannot be
+  // served from the cache: it is an npm install, not a download. It used to run
+  // anyway, so a machine with every archive pre-cached still went to the registry
+  // (or failed there) after the flag had promised it would not.
+  if (options.offline) {
+    step("reaAgents", "FAIL", `--offline and the vendored REA at ${vendor} is not usable; npm install needs the registry (drop --offline or pre-install it)`);
+    return null;
   }
 
   /*
@@ -1263,6 +1328,10 @@ async function provisionReaAgents(component, context) {
   });
   if (install.status !== 0) {
     step("reaAgents", "FAIL", `npm install failed (${install.status}): ${`${install.stderr ?? ""}${install.stdout ?? ""}`.trim().split("\n").slice(-3).join(" | ").slice(0, 300)}`);
+    // Every other component can fall back to the proxy route this script resolves
+    // itself; npm cannot, and this step is the one that fails most often on a
+    // network where the registry needs a mirror.
+    log("       npm reads HTTPS_PROXY/HTTP_PROXY and NPM_CONFIG_REGISTRY from the environment (this script's own proxy routing does not apply here)");
     return null;
   }
 
@@ -1288,6 +1357,9 @@ log(`  root     ${options.root}`);
 log(`  cache    ${options.cache}`);
 log(`  host     ${hostKey()}  node ${process.versions.node}`);
 log(`  mode     ${options.dryRun ? "dry-run " : ""}${options.reuse ? "reuse " : ""}${options.offline ? "offline" : "online"}`.trimEnd());
+// Printed so an environment override is visible: a typo used to reach the socket
+// layer as NaN (and as "gave up after NaN attempt(s)") with nothing to see.
+log(`  limits   connect=${options.connectTimeoutMs}ms idle=${options.idleTimeoutMs}ms retries=${options.retries}`);
 log("");
 
 const manifest = loadManifest();

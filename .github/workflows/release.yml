@@ -78,5 +78,24 @@ jobs:
           npm install -g 'npm@^11'
           npm --version
 
+      - name: The version being published is tagged and carries its release asset
+        # workflow_dispatch can start this job with no Release behind it, and then npm
+        # and the GitHub tarball drift apart: the market's fallback link points at the
+        # release asset, so publishing a version whose asset does not exist ships a 404
+        # to half the install paths.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ver="v$(node -p "require('./package.json').version")"
+          if ! git ls-remote --tags --exit-code origin "refs/tags/$ver" >/dev/null 2>&1; then
+            echo "FAIL: no tag $ver on origin — publish the GitHub Release first"
+            exit 1
+          fi
+          if ! gh release view "$ver" --json assets --jq '.assets[].name' | grep -qx 'dsh-plugin-rea.tgz'; then
+            echo "FAIL: release $ver has no dsh-plugin-rea.tgz asset — the market link would 404"
+            exit 1
+          fi
+          echo "$ver is tagged and carries the version-free tarball"
+
       - name: Publish to npm via trusted publishing
         run: npm publish --provenance --access public

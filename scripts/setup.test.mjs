@@ -13,7 +13,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -864,6 +864,174 @@ test("a lock whose holder is gone does not block provisioning", async () => {
     assert.equal(run.status, 78, run.stderr);
     assert.match(run.stderr, /provisioning started in the background/);
     assert.ok(await waitFor(() => existsSync(marker)), "a dead lock holder must not suppress the run");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("an expired lock is cleared instead of wedging provisioning forever", async () => {
+  const stale = Date.now() - 7 * 60 * 60 * 1000;
+  const dead = spawnSync(process.execPath, ["-e", ""]).pid;
+  const cases = {
+    "running lock with a dead holder": JSON.stringify({ state: "running", pid: dead, at: stale }),
+    "failed lock past the freshness window": JSON.stringify({ state: "failed", pid: dead, at: stale, exit: 1 }),
+    "legacy numeric lock": String(stale),
+  };
+  for (const [label, lock] of Object.entries(cases)) {
+    const root = mkdtempSync(path.join(tmpdir(), "rea-shim-stale-"));
+    try {
+      const marker = path.join(root, "setup-ran");
+      const bundle = makeBundleTree(root, { marker, lock });
+      const run = runShim(bundle, ["mcp"]);
+      assert.equal(run.status, 78, `${label}: ${run.stderr}`);
+      // Reproduced before the fix: all three cases were silent AND blocked, because
+      // the stale lock was never removed and the exclusive create then failed with
+      // EEXIST forever. A lock older than the freshness window is not evidence of a
+      // run, so it must be dropped and the attempt started again.
+      assert.match(run.stderr, /provisioning started in the background/, label);
+      assert.ok(await waitFor(() => existsSync(marker)), `${label}: setup was never started`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
+/* ------------------------------- --offline is a promise, and npm is the one step
+ * that cannot keep it: it is an install, not a download. -------------------- */
+
+test("--offline refuses the npm step instead of going online anyway", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "rea-offline-rea-"));
+  try {
+    const setup = makePluginTree(root, () => {});
+    const bundle = path.join(root, "bundle");
+    const run = spawnSync(process.execPath, [setup, "--offline", "--only", "reaAgents", "--root", bundle], {
+      encoding: "utf8",
+      timeout: 120000,
+    });
+    assert.equal(run.status, 1, `${run.stdout}\n${run.stderr}`);
+    assert.match(run.stdout, /--offline and the vendored REA/);
+
+    // The other direction: a usable vendored copy is still accepted offline, so the
+    // flag does not turn into "reaAgents can never be provisioned".
+    const second = path.join(root, "bundle2");
+    mkdirSync(second, { recursive: true });
+    addReaStub(second);
+    const ok = spawnSync(process.execPath, [setup, "--offline", "--only", "reaAgents", "--root", second], {
+      encoding: "utf8",
+      timeout: 120000,
+    });
+    assert.equal(ok.status, 0, `${ok.stdout}\n${ok.stderr}`);
+    assert.match(ok.stdout, /already vendored/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+/* ------------------------------- numeric overrides must not become NaN ------ */
+
+test("a non-numeric numeric override falls back to the default", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "rea-env-"));
+  try {
+    const setup = makePluginTree(root, () => {});
+    const run = (env) =>
+      spawnSync(process.execPath, [setup, "--dry-run", "--only", "node", "--root", path.join(root, "bundle")], {
+        encoding: "utf8",
+        timeout: 120000,
+        env: { ...process.env, ...env },
+      });
+    // `Number("abc")` is NaN, and NaN reached the socket layer as 0-ish behaviour;
+    // `REA_BUNDLE_FETCH_RETRIES=abc` once produced "gave up after NaN attempt(s)".
+    const bogus = run({ REA_BUNDLE_FETCH_RETRIES: "abc", REA_BUNDLE_IDLE_TIMEOUT_MS: "abc", REA_BUNDLE_CONNECT_TIMEOUT_MS: "abc" });
+    assert.equal(bogus.status, 0, `${bogus.stdout}\n${bogus.stderr}`);
+    assert.match(bogus.stdout, /retries=4\b/);
+    assert.match(bogus.stdout, /idle=120000ms/);
+    assert.doesNotMatch(bogus.stdout, /NaN/);
+    const explicit = run({ REA_BUNDLE_FETCH_RETRIES: "7" });
+    assert.match(explicit.stdout, /retries=7\b/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+/* ------------------------------- POSIX extraction fallbacks ----------------- */
+
+/** An `archive`-kind component, for the extraction paths. */
+function testArchive(url, payload, extra = {}) {
+  return {
+    description: "test archive",
+    kind: "archive",
+    license: "test",
+    requires: [],
+    optional: false,
+    unpack: { stripRootComponents: extra.strip ?? 0, moveTo: extra.moveTo ?? "arch" },
+    probe: extra.probe ?? {},
+    sources: {
+      all: {
+        version: "1",
+        url,
+        format: extra.format ?? "zip",
+        size: payload.length,
+        sha256: createHash("sha256").update(payload).digest("hex"),
+      },
+    },
+  };
+}
+
+test("a zip still extracts when unzip is absent (POSIX fallbacks)", (t) => {
+  if (process.platform === "win32") {
+    t.skip("Windows extracts through tar/Expand-Archive; the POSIX fallbacks do not exist there");
+    return;
+  }
+  const root = mkdtempSync(path.join(tmpdir(), "rea-extract-"));
+  try {
+    // A real zip, built with the very tool the fallback will use.
+    const zipPath = path.join(root, "fixture.zip");
+    const built = spawnSync("python3", [
+      "-c",
+      "import sys,zipfile;z=zipfile.ZipFile(sys.argv[1],'w');z.writestr('inside.txt','hello from inside\\n');z.close()",
+      zipPath,
+    ]);
+    if (built.status !== 0) {
+      t.skip("python3 is unavailable, so neither the fixture nor the fallback can run");
+      return;
+    }
+    const payload = readFileSync(zipPath);
+    const python = spawnSync("sh", ["-c", "command -v python3"], { encoding: "utf8" }).stdout.trim();
+    assert.ok(python, "python3 was just used to build the fixture");
+
+    // A PATH that has python3 and nothing else: unzip cannot be found, which is
+    // exactly the bare-server case. Ghidra ships only as a zip, so this used to be
+    // a certain failure rather than an occasional one.
+    const binDir = path.join(root, "bin");
+    mkdirSync(binDir, { recursive: true });
+    const onlyPython = path.join(binDir, "python3");
+    symlinkSync(python, onlyPython);
+    const setup = makePluginTree(root, (manifest) => {
+      manifest.components.androidPlatformTools = testArchive("http://127.0.0.1:9/fixture.zip", payload);
+    });
+    const cases = [
+      { label: "python3 fallback", path: binDir, expected: 0 },
+      { label: "no extractor at all", path: path.join(root, "empty-bin"), expected: 1 },
+    ];
+    for (const testCase of cases) {
+      mkdirSync(testCase.path, { recursive: true });
+      const bundle = path.join(root, `bundle-${testCase.expected}`);
+      mkdirSync(path.join(bundle, "cache"), { recursive: true });
+      writeFileSync(path.join(bundle, "cache", "fixture.zip"), payload);
+      addReaStub(bundle);
+      const run = spawnSync(process.execPath, [setup, "--only", "androidPlatformTools", "--root", bundle], {
+        encoding: "utf8",
+        timeout: 120000,
+        env: { ...process.env, PATH: testCase.path },
+      });
+      assert.equal(run.status, testCase.expected, `${testCase.label}: ${run.stdout}\n${run.stderr}`);
+      if (testCase.expected === 0) {
+        assert.equal(readFileSync(path.join(bundle, "vendor", "arch", "inside.txt"), "utf8"), "hello from inside\n");
+      } else {
+        assert.match(run.stdout, /no zip extractor available/);
+        assert.match(run.stdout, /install unzip or python3/);
+      }
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

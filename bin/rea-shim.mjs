@@ -167,11 +167,15 @@ function maybeAutoProvision(root) {
     if (fresh) {
       const alive = pidAlive(record?.pid);
       if (alive !== false) return { started: false, reason: "in-flight", logPath, ageMs: age };
-      // The lock holder is gone and never wrote an outcome (harness restart,
-      // power loss, a kill), so the attempt is not running and the lock is not
-      // evidence of anything. Drop it and start again.
-      rmSync(lock, { force: true });
     }
+    // Reached when the lock is older than the freshness window, or its holder is
+    // gone and never wrote an outcome (harness restart, power loss, a kill): what
+    // it records is not happening any more. This removal is the whole point of the
+    // freshness rule — without it the exclusive create below failed with EEXIST
+    // *forever*, auto-provisioning never ran again, and main() printed nothing at
+    // all for that outcome. The lock's own "honour it only while it is fresh"
+    // comment described behaviour the code did not have.
+    rmSync(lock, { force: true });
   }
   try {
     mkdirSync(path.join(root, "logs"), { recursive: true });
@@ -384,6 +388,17 @@ function main() {
       process.stderr.write(
         `\n  dsh-plugin-rea (bundle): the last provisioning attempt failed (exit ${provisioning.exit ?? "?"}).\n` +
           `  Nothing is running right now — read the log, then re-run setup.\n  log: ${provisioning.logPath}\n`,
+      );
+    } else if (provisioning.reason === "in-flight") {
+      // A live run owns the lock. Saying nothing here is what made a wedged
+      // provisioning attempt look like a machine that simply has no bundle.
+      process.stderr.write(
+        `\n  dsh-plugin-rea (bundle): provisioning is already running in the background.\n  progress: ${provisioning.logPath}\n`,
+      );
+    } else if (provisioning.reason === "spawn-failed" || provisioning.reason === "unwritable") {
+      process.stderr.write(
+        `\n  dsh-plugin-rea (bundle): provisioning could not be started (${provisioning.reason}).\n` +
+          `  Run it by hand:\n    node "${path.join(root, "scripts", "setup.mjs")}"\n`,
       );
     }
     return fail(message, loaded.detail);

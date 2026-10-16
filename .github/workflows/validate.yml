@@ -44,8 +44,8 @@ jobs:
       - name: The npm payload ships every market-facing file
         run: |
           # Regression guard for files[]: the market reads screenshots.json and the
-          # images next to package.json, and a user copies examples/ by hand — none of
-          # that is worth anything if npm pack drops it.
+          # images next to package.json — none of that is worth anything if npm pack
+          # drops it.
           node -e "
             const { execSync } = require('child_process');
             const meta = JSON.parse(execSync('npm pack --dry-run --json', { encoding: 'utf8' }))[0];
@@ -53,7 +53,6 @@ jobs:
             const need = [
               'cordis.patch.yml', 'README.md', 'README.zh-CN.md', 'LICENSE', 'CHANGELOG.md', 'check-updates.ps1',
               'screenshots.json', 'assets/screenshot-1.png', 'assets/screenshot-2.png',
-              'examples/cordis.patch.posix.yml', 'examples/cordis.patch.with-env.yml',
             ];
             const missing = need.filter((f) => !files.includes(f));
             if (missing.length) {
@@ -77,7 +76,7 @@ jobs:
               'tag:yaml.org,2002:js',
               lambda loader, node: loader.construct_scalar(node),
           )
-          files = ['cordis.patch.yml', 'docs/marketplace-entry.yml'] + sorted(glob.glob('examples/*.yml')) + sorted(glob.glob('.github/workflows/*.yml'))
+          files = ['cordis.patch.yml', 'docs/marketplace-entry.yml'] + sorted(glob.glob('.github/workflows/*.yml'))
           for f in files:
               with open(f, encoding='utf-8') as fh:
                   yaml.safe_load(fh)
@@ -87,10 +86,9 @@ jobs:
       - name: The shipped patches stay machine-independent
         run: |
           set -e
-          # The row DSH loads, plus every example a reader is told to copy: none of
-          # them may carry a real machine path. `<placeholders in angle brackets>`
-          # are the intended form.
-          targets=$(printf '%s\n' cordis.patch.yml examples/*.yml)
+          # The row DSH loads may carry no real machine path; `<placeholders in angle
+          # brackets>` are the intended form.
+          targets=$(printf '%s\n' cordis.patch.yml)
           if grep -nE '[A-Za-z]:\\' $targets; then
             echo "FAIL: a shipped patch contains an absolute Windows path"
             exit 1

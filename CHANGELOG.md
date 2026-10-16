@@ -57,6 +57,43 @@
 - 单测 33 条（32 过 + 1 条按平台跳过）；`--reuse adopts a compatible node` 在 engines 之外的宿主上改为显式
   skip（此前在 Node 20 上必红，而 CI 钉 22 看不出来）。
 
+### 第二轮修复（同一份**更新后**的清单，2026-10-16 晚）
+
+- 🔴 **过期 lock 永久卡死自动供给（2.0.0–2.0.2 三版全带）**：`maybeAutoProvision()` 只在 lock 新鲜时
+  处理它，过期的 lock 既不清除也不报告 → 落到独占创建 → `EEXIST` → 返回 `in-flight`，而 `main()` 对
+  `in-flight` **一个字都不打印**。于是「下载被 kill / 断电」这一常态，在 6 小时后再启动就变成**永久不再
+  自动供给且完全静默**。已按清单复现（7 小时死 lock：不启动、lock 原样、无任何提示；5 分钟 lock 对照组
+  正常删锁重启），修法：**不新鲜或持有者已死就一律清锁**（这正是注释里"只在新鲜时尊重它"的本意），
+  并给 `in-flight` / `spawn-failed` / `unwritable` 补上如实提示。
+- 🔴 **`examples/` 两个文件是 1.x 内容，却随 2.x 进了 npm 包**：`cordis.patch.posix.yml` 教人把整行换成
+  `command: rea`、`cordis.patch.with-env.yml` 给的是 `cmd.exe /c rea` 的 1.x 行——对 2.x 全错（2.x 的行是
+  跨平台的 `process.execPath` + bundle shim，照抄会整行绕过 bundle）。两份都已是孤儿（README 不再引用），
+  故从 `main` **删除**，并同步 `package.json files[]` 与 `validate.yml` 的载荷/YAML/机器路径三项检查
+  （v1 分支保留它们，在 1.x 语境里是对的）。npm 载荷由此 21 → 19 个文件。
+- 🟡 **`--offline` 管不住 `reaAgents`**：`provisionReaAgents()` 里 0 处 offline 判断，`npm install` 永远
+  联网——与「`--offline` is a promise, not a hint」直接矛盾。现在 `--offline` 且内置副本不可用时**直接
+  FAIL** 并说明原因（而可用的内置副本仍照常跳过）。
+- 🟡 **npm 那一步没有代理/镜像兜底**：压缩包有 direct→proxy→PowerShell 三路，npm 只读环境变量。失败时
+  现在会打印这句提示，两份 README 的能力/注意里也写明 `HTTPS_PROXY` / `NPM_CONFIG_REGISTRY`。
+- 🟡 **POSIX 缺 `unzip`/`xz` 必现失败**：Ghidra 全平台只有 zip，而 POSIX 解压原先只有 `unzip` 一条路。
+  现在 zip 依次尝试 `unzip` → `python3 -m zipfile` → **已供给 JDK 自带的 `jar`**（JDK 在 Ghidra 之前供给，
+  等于保底），tar 依次 `tar` → `python3`；三者皆无时打印明确的「no zip extractor available」而不是干巴巴的
+  「extraction failed」。
+- 🟡 **manifest 的 arm64 注释是错的**：Google 的 linux/darwin platform-tools 都是 x86_64 二进制，
+  「The same archive serves x86-64 and arm64」不成立。三个条目改成如实描述（macOS 需 Rosetta 2、
+  linux-arm64 上 probe 预期失败并被报为可选组件不可用）。
+- 🟡 **`docs/bundle-design.md` 与实现漂移**：§3 的「row points at `<plugin>/bin/rea-shim.mjs`」改成
+  「按 `DSH_HOME` 算出 `<DSH_HOME>/plugins/rea-bundle/bin/rea-shim.mjs`（镜像副本）」；§7 的
+  `vendor/rea-agents` 改成 `vendor/node_modules/rea-agents`。
+- 🟢 **`release.yml` 的 `workflow_dispatch` 可绕过 Release 直接发 npm**：publish job 现在先断言
+  `v<package.json version>` 的 tag 在 origin 上存在、且该 Release 挂着版本无关的 `dsh-plugin-rea.tgz`
+  资产，否则拒绝发布（否则 npm 与市场兜底链接会岔开）。
+- 🟢 **数值环境变量会变成 NaN**：`REA_BUNDLE_FETCH_RETRIES=abc` → `Math.max(1, NaN)` → 报
+  「gave up after NaN attempt(s)」；NaN 的 socket 超时等价于 0（立即超时）。现在非正有限值一律回落到默认，
+  且启动日志新增一行 `limits connect=… idle=… retries=…`，让覆盖生效可见。
+- 🟢 注释与整洁：`downloadViaPowerShell` 的文档说自己是 fallback，实际在 Windows 上是主路线（已改口径）；
+  去掉 setup.mjs 里 3 处对已静态导入成员的重复 `await import("node:fs")`（`readdirSync` 补进静态导入）。
+
 ## 2.0.2 — 2026-10-15
 
 **仅文档，无行为变更。**
