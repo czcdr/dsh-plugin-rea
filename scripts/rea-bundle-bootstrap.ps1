@@ -1,4 +1,4 @@
-﻿# rea-bundle-bootstrap.ps1 — get from "no Node at all" to a provisioned bundle.
+# rea-bundle-bootstrap.ps1 — get from "no Node at all" to a provisioned bundle.
 #
 # Why this exists: setup.mjs is written in Node, so a machine with no Node
 # cannot run it. This script uses only PowerShell + Expand-Archive (no
@@ -39,8 +39,12 @@ $Root = [System.IO.Path]::GetFullPath($Root)
 $stack = Join-Path $Root 'stack'
 $cache = Join-Path $Root 'cache'
 $logs = Join-Path $Root 'logs'
-foreach ($dir in @($Root, $stack, $cache, $logs)) {
-  if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+# -DryRun promises that nothing was changed, so it must not create these either:
+# it only reads them, and Test-Path / Get-ChildItem handle a missing path.
+if (-not $DryRun) {
+  foreach ($dir in @($Root, $stack, $cache, $logs)) {
+    if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+  }
 }
 
 $pluginRoot = Split-Path -Parent $PSScriptRoot
@@ -84,6 +88,32 @@ $nodeFolder = [System.IO.Path]::GetFileNameWithoutExtension($nodeZipName)
 if ($nodeSha256 -eq 'unverified') { throw "the manifest pins no checksum for $hostKey; refusing to download unverified bytes" }
 Write-Step "Node source: $hostKey v$nodeVersion"
 
+$script:NodeEngines = [string]$manifest.pins.nodeEngines
+if (-not $script:NodeEngines) { throw "the manifest pins no nodeEngines, so Node compatibility cannot be judged" }
+
+# REA's engines come from the manifest pin, which the rest of provisioning already
+# treats as the single source of truth. This used to be a second copy of the same
+# numbers in a comment, and two copies drift: the audit now asserts that the pin
+# keeps the shape this parser understands.
+function Test-EnginesMatch([string]$Clean, [string]$Range) {
+  $versions = @()
+  foreach ($part in $Clean.Split('.')) {
+    $n = 0
+    if (-not [int]::TryParse($part, [ref]$n)) { return $false }
+    $versions += $n
+  }
+  if ($versions.Count -lt 2) { return $false }
+  foreach ($clause in ($Range -split '\|\|')) {
+    $c = $clause.Trim()
+    if ($c -match '^\^(\d+)\.(\d+)\.(\d+)$') {
+      if ($versions[0] -eq [int]$Matches[1] -and $versions[1] -ge [int]$Matches[2]) { return $true }
+    } elseif ($c -match '^>=(\d+)\.(\d+)\.(\d+)$') {
+      if ($versions[0] -gt [int]$Matches[1] -or ($versions[0] -eq [int]$Matches[1] -and $versions[1] -ge [int]$Matches[2])) { return $true }
+    }
+  }
+  return $false
+}
+
 function Test-NodeUsable([string]$Exe) {
   if (-not $Exe -or -not (Test-Path $Exe)) { return $null }
   try {
@@ -91,13 +121,10 @@ function Test-NodeUsable([string]$Exe) {
   } catch { return $null }
   if (-not $version) { return $null }
   $clean = $version.TrimStart('v').Trim()
-  $parts = $clean.Split('.')
-  if ($parts.Count -lt 2) { return $null }
-  $major = [int]$parts[0]
-  $minor = [int]$parts[1]
-  # REA's engines: ^22.19.0 || ^24.11.0 || >=26.0.0
-  $ok = ($major -eq 22 -and $minor -ge 19) -or ($major -eq 24 -and $minor -ge 11) -or ($major -ge 26)
-  if (-not $ok) { return $null }
+  # A version that is not three numbers (`vX.Y`) used to reach `[int]` and throw
+  # under $ErrorActionPreference='Stop', aborting the whole bootstrap instead of
+  # falling through to the portable download — the one path this script exists for.
+  if (-not (Test-EnginesMatch $clean $script:NodeEngines)) { return $null }
   return [pscustomobject]@{ Path = (Resolve-Path $Exe).Path; Version = $clean }
 }
 

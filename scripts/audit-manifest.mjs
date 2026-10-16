@@ -430,6 +430,104 @@ if (manifest) {
     }
   }
 
+  /* ------------------------- 11. setup and the manifest describe the same set */
+
+  // A component added to the manifest but not to setup.mjs's INSTALL_ORDER was
+  // silently never provisioned, and nothing here said so. The reverse — a name in
+  // INSTALL_ORDER with no manifest entry — is skipped by the loop's
+  // `if (!component) continue`, so it is equally silent.
+  const installOrderMatch = setupText.match(/const INSTALL_ORDER = \[([^\]]*)\]/);
+  if (!installOrderMatch) {
+    add("error", "scripts/setup.mjs", "INSTALL_ORDER was not found, so manifest/setup agreement cannot be checked");
+  } else {
+    const order = [...installOrderMatch[1].matchAll(/"([^"]+)"/g)].map((match) => match[1]);
+    const manifestNames = Object.keys(manifest.components ?? {});
+    for (const name of manifestNames) {
+      if (!order.includes(name)) {
+        add("error", "manifest.components", `"${name}" is not in scripts/setup.mjs INSTALL_ORDER, so setup would silently never provision it`);
+      }
+    }
+    for (const name of order) {
+      if (!manifestNames.includes(name)) {
+        add("error", "scripts/setup.mjs", `INSTALL_ORDER names "${name}", which the manifest does not describe`);
+      }
+    }
+  }
+
+  /* ---------------------------- 12. the Node engines rule has one wording too */
+
+  // REA's engines are restated in the manifest pin, package.json and the node
+  // probe regex. Only the pin and package.json can be compared as text, but a
+  // drift between those two would advertise one range and enforce another.
+  const declaredEngines = manifest.pins?.nodeEngines;
+  let packageEngines = null;
+  try {
+    packageEngines = JSON.parse(readFileSync(path.join(HERE, "..", "package.json"), "utf8")).engines?.node ?? null;
+  } catch (error) {
+    add("error", "package.json", `could not be read: ${String(error && error.message)}`);
+  }
+  if (!declaredEngines) {
+    add("error", "manifest.pins.nodeEngines", "is missing, so nothing states REA's engines for the reuse path");
+  } else if (declaredEngines !== packageEngines) {
+    add(
+      "error",
+      "manifest.pins.nodeEngines",
+      `is ${JSON.stringify(declaredEngines)} but package.json engines.node is ${JSON.stringify(packageEngines)}`,
+    );
+  }
+
+  /* ------------------- 13. a pinned version's probe must not accept a prefix */
+
+  // The concern is a probe that accepts a *newer* release as the pin, so test the
+  // expression against the versions that would mean that. The audit is not a
+  // regex linter: `^6\.4\.0` legitimately rejects 6.4.1 and 6.5.0 — the failure
+  // mode is only real when the next patch or minor still matches.
+  const reaAgents = manifest.components?.reaAgents;
+  const pinnedRea = reaAgents?.sources?.npm?.version;
+  const reaProbe = reaAgents?.probe?.expect?.regex;
+  if (pinnedRea && reaProbe) {
+    let probe = null;
+    try {
+      probe = new RegExp(reaProbe, "m");
+    } catch (error) {
+      add("error", "reaAgents.probe.expect.regex", `is not a valid regular expression: ${String(error && error.message)}`);
+    }
+    if (probe) {
+      if (!probe.test(pinnedRea)) {
+        add("error", "reaAgents.probe.expect.regex", `does not match the pinned version ${pinnedRea}`);
+      }
+      const [major, minor, patch] = pinnedRea.split(".").map((part) => Number(part));
+      for (const [label, next] of [
+        ["the next patch", `${major}.${minor}.${patch + 1}`],
+        ["the next minor", `${major}.${minor + 1}.0`],
+      ]) {
+        if (Number.isFinite(next.split(".")[2]) && probe.test(next)) {
+          add("error", "reaAgents.probe.expect.regex", `accepts ${next} (${label}), so a newer release passes as the pin`);
+        }
+      }
+    }
+  }
+
+  /* --------------------- 14. a POSIX wrapper must be marked executable */
+
+  // copyFileSync carries the archive's 0644 and nothing else changes a mode, while
+  // REA spawns REA_APKTOOL_COMMAND without a shell: on Linux/macOS an unmarked
+  // wrapper fails with EACCES even though the component probe (`java -jar`) passes.
+  // Only the manifest can say which files need the bit, so require it here.
+  const apktoolWrappers = manifest.components?.apktool?.entries?.byPlatform ?? {};
+  for (const [platform, list] of Object.entries(apktoolWrappers)) {
+    if (platform.startsWith("win32")) continue;
+    for (const entry of list) {
+      if (entry.executable !== true) {
+        add(
+          "error",
+          `apktool.entries.byPlatform.${platform}`,
+          `the ${platform} wrapper is not marked "executable": true, so it lands 0644 and cannot be spawned without a shell`,
+        );
+      }
+    }
+  }
+
   /* ------------------------------------------------------------- summary */
 
   const pinned = fetchEntries.filter((entry) => entry.entry.sha256 && entry.entry.sha256 !== "unverified").length;

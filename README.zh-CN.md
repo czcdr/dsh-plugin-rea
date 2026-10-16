@@ -170,11 +170,11 @@ shim 启动**。
 
 ## 实测环境
 
-作者机器，2026-10-13 / 14：
+作者机器，2026-10-13 / 14 / 16：
 
 | 组件 | 版本 |
 |---|---|
-| REA（`rea-agents`） | **6.4.0**（170 个工具） |
+| REA（`rea-agents`） | **6.5.0**（207 个工具） |
 | DeepSeek Harness | desktop runtime **0.2.0-rc.2**，内含 dsh CLI 0.1.7-rc.2 |
 | `@deepseek-ai/dsh-mcp-client`（行 provider） | 随 harness 打包 |
 | Ghidra | 12.1.4 |
@@ -183,7 +183,7 @@ shim 启动**。
 | 宿主 | Windows 11 x64（build 26200） |
 
 实测跑过：一次干净的 `setup.mjs --reuse` 走到 `setup complete`；一次**不经 PATH 上的 `rea`、完全经由
-shim** 的 MCP `initialize` 握手返回 `serverInfo {name: rea, version: 6.4.0}`；以及**真实桌面宿主下的完整链路** ——
+shim** 的 MCP `initialize` 握手返回 `serverInfo {name: rea, version: 6.5.0}`；以及**真实桌面宿主下的完整链路** ——
 宿主自己的 Electron 二进制启动 `<DSH_HOME>/plugins/rea-bundle/bin/rea-shim.mjs mcp`，shim 拉起 **bundle 内置**
 的 REA，随后一次真实工具调用报出 `path_source: environment`，而那个路径只有该机的 `bundle.json` 知道。
 
@@ -192,12 +192,13 @@ shim** 的 MCP `initialize` 握手返回 `serverInfo {name: rea, version: 6.4.0}
 
 ## 边界与注意事项
 
-- REA 在 6.4.0 有 170 个工具，每个会话的工具列表都会变长。
+- REA 在 6.5.0 有 207 个工具，每个会话的工具列表都会变长。
 - 校验和对得起良心：厂商发布了的就固定并验证；没发布的（jadx-headless-mcp、apktool 包装脚本、
   Android platform-tools、滚动的 `latest` 地址）则**实测一次并记录**，之后若漂移是**报告**而不是默默接受。
   `bundle.json` 的 `unverifiedChecksums` 会列出处于该状态的组件。
 - 某些网络下很慢（这里实测 GitHub release CDN 只有 0.35–0.54 MiB/s，光 Ghidra 就要 25–45 分钟）。
-  下载是**可续传**的：缓存保留并重新校验，被中断的一轮会继续而不是从头再来。
+  下载是**可续传**的：两条路线都按盘上已有的字节发 Range 继续；若 `.part` 恰好已经完整，会校验后直接收下
+  而不是重下。
 - **代理**：Node 的全局 `fetch` 不读系统代理，而 .NET/PowerShell 会读。在开着 WinINET 代理的机器上，
   同一个地址 `Invoke-WebRequest` 通、Node 却 `ECONNRESET`/超时。setup 自己解析代理
   （环境变量优先，Windows 上回退读注册表）并用 CONNECT 隧道，`NO_PROXY` 也照常生效。

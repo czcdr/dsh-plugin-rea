@@ -12,12 +12,14 @@
     "  binaries - workspace-relative entries inside the unpacked directory that are",
     "             directly spawnable; the first that exists becomes the component's",
     "             recorded path so another component can depend on it.",
+    "  executable - a placed file that must carry the POSIX exec bit (a wrapper REA",
+    "             spawns without a shell); setup chmods exactly these to 0755.",
     "Nothing here is redistributed inside the npm package; setup downloads it."
   ],
   "manifestVersion": 1,
   "generatedFor": "dsh-plugin-rea one-plugin bundle",
   "pins": {
-    "reaAgents": "6.4.0",
+    "reaAgents": "6.5.0",
     "ghidra": "12.1.4",
     "jdk": "21",
     "apktool": "3.0.3",
@@ -203,16 +205,16 @@
           "win32-x64": [
             {
               "id": "wrapper",
-              "version": "master",
-              "url": "https://raw.githubusercontent.com/iBotPeaches/Apktool/master/scripts/windows/apktool.bat",
+              "version": "3.0.3",
+              "url": "https://raw.githubusercontent.com/iBotPeaches/Apktool/v3.0.3/scripts/windows/apktool.bat",
               "format": "file",
-              "size": 2348,
-              "sha256": "9440ec9d98efdef14136f4cefd79ac200d72baa016b5991d128234a3a3ef3b43",
-              "sha256Source": "measured on 2026-10-13 (raw.githubusercontent.com publishes no checksum for the wrapper); a single 2,348-byte file, so the archive-free case needs no TOFU",
-              "sha256VerifiedOn": "2026-10-13",
+              "size": 2386,
+              "sha256": "d81a91bd694459a61a88e4a1a8184efc21130390ff7cb5c172f631551ad9842a",
+              "sha256Source": "measured on 2026-10-16 from the immutable v3.0.3 tag (raw.githubusercontent.com publishes no checksum for the wrapper). The tag, not master: pinning master meant any upstream commit to the wrapper broke every new install with a hash mismatch, and four retries could not fix a download whose content had legitimately changed.",
+              "sha256VerifiedOn": "2026-10-16",
               "notes": [
                 "The wrapper pushd's to its own directory and resolves apktool.jar first, then globs apktool_*.jar, so the renamed jar next to it is found.",
-                "Its final line is `for %%i in (%cmdcmdline%) do if /i \"%%~i\"==\"/c\" pause & exit /b`: measured here it returns exit 0 in 0.2 s, but it appends 'Press any key to continue . . .' to stdout. That trailing text is upstream's, not a provisioning defect; tools that parse apktool's stdout should tolerate it.",
+                "The previous entry measured master's copy (2,348 bytes) and recorded that it returns exit 0 in 0.2 s while appending 'Press any key to continue . . .' to stdout. This is the tag's copy (2,386 bytes) and that runtime behaviour has NOT been re-measured; treat the trailing-text claim as unverified for this file.",
                 "REA is pointed at this .bat (REA_APKTOOL_COMMAND), not at the jar, exactly as the wrapper expects."
               ],
               "moveTo": "apktool",
@@ -222,13 +224,14 @@
           "darwin-x64": [
             {
               "id": "wrapper",
-              "version": "master",
-              "url": "https://raw.githubusercontent.com/iBotPeaches/Apktool/master/scripts/osx/apktool",
+              "version": "3.0.3",
+              "url": "https://raw.githubusercontent.com/iBotPeaches/Apktool/v3.0.3/scripts/osx/apktool",
               "format": "file",
-              "size": 2672,
-              "sha256": "d0c86f0475ed73bfffa6ac39faa69de7aa2dd40ff5e7e6540f82002be3a38f0b",
-              "sha256Source": "measured on 2026-10-13 from the osx wrapper (the correct one for macOS; the linux script is a different file)",
-              "sha256VerifiedOn": "2026-10-13",
+              "size": 2709,
+              "sha256": "3b9a95c41680c4a758b0b8d6e91e122b2ea3f1a189685a915613ca1ccba00fd9",
+              "sha256Source": "measured on 2026-10-16 from the v3.0.3 tag (the correct file for macOS; the linux script is a different file). The tag is immutable, so this pin cannot drift under a new install the way master's did.",
+              "sha256VerifiedOn": "2026-10-16",
+              "executable": true,
               "moveTo": "apktool",
               "saveAs": "apktool"
             }
@@ -236,13 +239,14 @@
           "darwin-arm64": [
             {
               "id": "wrapper",
-              "version": "master",
-              "url": "https://raw.githubusercontent.com/iBotPeaches/Apktool/master/scripts/osx/apktool",
+              "version": "3.0.3",
+              "url": "https://raw.githubusercontent.com/iBotPeaches/Apktool/v3.0.3/scripts/osx/apktool",
               "format": "file",
-              "size": 2672,
-              "sha256": "d0c86f0475ed73bfffa6ac39faa69de7aa2dd40ff5e7e6540f82002be3a38f0b",
-              "sha256Source": "measured on 2026-10-13 from the osx wrapper",
-              "sha256VerifiedOn": "2026-10-13",
+              "size": 2709,
+              "sha256": "3b9a95c41680c4a758b0b8d6e91e122b2ea3f1a189685a915613ca1ccba00fd9",
+              "sha256Source": "measured on 2026-10-16 from the v3.0.3 tag; the same osx wrapper serves arm64.",
+              "sha256VerifiedOn": "2026-10-16",
+              "executable": true,
               "moveTo": "apktool",
               "saveAs": "apktool"
             }
@@ -250,13 +254,14 @@
           "linux-x64": [
             {
               "id": "wrapper",
-              "version": "master",
-              "url": "https://raw.githubusercontent.com/iBotPeaches/Apktool/master/scripts/linux/apktool",
+              "version": "3.0.3",
+              "url": "https://raw.githubusercontent.com/iBotPeaches/Apktool/v3.0.3/scripts/linux/apktool",
               "format": "file",
-              "size": 2648,
-              "sha256": "a851371023c43ca9b9a30218f87f9fd536304283de7b85447183ae811dfd033c",
-              "sha256Source": "measured on 2026-10-13 from the linux wrapper",
-              "sha256VerifiedOn": "2026-10-13",
+              "size": 2685,
+              "sha256": "493a9c98df968a25c373ca9df871ca77730c82954be4959b74e90adaf91a0e77",
+              "sha256Source": "measured on 2026-10-16 from the v3.0.3 tag.",
+              "sha256VerifiedOn": "2026-10-16",
+              "executable": true,
               "moveTo": "apktool",
               "saveAs": "apktool"
             }
@@ -264,13 +269,14 @@
           "linux-arm64": [
             {
               "id": "wrapper",
-              "version": "master",
-              "url": "https://raw.githubusercontent.com/iBotPeaches/Apktool/master/scripts/linux/apktool",
+              "version": "3.0.3",
+              "url": "https://raw.githubusercontent.com/iBotPeaches/Apktool/v3.0.3/scripts/linux/apktool",
               "format": "file",
-              "size": 2648,
-              "sha256": "a851371023c43ca9b9a30218f87f9fd536304283de7b85447183ae811dfd033c",
-              "sha256Source": "measured on 2026-10-13 from the linux wrapper",
-              "sha256VerifiedOn": "2026-10-13",
+              "size": 2685,
+              "sha256": "493a9c98df968a25c373ca9df871ca77730c82954be4959b74e90adaf91a0e77",
+              "sha256Source": "measured on 2026-10-16 from the v3.0.3 tag; the same linux wrapper serves arm64. It is only correct where the platform-tools archive is too — see the arch caveat on androidPlatformTools.",
+              "sha256VerifiedOn": "2026-10-16",
+              "executable": true,
               "moveTo": "apktool",
               "saveAs": "apktool"
             }
@@ -370,14 +376,14 @@
       "unpack": { "moveTo": "rea-agents" },
       "probe": {
         "argv": ["{node}", "{vendor}/node_modules/rea-agents/scripts/rea.mjs", "--version"],
-        "expect": { "regex": "^6\\.4\\.0" }
+        "expect": { "regex": "^6\\.5\\.0(\\s|$)" }
       },
       "sources": {
         "npm": {
-          "version": "6.4.0",
+          "version": "6.5.0",
           "registry": "https://registry.npmjs.org/rea-agents",
-          "integrity": "npm's own dist.integrity is the authoritative check for this tarball: the registry tarball ships NO node_modules (verified: 1161 entries, 0 under node_modules), so setup resolves the dependency closure with `npm install --ignore-scripts` instead of unpacking a tarball.",
-          "note": "`just unpacking the published tarball cannot work` is a verified fact, not a caution: the CLI would fail with ERR_MODULE_NOT_FOUND on zod."
+          "integrity": "npm's own dist.integrity is the authoritative check for this tarball: the registry tarball ships NO node_modules (verified: 1650 entries in 6.5.0, 0 under node_modules), so setup resolves the dependency closure with `npm install --ignore-scripts` instead of unpacking a tarball.",
+          "note": "`just unpacking the published tarball cannot work` is a verified fact, not a caution: the CLI would fail with ERR_MODULE_NOT_FOUND on zod. 6.5.0 is the same engines/bin contract as 6.4.0 (^22.19.0 || ^24.11.0 || >=26.0.0, scripts/rea.mjs) and adds 37 MCP tools (170 -> 207 by rea doctor --json on 2026-10-16; the upstream contract files count 206) plus an optional frida dependency; --ignore-scripts means its install script never runs."
         }
       }
     }

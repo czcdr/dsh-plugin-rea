@@ -163,3 +163,23 @@ jobs:
         # Checksum coverage, unresolved tokens, duplicate JSON keys, and the
         # patch-wiring agreement between the row, the shim and setup.mjs.
         run: npm run bundle:audit
+
+  windows:
+    # The PowerShell download route, the tar/Expand-Archive extraction path and
+    # scripts/rea-bundle-bootstrap.ps1 are Windows-only code, and an ubuntu-only
+    # matrix never executed any of them — they were verified by hand, if at all.
+    # The tests are platform-sensitive on purpose: each platform exercises the
+    # download route it actually chooses.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Unit tests for the pure logic (Windows)
+        run: npm run bundle:test
+
+      - name: Bundle manifest audit (Windows)
+        run: npm run bundle:audit

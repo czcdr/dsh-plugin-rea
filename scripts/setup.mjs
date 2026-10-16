@@ -26,7 +26,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFileSync, closeSync, copyFileSync, createWriteStream, existsSync, mkdirSync, openSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, closeSync, copyFileSync, createWriteStream, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { homedir } from "node:os";
@@ -307,11 +307,20 @@ function openGet(url, { proxy, headers, connectTimeoutMs }) {
         },
         (res) => done(res, "direct"),
       );
+      let connected = false;
       req.on("socket", (socket) => {
         socket.setTimeout(connectTimeout);
-        socket.once("connect", () => socket.setTimeout(idleTimeout));
+        socket.once("connect", () => {
+          connected = true;
+          socket.setTimeout(idleTimeout);
+        });
       });
-      req.on("timeout", () => req.destroy(new Error(`no response within ${idleTimeout}ms`)));
+      // The socket carries the connect deadline until it connects and the idle
+      // deadline afterwards. Reporting the idle number for a connection that never
+      // happened sent the reader after the wrong setting.
+      req.on("timeout", () =>
+        req.destroy(new Error(connected ? `no data within ${idleTimeout}ms` : `no connection within ${connectTimeout}ms`)),
+      );
       req.on("error", reject);
       req.end();
       return;
@@ -387,11 +396,27 @@ async function download(url, destination, expected, label) {
     rmSync(temporary, { force: true });
     have = 0;
   }
-  if (have > 0 && have === expected.size) {
-    log(`       ${label}: partial file already complete`);
-  } else {
-    log(`       downloading ${label}${have > 0 ? ` (resuming at ${(have / 1048576).toFixed(1)} MiB)` : ""}`);
+  // A `.part` already holding every expected byte is finished work, not a resume
+  // point: a crash between the last write and the rename leaves exactly this
+  // shape. Resuming it sends `Range: bytes=<size>-`, which servers answer with
+  // 416, so four attempts later a complete download was reported failed (and on
+  // Windows the "resume" simply deleted it and fetched 570 MB again). Verify it
+  // and finish the rename instead.
+  if (have > 0 && expected.size && have === expected.size) {
+    const digest = sha256File(temporary);
+    const matches = !expected.sha256 || expected.sha256 === "unverified" || digest === expected.sha256;
+    if (matches) {
+      log(`       ${label}: partial file was already complete; verified and kept`);
+      rmSync(destination, { force: true });
+      renameSync(temporary, destination);
+      return { sha256: digest, size: have, tofu: !expected.sha256 || expected.sha256 === "unverified" };
+    }
+    log(`       ${label}: partial file is complete but the checksum does not match; starting over`);
+    rmSync(temporary, { force: true });
+    have = 0;
   }
+  if (have > 0) log(`       downloading ${label} (resuming at ${(have / 1048576).toFixed(1)} MiB)`);
+  else log(`       downloading ${label}`);
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
@@ -412,29 +437,29 @@ async function download(url, destination, expected, label) {
       let via = null;
       let nodeFailure = null;
       const tryPowerShellFirst = IS_WINDOWS;
-      const first = tryPowerShellFirst
-        ? async () => {
-            rmSync(temporary, { force: true });
-            const written = downloadViaPowerShell(url, temporary);
-            log(`       ${label}: via powershell (${(written / 1048576).toFixed(1)} MiB)`);
-            return "powershell";
-          }
-        : async () => {
-            const response = await openViaBestRoute(url, { connectTimeoutMs, have });
-            await writeBody(response.stream, response.headers, temporary, have, response.status, label);
-            return response.via;
-          };
-      const second = tryPowerShellFirst
-        ? async () => {
-            const response = await openViaBestRoute(url, { connectTimeoutMs, have });
-            await writeBody(response.stream, response.headers, temporary, have, response.status, label);
-            return response.via;
-          }
-        : async () => {
-            rmSync(temporary, { force: true });
-            const written = downloadViaPowerShell(url, temporary);
-            return `powershell (${(written / 1048576).toFixed(1)} MiB)`;
-          };
+      const viaPowerShell = async () => {
+        // Resume through the .NET route as well: it is the Windows default, it
+        // honours the system proxy, and the 570 MB Ghidra archive is the transfer
+        // that matters. Deleting the partial file first — what this used to do —
+        // made every retry a full re-download, the opposite of the resumable
+        // behaviour this module promises. downloadViaPowerShell appends only when
+        // the server answers 206.
+        const written = downloadViaPowerShell(url, temporary, have);
+        log(`       ${label}: via powershell (${(written / 1048576).toFixed(1)} MiB)`);
+        return "powershell";
+      };
+      const viaNode = async () => {
+        // Both routes write into the same .part. Trusting the `have` captured
+        // before this attempt appended a full 200 response onto the bytes the
+        // failed route had already written, producing a file that could only fail
+        // the size gate on the way out. Read the file's real length instead.
+        have = existsSync(temporary) ? statSync(temporary).size : 0;
+        const response = await openViaBestRoute(url, { connectTimeoutMs, have });
+        await writeBody(response.stream, response.headers, temporary, have, response.status, label);
+        return response.via;
+      };
+      const first = tryPowerShellFirst ? viaPowerShell : viaNode;
+      const second = tryPowerShellFirst ? viaNode : viaPowerShell;
 
       try {
         via = await first();
@@ -497,20 +522,33 @@ async function download(url, destination, expected, label) {
  * length. It is slower (~0.13 MiB/s vs ~0.5 MiB/s), so it is a fallback, and
  * the result is verified by the same size + checksum gate as every other route.
  */
-function downloadViaPowerShell(url, destination) {
+function downloadViaPowerShell(url, destination, have = 0) {
+  const resume = Number.isFinite(Number(have)) && Number(have) > 0;
   const script = [
     "$ErrorActionPreference = 'Stop'",
     "$ProgressPreference = 'SilentlyContinue'",
     `$url = '${url.replace(/'/g, "''")}'`,
     `$out = '${destination.replace(/'/g, "''")}'`,
+    `$have = ${resume ? Math.trunc(Number(have)) : 0}`,
     "$req = [System.Net.HttpWebRequest]::Create($url)",
     "$req.UserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) dsh-plugin-rea-bundle'",
     "$req.AllowAutoRedirect = $true",
+    // The response stage. The body-copy stage needs its own deadline: with only
+    // Timeout set, a stalled socket inside CopyTo hung forever (spawnSync runs
+    // with no total timeout by design, because a slow-but-alive 570 MB transfer
+    // is legitimate).
     "$req.Timeout = 60000",
+    "$req.ReadWriteTimeout = 120000",
+    // Resume instead of starting over. A server that ignores the range answers
+    // 200, and the file is then rewritten from the start rather than appended to.
+    "if ($have -gt 0) { $req.AddRange($have) }",
     "$resp = $req.GetResponse()",
+    "$code = [int]$resp.StatusCode",
     "$stream = $resp.GetResponseStream()",
-    "$file = [System.IO.File]::Create($out)",
+    "if ($have -gt 0 -and $code -eq 206) { $mode = [System.IO.FileMode]::Append } else { $mode = [System.IO.FileMode]::Create }",
+    "$file = New-Object System.IO.FileStream($out, $mode, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)",
     "$stream.CopyTo($file)",
+    "$file.Flush()",
     "$file.Close()",
     "$stream.Close()",
     "$resp.Close()",
@@ -614,6 +652,12 @@ function extract(archive, destination, format) {
   mkdirSync(destination, { recursive: true });
   if (format === "zip") {
     if (IS_WINDOWS) {
+      // bsdtar ships with Windows 10+ and unpacks a zip far faster than
+      // Expand-Archive's single-threaded .NET implementation — the 543 MB Ghidra
+      // archive is the case that matters. Expand-Archive stays as the fallback so
+      // a host without tar.exe still provisions.
+      const viaTar = spawnSync("tar", ["-xf", archive, "-C", destination], { stdio: options.json ? "ignore" : "inherit" });
+      if (viaTar.status === 0) return true;
       const result = spawnSync("powershell", ["-NoProfile", "-NonInteractive", "-Command",
         `Expand-Archive -LiteralPath '${archive.replace(/'/g, "''")}' -DestinationPath '${destination.replace(/'/g, "''")}' -Force`],
         { stdio: options.json ? "ignore" : "inherit" });
@@ -704,7 +748,28 @@ function substituteProbe(value, context) {
 function runProbe(probe, context) {
   if (probe.file) {
     const file = substituteProbe(probe.file, context);
-    return { ok: existsSync(file), detail: file };
+    if (!existsSync(file)) return { ok: false, detail: `${file} is missing` };
+    // `expect` used to be ignored for file probes, which made the Ghidra probe's
+    // `expect.contains: "application.version="` dead configuration: any file at
+    // that path passed, including a directory or a stray placeholder. Read the
+    // file — these are small metadata files — and honour the contract. The bound
+    // exists so a probe can never be pointed at a 543 MB tree by accident.
+    const expect = probe.expect ?? {};
+    if (expect.contains || expect.regex) {
+      let text = "";
+      try {
+        text = readFileSync(file, "utf8").slice(0, 65536);
+      } catch (error) {
+        return { ok: false, detail: `${file} could not be read: ${String(error && error.message)}` };
+      }
+      if (expect.contains && !text.includes(expect.contains)) {
+        return { ok: false, detail: `${file} does not contain "${expect.contains}"` };
+      }
+      if (expect.regex && !new RegExp(expect.regex, "m").test(text)) {
+        return { ok: false, detail: `${file} does not match /${expect.regex}/` };
+      }
+    }
+    return { ok: true, detail: file };
   }
   if (!probe.argv) return { ok: true, detail: "no probe" };
   const argv = probe.argv.map((value) => substituteProbe(value, context));
@@ -866,6 +931,25 @@ function loadManifest() {
   return parsed;
 }
 
+/**
+ * Read a bundle.json, tolerating one that is not valid JSON.
+ *
+ * A half-written file (disk full, a kill mid-write) used to throw straight out of
+ * provisioning — the run died before it could replace the file it could not
+ * parse, and the shim then failed on it forever. Treating it as absent lets the
+ * normal path read what is usable and rewrite the record at the end.
+ */
+function readBundleJson(file) {
+  if (!existsSync(file)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch (error) {
+    log(`       ${path.basename(file)} is not readable JSON (${String(error && error.message)}); ignoring it for this run`);
+    return null;
+  }
+}
+
 const INSTALL_ORDER = ["node", "jdk", "ghidra", "apktool", "jadxHeadlessMcp", "androidPlatformTools", "reaAgents"];
 
 /* -------------------------------------------------------------------- stages */
@@ -878,8 +962,26 @@ async function provisionComponent(name, component, context) {
   //    makes the recorded-state check below redundant (and its message wrong).
   const reused = reuseExisting(name, root);
   if (reused) {
-    step(name, "skip", `reusing existing ${name} from ${reused.how}: ${reused.path}`);
-    return { path: reused.path, reused: true };
+    // A candidate is a claim until the component's own probe agrees. Adoption
+    // tested only that javac / analyzeHeadless / node exists, so a JDK 11 (Ghidra
+    // 12.1 needs 21+) or a Ghidra 11 install was recorded in bundle.json and the
+    // failure surfaced much later, inside REA. Run the same probe a provisioned
+    // copy has to pass, with the candidate planted so the probe's own tokens
+    // ({jvm}, {ghidra}) resolve to it instead of to a vendor path it never had.
+    const planted = context.resolved[name];
+    context.resolved[name] = { path: reused.path };
+    let probe;
+    try {
+      probe = runProbe(component.probe ?? {}, context);
+    } finally {
+      if (planted === undefined) delete context.resolved[name];
+      else context.resolved[name] = planted;
+    }
+    if (probe.ok) {
+      step(name, "skip", `reusing existing ${name} from ${reused.how}: ${reused.path}`);
+      return { path: reused.path, reused: true };
+    }
+    step(name, "plan", `not reusing ${reused.how} ${name} at ${reused.path}: ${probe.detail}`);
   }
 
   // 2) already present in the bundle and still verifiable?
@@ -889,8 +991,8 @@ async function provisionComponent(name, component, context) {
   // deleted afterwards. Only a recorded path that exists AND passes the probe is
   // trusted; anything else falls through to provisioning again.
   if (existsSync(path.join(root, "bundle.json"))) {
-    const current = JSON.parse(readFileSync(path.join(root, "bundle.json"), "utf8"));
-    const recorded = current.components?.[name];
+    const current = readBundleJson(path.join(root, "bundle.json"));
+    const recorded = current?.components?.[name];
     if (recorded && typeof recorded.path === "string" && existsSync(recorded.path)) {
       const probe = runProbe(component.probe ?? {}, context);
       if (probe.ok) {
@@ -957,6 +1059,18 @@ async function provisionComponent(name, component, context) {
       const target = path.join(targetDirectory, entry.saveAs ?? archiveName);
       const { copyFileSync } = await import("node:fs");
       copyFileSync(archivePath, target);
+      // A wrapper script has to be executable. copyFileSync lands the 0644 that
+      // the archive carries and nothing else in this file changes a mode, while
+      // REA starts REA_APKTOOL_COMMAND through execFile/no shell — so on POSIX a
+      // 0644 wrapper fails with EACCES. The component's own probe misses it
+      // because it runs `java -jar` and never executes the wrapper.
+      if (entry.executable === true) {
+        try {
+          chmodSync(target, 0o755);
+        } catch {
+          /* a filesystem that cannot carry the bit must not fail the component */
+        }
+      }
       placed.push({ target, sha256: fetched.sha256, tofu: fetched.tofu });
     }
     if (options.dryRun) return { planned: true };
@@ -1185,17 +1299,72 @@ const context = {
 };
 const results = {};
 
+/**
+ * What a previous run recorded.
+ *
+ * `--only` names a subset of components, so this run's `results` describes only
+ * that subset — and writing bundle.json straight from `results` erased every
+ * other component: the JDK and Ghidra disappeared from `paths`, the shim stopped
+ * exporting JAVA_HOME/GHIDRA_INSTALL_DIR, so `setup.mjs --only androidPlatformTools`
+ * silently disabled native analysis on a fully provisioned machine, and the next
+ * full run had to unpack 750 MB again. Components this run does not touch are
+ * carried over instead.
+ */
+const previous = readBundleJson(path.join(options.root, "bundle.json"));
+
+/** One untouched component's record, kept only while its recorded path exists. */
+function carriedOver(name) {
+  const record = previous?.components?.[name];
+  if (!record || typeof record !== "object") return null;
+  if (typeof record.path === "string" && record.path !== "") {
+    if (existsSync(record.path)) return record;
+    return { ...record, path: null, unavailable: true, reason: "the recorded path is gone" };
+  }
+  return record;
+}
+
 for (const name of INSTALL_ORDER) {
   const component = manifest.components[name];
   if (!component) continue;
   if (options.only && !options.only.includes(name)) continue;
   const missingRequirement = (component.requires ?? []).find((requirement) => !context.resolved[requirement]);
-  if (missingRequirement && !options.only) {
-    step(name, "FAIL", `skipped: required component "${missingRequirement}" is unavailable`);
-    results[name] = null;
-    continue;
+  if (missingRequirement) {
+    // Under --only the requirement is not being provisioned this run, but the
+    // previous run's record still answers it — and that is the same answer a full
+    // run would use. Skipping the check entirely made `--only apktool` resolve
+    // {jvm} to the vendor/jdk that only a full run creates and report FAIL, on a
+    // machine whose JDK was recorded right next to it.
+    let carried = options.only ? carriedOver(missingRequirement) : null;
+    if (!carried && options.only) {
+      // A requirement can also be answered by the machine instead of the record.
+      // `node` always can: a Node is already running this script, and
+      // provisionReaAgents falls back to exactly that interpreter — without this,
+      // `--only reaAgents` on a fresh root failed on a "missing" node the run is
+      // itself made of. The others are answered when the caller passed --reuse.
+      if (missingRequirement === "node") {
+        carried = { path: process.execPath, reused: true, how: "the interpreter running setup" };
+      } else {
+        const reused = reuseExisting(missingRequirement, options.root);
+        if (reused) carried = { path: reused.path, reused: true, how: reused.how };
+      }
+    }
+    if (!carried || typeof carried.path !== "string" || !existsSync(carried.path)) {
+      step(name, "FAIL", `skipped: required component "${missingRequirement}" is unavailable`);
+      results[name] = null;
+      continue;
+    }
+    context.resolved[missingRequirement] = carried;
   }
-  const resolvedValue = await provisionComponent(name, component, context);
+  let resolvedValue = null;
+  try {
+    resolvedValue = await provisionComponent(name, component, context);
+  } catch (error) {
+    // An unexpected throw used to abort the run before it could write a summary
+    // or record why its lock is still there. Report it as this component's
+    // failure instead, so the exit code and the log stay truthful.
+    step(name, "FAIL", `unexpected error: ${String(error?.message ?? error)}`);
+    resolvedValue = null;
+  }
   results[name] = resolvedValue;
   // A component satisfies another's `requires` when it has a real path — or when
   // this run only *planned* it. In dry-run every component returns
@@ -1208,27 +1377,36 @@ for (const name of INSTALL_ORDER) {
   }
 }
 
+/* Components this run does not touch keep the record the previous run wrote. */
+const merged = { ...results };
+for (const name of INSTALL_ORDER) {
+  if (Object.prototype.hasOwnProperty.call(merged, name)) continue;
+  if (!manifest.components[name]) continue;
+  const carried = carriedOver(name);
+  if (carried) merged[name] = carried;
+}
+
 /* browser is adopted, never downloaded */
 const browser = reuseExisting("browser", options.root);
 if (browser) step("browser", "skip", `adopting ${browser.path}`);
 
 /* --------------------------------------------------------------- wire + probe */
 
-const nodePath = typeof results.node?.path === "string" && existsSync(results.node.path)
-  ? results.node.path
+const nodePath = typeof merged.node?.path === "string" && existsSync(merged.node.path)
+  ? merged.node.path
   : process.execPath;
 
 const paths = {
   node: nodePath,
   reaEntry: path.join(options.root, "vendor", "node_modules", "rea-agents", "scripts", "rea.mjs"),
-  ghidra: results.ghidra?.path ?? null,
-  jdk: results.jdk?.path ?? null,
-  adb: results.androidPlatformTools?.path ? path.join(results.androidPlatformTools.path, `adb${EXE}`) : null,
-  apktoolCommand: results.apktool?.path
-    ? path.join(results.apktool.path, IS_WINDOWS ? "apktool.bat" : "apktool")
+  ghidra: merged.ghidra?.path ?? null,
+  jdk: merged.jdk?.path ?? null,
+  adb: merged.androidPlatformTools?.path ? path.join(merged.androidPlatformTools.path, `adb${EXE}`) : null,
+  apktoolCommand: merged.apktool?.path
+    ? path.join(merged.apktool.path, IS_WINDOWS ? "apktool.bat" : "apktool")
     : null,
-  jadxJar: results.jadxHeadlessMcp?.path
-    ? path.join(results.jadxHeadlessMcp.path, results.jadxHeadlessMcp.jarName ?? "")
+  jadxJar: merged.jadxHeadlessMcp?.path
+    ? path.join(merged.jadxHeadlessMcp.path, merged.jadxHeadlessMcp.jarName ?? "")
     : null,
   browser: browser?.path ?? null,
   ilspycmd: process.env.REA_ILSPY_CMD_PATH ?? null,
@@ -1242,17 +1420,17 @@ if (!options.dryRun) {
     plugin: { name: "dsh-plugin-rea", root: sourceRoot() },
     paths,
     versions: {
-      reaAgents: results.reaAgents?.version ?? null,
-      ghidra: results.ghidra?.version ?? null,
-      jdk: results.jdk?.version ?? null,
-      apktool: results.apktool?.version ?? null,
-      jadxHeadlessMcp: results.jadxHeadlessMcp?.version ?? null,
-      node: results.node?.version ?? process.versions.node,
+      reaAgents: merged.reaAgents?.version ?? null,
+      ghidra: merged.ghidra?.version ?? null,
+      jdk: merged.jdk?.version ?? null,
+      apktool: merged.apktool?.version ?? null,
+      jadxHeadlessMcp: merged.jadxHeadlessMcp?.version ?? null,
+      node: merged.node?.version ?? process.versions.node,
     },
     components: Object.fromEntries(
-      Object.entries(results).map(([name, value]) => [name, value ?? { path: null, unavailable: true }]),
+      Object.entries(merged).map(([name, value]) => [name, value ?? { path: null, unavailable: true }]),
     ),
-    unverifiedChecksums: Object.entries(results)
+    unverifiedChecksums: Object.entries(merged)
       .filter(([, value]) => value?.tofu)
       .map(([name]) => name),
   };
@@ -1417,6 +1595,25 @@ const failures = state.steps.filter((entry) => entry.status === "FAIL");
 const failed = failures.filter((entry) => !optionalFailure(entry));
 const optionalUnavailable = failures.filter(optionalFailure);
 
+/*
+ * Lock bookkeeping is not presentation, and it used to sit inside the
+ * non-`--json` branch: a successful `--json` run therefore left the lock behind,
+ * and the shim then reported "provisioning started in the background" for six
+ * hours on a fully provisioned machine. A failing run keeps the lock on purpose —
+ * so a restart loop cannot re-download forever — but marks it failed, which lets
+ * the shim say what actually happened instead of claiming a run is in flight.
+ */
+const lockFile = path.join(options.root, "setup.lock");
+if (failed.length === 0) {
+  rmSync(lockFile, { force: true });
+} else {
+  try {
+    writeFileSync(lockFile, JSON.stringify({ state: "failed", pid: process.pid, at: Date.now(), exit: 1, log: logFilePath() }) + "\n");
+  } catch {
+    /* the lock is advisory: a read-only root must not break the report */
+  }
+}
+
 if (options.json) {
   process.stdout.write(
     JSON.stringify(
@@ -1436,10 +1633,6 @@ if (options.json) {
   }
   log("");
   if (failed.length === 0) {
-    // Release the provisioning lock the shim set, so a later first run on a new
-    // machine (or after a manual wipe) can start again. A failed run keeps the
-    // lock, but the shim treats a lock older than six hours as stale.
-    rmSync(path.join(options.root, "setup.lock"), { force: true });
     log("restart DSH (or reload the profile) so the MCP row reconnects.");
     // Point at the mirrored copy, not at this checkout's: the mirror resolves its
     // bundle from its own location, so this command is right for the root this run

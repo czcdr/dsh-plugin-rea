@@ -2,6 +2,61 @@
 
 本插件遵循语义化版本。版本号变化说明「配置组合」这层的变化，与 REA 自身的版本无关。
 
+## 2.0.3 — 2026-10-16
+
+**修复 11 处已核实的缺陷（每条都先确认存在、并配了"回退即变红"的回归测试）；上游 REA 钉子从 6.4.0 升到 6.5.0。**
+
+### 上游
+
+- `pins.reaAgents` 与 `components.reaAgents.sources.npm.version` → **6.5.0**：engines 与 bin 入口未变
+  （`^22.19.0 || ^24.11.0 || >=26.0.0`、`scripts/rea.mjs`），工具数 170 → **207**（运行时 `rea doctor --json` 实测；上游源码静态清点为 206，多出的 1 个注册在 contracts 之外。新增：Frida 9、
+  GDB 4、Rizin/Cutter 6、pcap/packet 4、flutter 2、sqlite/rust/go/wasm/electron/harmony/hopper 各 1 等）。
+  新增的 `optionalDependencies.frida` 在 `--ignore-scripts` 下不会执行安装脚本。REA 探针正则收紧为
+  `^6\.5\.0(\s|$)`，审计新增"下一个 patch/minor 不得通过"的断言。
+- Ghidra 12.1.4 / apktool 3.0.3 / jadx-headless-mcp 0.7.1 **经核实仍是当前最新**；Node 24.22.0 虽已发布，
+  但晚于本插件的实测矩阵，故保持 24.21.0（engines 完全满足）。
+
+### 修复
+
+- **`--only` 抹掉其它组件的记录**：bundle.json 由本轮结果整份重写，未点名组件的 `paths.jdk/ghidra` 变
+  `null`，shim 不再导出 `JAVA_HOME`/`GHIDRA_INSTALL_DIR`——原生分析静默失效，下次完整跑还得重新解压
+  750 MB。未点名的组件现在按旧记录结转（且只在记录的路径仍然存在时），缺依赖时优先用旧记录/机器/运行
+  setup 的解释器来满足，而不是整段跳过检查。
+- **完整的 `.part` 不被当作已完成**：只打一行日志，然后发 `Range: bytes=<全长>-`（416；四次重试后把
+  已经下好的文件报成失败）。现在校验通过即改名收下。
+- **Windows 下载主路线没有续传**：PowerShell 路线每轮先删 `.part`；失败后 Node 兜底仍用进本轮前的
+  `have`，以 append 把 200 全量接在半成品后面（长度必然超标，只能重下）。两条路线现在都按盘上实际
+  长度发 Range 续传。
+- **POSIX 的 apktool wrapper 没有执行位**（copyFileSync 落 0644，而 REA 不加 shell 直接 spawn → EACCES）：
+  manifest 里标了 `executable` 的条目落盘时 chmod 0755。
+- **apktool wrapper 钉在 `master` 分支 + 硬校验 sha256**：上游对 wrapper 的任何一次提交都会让全网新装
+  hash mismatch。改钉不可变的 `v3.0.3` tag，哈希按该 tag 重新实测。
+- **`--reuse` 不校验版本**：JDK 只看 `javac` 存在、Ghidra 只看 `analyzeHeadless` 存在（JDK 8/11、Ghidra 11
+  照收）。现在候选必须通过该组件自己的 probe；同时修好"文件型 probe 从不检查 `expect`"（Ghidra 的
+  `application.version=` 断言此前是死配置）。
+- **`bundle.json` 损坏即永久失败**：setup 读不了它、也没人启动 setup，用户只能手删文件。现在 setup 容忍
+  它（并按需重写），shim 对 `malformed` 与 `missing` 一样触发供给。
+- **失败后 shim 谎报 6 小时**：lock 现在记录状态与 pid；失败态如实报告"上一次失败了"，持有者已消失的
+  lock 不再阻塞重试。
+- **成功的 `--json` 轮次从不删 lock**：删除语句原先在非 `--json` 分支里，--json 成功也留下 lock。
+- **shim 兜底 REA 路径少了 `node_modules`**：旧 bundle.json 缺 `paths.reaEntry` 时会把可用安装判成"CLI 丢了"。
+- **`scripts/rea-bundle-bootstrap.ps1`**：`node -v` 输出非数字时 `[int]` 强转在 `$ErrorActionPreference='Stop'`
+  下会炸掉整个 bootstrap（而它存在的意义就是这条路径）；`&` 调用失败时 `$LASTEXITCODE` 可能为 `$null` →
+  `exit $null` = 假成功；engines 改从 manifest 的 `pins.nodeEngines` 读（不再抄第二份）；`-DryRun` 不再创建
+  目录（它承诺"什么都没改"）。
+- **`check-updates.ps1` 的 1.x 残留**：REA 节默认找 npm 全局包（2.x 是 vendored）、Ghidra 节读用户级
+  `GHIDRA_INSTALL_DIR`、`rea doctor` 拿不到 vendored CLI（整段自检被静默跳过）、一体包对账对"未记录版本"
+  的组件静默 `continue` 却打印"全部一致"。现在一律先读 `bundle.json`，并如实报告无法对账的项。
+
+### 审计与 CI
+
+- `audit-manifest.mjs` 新增 4 项：manifest 组件 ⇄ `INSTALL_ORDER` 对账、`pins.nodeEngines` ⇄ `package.json
+  engines`、REA pin 探针不得放行下一个 patch/minor、POSIX wrapper 必须标 `executable`。
+- `validate.yml` 新增 `windows-latest` job：PowerShell 下载路线、zip 解压与 bootstrap 此前是零 CI 覆盖的
+  Windows 专属代码。
+- 单测 33 条（32 过 + 1 条按平台跳过）；`--reuse adopts a compatible node` 在 engines 之外的宿主上改为显式
+  skip（此前在 Node 20 上必红，而 CI 钉 22 看不出来）。
+
 ## 2.0.2 — 2026-10-15
 
 **仅文档，无行为变更。**

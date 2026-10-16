@@ -179,11 +179,11 @@ exact shim launch the MCP row will use.
 
 ## Verified against
 
-Author's machine, 2026-10-13 / 14:
+Author's machine, 2026-10-13 / 14 / 16:
 
 | Component | Version |
 |---|---|
-| REA (`rea-agents`) | **6.4.0** (170 tools) |
+| REA (`rea-agents`) | **6.5.0** (207 tools) |
 | DeepSeek Harness | desktop runtime **0.2.0-rc.2**, with its bundled dsh CLI 0.1.7-rc.2 |
 | `@deepseek-ai/dsh-mcp-client` (row provider) | bundled by the harness |
 | Ghidra | 12.1.4 |
@@ -192,7 +192,7 @@ Author's machine, 2026-10-13 / 14:
 | Host | Windows 11 x64 (build 26200) |
 
 Exercised live: a clean `setup.mjs --reuse` run reached `setup complete`; an MCP `initialize` handshake
-**through the shim with no `rea` on PATH** answered `serverInfo {name: rea, version: 6.4.0}`; and the whole
+**through the shim with no `rea` on PATH** answered `serverInfo {name: rea, version: 6.5.0}`; and the whole
 chain ran under the real desktop host — its own Electron binary launched
 `<DSH_HOME>/plugins/rea-bundle/bin/rea-shim.mjs mcp`, the shim started the **vendored** REA, and a live tool
 call reported `path_source: environment` for a path only that machine's `bundle.json` knows.
@@ -203,14 +203,14 @@ macOS/Linux.
 
 ## Scope and caveats
 
-- REA exposes 170 tools at 6.4.0, so every session's tool list grows.
+- REA exposes 207 tools at 6.5.0, so every session's tool list grows.
 - Provisioning is honest about checksums: where a vendor publishes one it is pinned and verified; where none
   exists (jadx-headless-mcp, the apktool wrapper, Android platform-tools, the rolling "latest" URLs) the
   hash is **measured once and recorded**, and later drift is reported rather than silently accepted.
   `bundle.json` lists which components are in that state under `unverifiedChecksums`.
 - Downloads are slow on some networks (measured 0.35–0.54 MiB/s from the GitHub release CDN here, so Ghidra
-  alone takes ~25–45 min). Fetching is resumable: the cache is kept and re-verified, and a killed run
-  continues instead of restarting.
+  alone takes ~25–45 min). Fetching is resumable on both routes: a partial `.part` is continued with a Range
+  request, and a `.part` that already holds the whole file is verified and kept instead of re-fetched.
 - Some REA tools launch processes, write files and access the network — DSH's permission policy applies.
   Analyse only artifacts you are authorized to inspect.
 - `scripts/setup.mjs` runs `npm install` for the REA CLI with `--ignore-scripts`: the published tarball

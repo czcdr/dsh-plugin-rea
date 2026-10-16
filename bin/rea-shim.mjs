@@ -15,7 +15,7 @@
  *                            and the message is the operator's remediation.
  */
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -94,40 +94,94 @@ function provisioningScript(root) {
 }
 
 /**
+ * The provisioning lock is a small JSON record: { state, pid, at, exit? }.
+ * `state: "running"` is written when a run is started (setup's own pid once it
+ * exists), and the failing run rewrites it as `state: "failed"` — it is kept on
+ * purpose so a broken setup cannot be re-downloaded in a loop. A legacy
+ * plain-number lock is still honoured as "running".
+ */
+const STALE_LOCK_MS = 6 * 60 * 60 * 1000;
+
+function readLock(lock) {
+  try {
+    const raw = readFileSync(lock, "utf8").trim();
+    if (raw.startsWith("{")) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") return parsed;
+    }
+    const at = Number(raw);
+    return Number.isFinite(at) ? { state: "running", at } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Is the process recorded in the lock still alive? null means "cannot tell". */
+function pidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "ESRCH" ? false : null;
+  }
+}
+
+/**
  * On first run there is nothing to launch. Provisioning is a long download, so
  * it is started detached: the harness may kill this row (or the whole session)
  * long before 800 MB arrive, and the downloader is resumable and idempotent, so
  * a killed attempt is simply continued on the next start.
  *
  * Set REA_BUNDLE_AUTO_PROVISION=0 to require an explicit `setup.mjs` run.
- * Returns the log path when a run was started, otherwise null.
+ * Returns { started, reason, logPath } — the caller words its message from
+ * `reason`, because "provisioning started in the background" was also printed
+ * for a lock left behind by a run that had already failed, and for one whose
+ * process was long gone.
  */
 function maybeAutoProvision(root) {
-  if (process.env.REA_BUNDLE_AUTO_PROVISION === "0") return null;
+  if (process.env.REA_BUNDLE_AUTO_PROVISION === "0") return { started: false, reason: "disabled" };
   const setupScript = provisioningScript(root);
-  if (!setupScript) return null;
+  if (!setupScript) return { started: false, reason: "no-setup" };
   const lock = path.join(root, "setup.lock");
   const logPath = path.join(root, "logs", "setup.log");
   if (existsSync(lock)) {
     // A crashed run must not wedge provisioning forever: honour the lock only
     // while it is fresh; setup removes it itself when it finishes cleanly.
-    let age = Infinity;
-    try {
-      age = Date.now() - Number(readFileSync(lock, "utf8").trim() || 0);
-    } catch {
-      age = Infinity;
+    const record = readLock(lock);
+    const age = record && Number.isFinite(record.at) ? Date.now() - record.at : Infinity;
+    const fresh = Number.isFinite(age) && age < STALE_LOCK_MS;
+    if (fresh && record?.state === "failed") {
+      // The run gave up and left the lock behind so it would not be retried in a
+      // loop. Claiming it is still provisioning was a six-hour lie: nothing runs,
+      // and every restart repeated the sentence.
+      return {
+        started: false,
+        reason: "last-run-failed",
+        exit: record.exit,
+        failedAt: record.at,
+        ageMs: age,
+        logPath,
+      };
     }
-    if (Number.isFinite(age) && age < 6 * 60 * 60 * 1000) return logPath;
+    if (fresh) {
+      const alive = pidAlive(record?.pid);
+      if (alive !== false) return { started: false, reason: "in-flight", logPath, ageMs: age };
+      // The lock holder is gone and never wrote an outcome (harness restart,
+      // power loss, a kill), so the attempt is not running and the lock is not
+      // evidence of anything. Drop it and start again.
+      rmSync(lock, { force: true });
+    }
   }
   try {
     mkdirSync(path.join(root, "logs"), { recursive: true });
     // Exclusive create: check-then-write is not atomic, so two rows starting at
     // once could both decide to provision. EEXIST means another run owns it.
-    writeFileSync(lock, String(Date.now()), { flag: "wx" });
+    writeFileSync(lock, JSON.stringify({ state: "running", pid: process.pid, at: Date.now() }), { flag: "wx" });
   } catch (error) {
-    if (error?.code === "EEXIST") return logPath;
+    if (error?.code === "EEXIST") return { started: false, reason: "in-flight", logPath };
     /* a read-only bundle root must never break the harness */
-    return null;
+    return { started: false, reason: "unwritable" };
   }
   try {
     const child = spawn(process.execPath, [setupScript, "--root", root], {
@@ -136,9 +190,18 @@ function maybeAutoProvision(root) {
       windowsHide: true,
     });
     child.unref();
-    return logPath;
+    // Hand the lock to the detached downloader, so a later start that finds this
+    // row dead still sees the run that is actually doing the work as alive.
+    if (Number.isInteger(child.pid)) {
+      try {
+        writeFileSync(lock, JSON.stringify({ state: "running", pid: child.pid, at: Date.now(), supervisor: process.pid }));
+      } catch {
+        /* the lock is advisory: the row keeps working without it */
+      }
+    }
+    return { started: true, reason: "started", logPath };
   } catch {
-    return null;
+    return { started: false, reason: "spawn-failed", logPath };
   }
 }
 
@@ -195,8 +258,13 @@ function readBundleConfig(root) {
 function resolveRea(config, root) {
   const paths = config.paths ?? {};
   const node = paths.node;
+  // The fallback has to match where setup actually installs the package:
+  // `npm install --prefix <root>/vendor` resolves into vendor/node_modules, so a
+  // fallback without that segment named a directory that never exists. It only
+  // fires when an older bundle.json has no paths.reaEntry — which is exactly when
+  // a wrong fallback turns a usable install into "the vendored REA CLI is gone".
   const reaEntry = paths.reaEntry
-    ?? path.join(root, "vendor", "rea-agents", "scripts", "rea.mjs");
+    ?? path.join(root, "vendor", "node_modules", "rea-agents", "scripts", "rea.mjs");
 
   if (typeof node !== "string" || node.trim() === "") {
     return { ok: false, reason: "bundle.json has no paths.node" };
@@ -302,10 +370,20 @@ function main() {
       loaded.code === "missing"
         ? `No bundle state at ${loaded.file}.`
         : `Bundle state at ${loaded.file} could not be parsed.`;
-    const logPath = loaded.code === "missing" ? maybeAutoProvision(root) : null;
-    if (logPath) {
+    // Both "missing" and "malformed" start a run. A malformed file used to fail
+    // permanently: setup overwrites a bundle.json it cannot parse, but nothing
+    // ever started setup, so every restart reported the same EX_CONFIG until the
+    // operator deleted the file by hand. The lock stops a provisioning loop when
+    // writing keeps failing.
+    const provisioning = maybeAutoProvision(root);
+    if (provisioning.started) {
       process.stderr.write(
-        `\n  dsh-plugin-rea (bundle): first run — provisioning started in the background.\n  progress: ${logPath}\n`,
+        `\n  dsh-plugin-rea (bundle): first run — provisioning started in the background.\n  progress: ${provisioning.logPath}\n`,
+      );
+    } else if (provisioning.reason === "last-run-failed") {
+      process.stderr.write(
+        `\n  dsh-plugin-rea (bundle): the last provisioning attempt failed (exit ${provisioning.exit ?? "?"}).\n` +
+          `  Nothing is running right now — read the log, then re-run setup.\n  log: ${provisioning.logPath}\n`,
       );
     }
     return fail(message, loaded.detail);

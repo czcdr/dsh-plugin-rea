@@ -69,13 +69,40 @@ function Test-NodeEngines([string]$node, [string]$engines) {
 }
 
 # ------------------------------------------------------- 定位 REA 与 profile
-if (-not $ReaPackageDir) {
-  $npmRoot = $null
-  if (Get-Command npm -ErrorAction SilentlyContinue) {
-    try { $npmRoot = (& npm root -g 2>$null | Select-Object -First 1).Trim() } catch { }
-  }
-  $ReaPackageDir = if ($npmRoot) { Join-Path $npmRoot 'rea-agents' } else { Join-Path $env:APPDATA 'npm\node_modules\rea-agents' }
+# 2.x 的 REA 在 <bundleRoot>\vendor\node_modules\rea-agents，不在 npm 全局。先读
+# bundle.json：把全局路径当默认是 1.x 的答案，在 2.x 机器上会让这一节指向错误的
+# 对象（"全局包丢了"），并给出错误的升级动作（npm i -g）。
+$bundleRootEarly = $env:REA_BUNDLE_ROOT
+if (-not $bundleRootEarly) {
+  $homeEarly = $env:DSH_HOME
+  if (-not $homeEarly) { $homeEarly = Join-Path $HOME '.dsh' }
+  $bundleRootEarly = Join-Path $homeEarly 'plugins\rea-bundle'
 }
+$bundleState = $null
+$bundleJsonEarly = Join-Path $bundleRootEarly 'bundle.json'
+if (Test-Path $bundleJsonEarly) {
+  try { $bundleState = Get-Content $bundleJsonEarly -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $bundleState = $null }
+}
+$bundleReaPackageDir = $null
+$bundleReaEntry = $null
+if ($bundleState -and $bundleState.paths.reaEntry) {
+  $bundleReaEntry = [string]$bundleState.paths.reaEntry
+  # <vendor>\node_modules\rea-agents\scripts\rea.mjs -> <vendor>\node_modules\rea-agents
+  $bundleReaPackageDir = Split-Path -Parent (Split-Path -Parent $bundleReaEntry)
+}
+
+if (-not $ReaPackageDir) {
+  if ($bundleReaPackageDir -and (Test-Path (Join-Path $bundleReaPackageDir 'package.json'))) {
+    $ReaPackageDir = $bundleReaPackageDir
+  } else {
+    $npmRoot = $null
+    if (Get-Command npm -ErrorAction SilentlyContinue) {
+      try { $npmRoot = (& npm root -g 2>$null | Select-Object -First 1).Trim() } catch { }
+    }
+    $ReaPackageDir = if ($npmRoot) { Join-Path $npmRoot 'rea-agents' } else { Join-Path $env:APPDATA 'npm\node_modules\rea-agents' }
+  }
+}
+$reaFromBundle = [bool]($bundleReaPackageDir -and $ReaPackageDir -eq $bundleReaPackageDir)
 if (-not $ProfileDir) {
   if ($env:DSH_PROFILE_DIR) { $ProfileDir = $env:DSH_PROFILE_DIR }
   else {
@@ -94,11 +121,21 @@ if (Test-Path $pkgFile) {
     $installed = $pkg.version; $engines = $pkg.engines.node
     $binPath = ($pkg.bin.PSObject.Properties | Select-Object -First 1).Value
     if ($binPath) { $reaEntry = Join-Path $ReaPackageDir ($binPath -replace '/', '\') }
-    Ok "本地已安装: $installed"
-    Info "入口(bin): $binPath   ← 插件通过 PATH 上的 rea 调用它，跨版本稳定"
+    if ($reaFromBundle) {
+      Ok "一体包内置（vendored）: $installed"
+      Info "位置: $ReaPackageDir"
+      Info "入口(bin): $binPath"
+    } else {
+      Ok "本地已安装: $installed"
+      Info "入口(bin): $binPath   ← 插件通过 PATH 上的 rea 调用它，跨版本稳定"
+    }
     if ($engines) { Info "Node 要求: $engines" }
   } catch { Bad "package.json 解析失败: $($_.Exception.Message)" }
-} else { Bad "找不到 $pkgFile —— REA 全局包丢了？重装: npm i -g rea-agents" }
+} else {
+  if ($reaFromBundle) { Bad "找不到 $pkgFile —— 内置副本不完整？重跑 setup.mjs" }
+  elseif ($bundleReaPackageDir) { Bad "找不到 $pkgFile —— 一体包内置副本也缺（$bundleReaPackageDir）；记录里没有 reaEntry" }
+  else { Bad "找不到 $pkgFile —— REA 全局包丢了？重装: npm i -g rea-agents" }
+}
 
 $latest = $null
 foreach ($r in @($Registry, 'https://registry.npmjs.org')) {
@@ -110,7 +147,11 @@ if ($installed -and $latest) {
   $vi = Get-NumericVersion $installed; $vl = Get-NumericVersion $latest
   if ($vi -and $vl -and $vl -gt $vi) {
     Warn "有新版本：$installed → $latest"
-    $actions.Add("升级上游 REA:  npm i -g rea-agents@$latest    （只更新 REA；本插件不会自动更新——从市场装的在市场里更新，file: 装的覆盖目录后重装）")
+    if ($reaFromBundle) {
+      $actions.Add("升级一体包内置 REA：把 manifest 的 pins.reaAgents / components.reaAgents.sources.npm.version 改成 $latest，然后重跑 node scripts\setup.mjs（内置副本不会自己更新）")
+    } else {
+      $actions.Add("升级上游 REA:  npm i -g rea-agents@$latest    （只更新 REA；本插件不会自动更新——从市场装的在市场里更新，file: 装的覆盖目录后重装）")
+    }
   } elseif ($vi -and $vl -and $vl -eq $vi -and $installed -ne $latest) {
     Warn "同版本号但通道不同：$installed → $latest（预发布/正式）"
   } else { Ok '已是最新版本' }
@@ -139,7 +180,14 @@ if (Get-Command node -ErrorAction SilentlyContinue) {
 
 # ------------------------------------------------------------ Ghidra 引擎
 Head 'Ghidra 引擎'
-$gd = [Environment]::GetEnvironmentVariable('GHIDRA_INSTALL_DIR', 'User')
+# bundle.json 是 2.x 的真源：shim 只在 MCP 子进程里设 GHIDRA_INSTALL_DIR，用户级
+# 变量是 1.x 的写法，没手工设过的机器会被误报"未设置"。
+$gd = $null
+if ($bundleState -and $bundleState.paths.ghidra) {
+  $bundleGhidra = [string]$bundleState.paths.ghidra
+  if (Test-Path $bundleGhidra) { $gd = $bundleGhidra }
+}
+if (-not $gd) { $gd = [Environment]::GetEnvironmentVariable('GHIDRA_INSTALL_DIR', 'User') }
 if (-not $gd) { $gd = $env:GHIDRA_INSTALL_DIR }
 if ($gd -and (Test-Path $gd)) {
   Ok "GHIDRA_INSTALL_DIR = $gd"
@@ -162,11 +210,28 @@ try {
 # --------------------------------------------------------- REA 引擎自检
 Head 'REA 引擎自检（rea doctor）'
 $env:GHIDRA_INSTALL_DIR = $gd
-# 优先取 .cmd：发布出去的那一行是 `cmd.exe /c rea mcp`（走 cmd 的 PATHEXT，命中 rea.cmd），
-# 而 PowerShell 的 Get-Command rea 会先命中同目录的 rea.ps1 垫片，两者行为（尤其退出码）并不相同。
-$reaCmd = (Get-Command 'rea.cmd' -ErrorAction SilentlyContinue).Source
-if (-not $reaCmd) { $reaCmd = (Get-Command rea -ErrorAction SilentlyContinue).Source }
+# 2.x：优先用 bundle 内置的 CLI 和它自己的 Node。PATH 上的 rea 可能是另一个，
+# 甚至完全不在 PATH —— 那会让整段自检被静默跳过。这正是 1.x 口径的残留。
+$reaCmd = $null
 $reaArgs = @()
+if ($bundleReaEntry -and (Test-Path $bundleReaEntry)) {
+  $bundleNode = $null
+  if ($bundleState -and $bundleState.paths.node) {
+    $candidateNode = [string]$bundleState.paths.node
+    if (Test-Path $candidateNode) { $bundleNode = $candidateNode }
+  }
+  if (-not $bundleNode) { $bundleNode = (Get-Command node -ErrorAction SilentlyContinue).Source }
+  if ($bundleNode) {
+    $reaCmd = $bundleNode; $reaArgs = @($bundleReaEntry)
+    Info '使用一体包内置 REA（node <bundle 入口>），不依赖 PATH 上的 rea'
+  }
+}
+if (-not $reaCmd) {
+  # 优先取 .cmd：发布出去的那一行是 `cmd.exe /c rea mcp`（走 cmd 的 PATHEXT，命中 rea.cmd），
+  # 而 PowerShell 的 Get-Command rea 会先命中同目录的 rea.ps1 垫片，两者行为（尤其退出码）并不相同。
+  $reaCmd = (Get-Command 'rea.cmd' -ErrorAction SilentlyContinue).Source
+  if (-not $reaCmd) { $reaCmd = (Get-Command rea -ErrorAction SilentlyContinue).Source }
+}
 if (-not $reaCmd) {
   if ($reaEntry -and (Test-Path $reaEntry) -and (Get-Command node -ErrorAction SilentlyContinue)) {
     $reaCmd = 'node'; $reaArgs = @($reaEntry)
@@ -247,6 +312,8 @@ if (-not (Test-Path $manifestPath)) {
       $state = Get-Content $bundleJson -Raw -Encoding UTF8 | ConvertFrom-Json
       Ok "已供给：$($state.provisionedAt)"
       $drift = 0
+      $compared = 0
+      $unrecorded = 0
       foreach ($name in $manifest.pins.PSObject.Properties.Name) {
         if ($name -eq 'nodeEngines') { continue }
         $pinned = [string]$manifest.pins.$name
@@ -254,13 +321,21 @@ if (-not (Test-Path $manifestPath)) {
         if ($state.versions -and ($state.versions.PSObject.Properties.Name -contains $name)) {
           $installed = [string]$state.versions.$name
         }
-        if (-not $installed) { continue }
+        if (-not $installed) {
+          # 被 --reuse 采纳的组件没有 version 字段（bundle.json 里是 null）。静默
+          # continue 会让这一项从未被比对，却在下面打印"全部一致"——那是假绿。
+          $unrecorded++
+          Warn "  $name 未记录版本（reuse 采纳的组件？）—— 无法与 pin $pinned 对账"
+          continue
+        }
+        $compared++
         # Node 的 pin 是引擎范围，不是版本号；其它组件比前缀即可
         $same = $installed.Equals($pinned) -or $installed.StartsWith(($pinned -split '\.')[0] + '.')
         if ($same) { Info "  $name = $installed（pin $pinned）" }
         else { Warn "$name 盘上为 $installed，manifest 已钉 $pinned —— 重跑 setup 对齐"; $drift++ }
       }
-      if ($drift -eq 0) { Ok '所有组件与 manifest 的 pin 一致' }
+      if ($drift -eq 0 -and $unrecorded -eq 0) { Ok '所有组件与 manifest 的 pin 一致' }
+      elseif ($drift -eq 0) { Warn "已比对的 $compared 项与 pin 一致，但 $unrecorded 项没有记录版本（见上）—— 不是全绿" }
       if ($state.unverifiedChecksums -and @($state.unverifiedChecksums).Count -gt 0) {
         Warn ("TOFU（无厂商校验和，取首次实测值）: " + (@($state.unverifiedChecksums) -join ', '))
       }
