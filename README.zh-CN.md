@@ -4,6 +4,11 @@
 
 [English](README.md) · **简体中文**
 
+> **2.x 才是默认线。** 这条 `v1` 分支是纯配置适配器，留给已经自己管理 REA 与 Ghidra 的人。自供给线在
+> [`main`](https://github.com/czcdr/dsh-plugin-rea/tree/main)，`npm i dsh-plugin-rea` 装到的也是它。
+> 上游 REA 6.5.0 起也能自己注册进 dsh（`rea setup --client dsh`）—— 同一种纯配置模式，由上游维护。
+> 三条路选一条，不要同时用两条。
+
 把上游 **[REA — Reverse Engineer Anything](https://github.com/morluto/rea)** 的 MCP 服务接入
 **DeepSeek Harness**（dsh），让它的工具在会话里以 `mcp__rea__*` 出现。
 

@@ -4,6 +4,12 @@
 
 **English** · [简体中文](README.zh-CN.md)
 
+> **2.x is the default line.** This `v1` branch is the configuration-only adapter, kept for people
+> who already manage REA and Ghidra themselves. The self-provisioning line lives on
+> [`main`](https://github.com/czcdr/dsh-plugin-rea/tree/main), and that is what `npm i dsh-plugin-rea`
+> installs. Upstream REA 6.5.0 can also register itself with dsh (`rea setup --client dsh`) — the same
+> configuration-only model, maintained upstream. Pick one of the three, never two at once.
+
 Brings the upstream **[REA — Reverse Engineer Anything](https://github.com/morluto/rea)** MCP server into
 **DeepSeek Harness** (dsh), so its tools show up in a session as `mcp__rea__*`.
 ![dsh-plugin-rea: a session calls the local rea mcp through the official MCP client row, and the Evidence comes back](assets/screenshot-1.png)
