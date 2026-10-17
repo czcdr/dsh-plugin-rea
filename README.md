@@ -82,6 +82,10 @@ Both lines ship the **same patch shape** — one `insert` row of `@deepseek-ai/d
 same `mcp__rea__*` surface; they differ in who prepares the runtime. Moving from 1.x to 2.x takes two
 commands: see [Upgrading from 1.x](#upgrading-from-1x).
 
+Upstream also registers itself with dsh now (`rea setup --client dsh`); that route is essentially the
+1.x model maintained upstream — configuration only, your own Node/REA/Ghidra. This bundle is the
+zero-dependency route. Pick one of the three, and never keep two `serverName: rea` rows at once.
+
 ## Install
 
 **Nothing to install first.** On a bare Windows x64 machine:
@@ -109,6 +113,10 @@ If Node is already installed, you can skip the bootstrap and run provisioning di
 ```
 node scripts/setup.mjs --reuse      # or --dry-run to see the plan first
 ```
+
+Node, when you provide it instead of letting setup fetch one, must satisfy REA's engines —
+`^22.19.0 || ^24.11.0 || >=26.0.0` (check with `node -v`). A lower Node does not fail at install
+time; the MCP row fails later, which reads as silence.
 
 Installing the plugin **first** also works, but it takes two steps. The row resolves to
 `<DSH_HOME>/plugins/rea-bundle/bin/rea-shim.mjs`, and that file is created by setup — so until the first
@@ -168,6 +176,27 @@ To pin a different launch command on this machine (for example your own globally
 the row from the profile's own `cordis.patch.yml` — that file is machine-local and never published. Only one
 row may use `serverName: rea` in a profile.
 
+### One REA registration only
+
+Upstream REA 6.5.0 can register itself with DSH:
+
+```
+rea setup --client dsh
+```
+
+That writes a row with `id: rea-mcp` and `serverName: rea` into `<DSH_HOME>/cordis.patch.yml`. This
+bundle's row is `id: mcp-rea` with the same `serverName`, and DSH rejects the later of two entries
+that share a server name — so which REA row survives depends on load order. **Use one, not both.**
+
+Which one? Upstream's is the configuration-only route: it expects Node on REA's engines,
+`rea-agents` reachable, and a Ghidra/JDK you provisioned yourself. This bundle is the
+zero-dependency route: it fetches Node, REA, JDK and Ghidra on first run. The patch shape and the
+`mcp__rea__*` surface are the same either way.
+
+The shim reports the conflict on startup when it can see that file — a custom `DSH_HOME` is hidden
+from an MCP child, so it falls back to `~/.dsh` there — and `node bin/rea-shim.mjs --shim-status`
+lists it under `duplicateRegistration`.
+
 ## Verify
 
 Ask for a `mcp__rea__*` call — `binary_session` reports the engine checks
@@ -213,6 +242,11 @@ macOS/Linux.
   request, and a `.part` that already holds the whole file is verified and kept instead of re-fetched.
 - Some REA tools launch processes, write files and access the network — DSH's permission policy applies.
   Analyse only artifacts you are authorized to inspect.
+- The MCP child and the engines it launches are ordinary processes running as **you**. DSH's tool
+  approvals govern what the model asks for, not what that child may read, write or send on its own;
+  treat the plugin like any third-party code you install.
+- On Linux, upstream's process-ownership checks need a **procps-compatible `ps`** on PATH; the
+  Ghidra/JADX and firmware paths use it. A minimal image without it fails those tools, not the install.
 - `scripts/setup.mjs` runs `npm install` for the REA CLI with `--ignore-scripts`: the published tarball
   carries no `node_modules`, so a dependency closure must be resolved, and package lifecycle scripts are
   skipped on purpose during provisioning. That step is also the **only** one that cannot use this bundle's

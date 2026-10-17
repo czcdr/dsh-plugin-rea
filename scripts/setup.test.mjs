@@ -813,9 +813,17 @@ function makeBundleTree(root, { marker, lock }) {
   return bundle;
 }
 
-function runShim(bundle, args) {
-  const env = { ...process.env, REA_BUNDLE_ROOT: bundle };
+function runShim(bundle, args, extraEnv = {}) {
+  // A fresh home keeps the duplicate-registration check from reading this
+  // machine's real ~/.dsh/cordis.patch.yml and making the suite depend on it.
+  const env = {
+    ...process.env,
+    DSH_HOME: path.join(path.dirname(bundle), "dsh-home"),
+    REA_BUNDLE_ROOT: bundle,
+    ...extraEnv,
+  };
   delete env.REA_BUNDLE_AUTO_PROVISION;
+  mkdirSync(env.DSH_HOME, { recursive: true });
   return spawnSync(process.execPath, [path.join(bundle, "bin", "rea-shim.mjs"), ...args], { encoding: "utf8", timeout: 60000, env });
 }
 
@@ -893,6 +901,71 @@ test("an expired lock is cleared instead of wedging provisioning forever", async
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  }
+});
+
+test("a read-only bundle root reports unwritable instead of crashing on the stale lock", { skip: process.platform === "win32" ? "POSIX directory permissions only" : false }, () => {
+  const root = mkdtempSync(path.join(tmpdir(), "rea-shim-readonly-"));
+  try {
+    const stale = Date.now() - 7 * 60 * 60 * 1000;
+    const lock = JSON.stringify({ state: "running", pid: 999999, at: stale });
+    const bundle = makeBundleTree(root, { marker: path.join(root, "setup-ran"), lock });
+    chmodSync(bundle, 0o555);
+    try {
+      const run = runShim(bundle, ["mcp"], { DSH_HOME: path.join(root, "dsh-home") });
+      assert.equal(run.status, 78, run.stderr);
+      // Before the fix this was an uncaught EACCES stack trace and exit 1: the
+      // stale lock could not be removed, and nothing caught the throw.
+      assert.match(run.stderr, /provisioning could not be started \(unwritable\)/);
+      assert.doesNotMatch(run.stderr, /EACCES/);
+    } finally {
+      chmodSync(bundle, 0o755);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a second REA registration is reported instead of silently duplicated", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "rea-shim-duplicate-"));
+  try {
+    const bundle = makeBundleTree(root, { marker: path.join(root, "setup-ran"), lock: undefined });
+    const home = path.join(root, "dsh-home");
+    mkdirSync(home, { recursive: true });
+    writeFileSync(
+      path.join(home, "cordis.patch.yml"),
+      ["- insert:", "    - id: rea-mcp", "      name: '@deepseek-ai/dsh-mcp-client'", "      config:", "        serverName: rea", "        transport: stdio", ""].join("\n"),
+    );
+    const run = runShim(bundle, ["mcp"], { DSH_HOME: home });
+    assert.equal(run.status, 78, run.stderr);
+    assert.match(run.stderr, /duplicate REA registration/);
+    assert.match(run.stderr, /id "rea-mcp"/);
+
+    const status = spawnSync(process.execPath, [path.join(bundle, "bin", "rea-shim.mjs"), "--shim-status"], {
+      encoding: "utf8",
+      env: { ...process.env, DSH_HOME: home, REA_BUNDLE_ROOT: bundle },
+    });
+    assert.equal(JSON.parse(status.stdout).duplicateRegistration.id, "rea-mcp");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("this bundle's own row is not reported as a duplicate", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "rea-shim-own-row-"));
+  try {
+    const bundle = makeBundleTree(root, { marker: path.join(root, "setup-ran"), lock: undefined });
+    const home = path.join(root, "dsh-home");
+    mkdirSync(home, { recursive: true });
+    writeFileSync(
+      path.join(home, "cordis.patch.yml"),
+      ["- insert:", "    - id: mcp-rea", "      name: '@deepseek-ai/dsh-mcp-client'", "      config:", "        serverName: rea", ""].join("\n"),
+    );
+    const run = runShim(bundle, ["mcp"], { DSH_HOME: home });
+    assert.equal(run.status, 78, run.stderr);
+    assert.doesNotMatch(run.stderr, /duplicate REA registration/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
 

@@ -94,6 +94,43 @@ function provisioningScript(root) {
 }
 
 /**
+ * Upstream REA 6.5.0 can add a second registration for the same MCP server:
+ * `rea setup --client dsh` writes a row with id "rea-mcp" and serverName "rea"
+ * into `<DSH_HOME>/cordis.patch.yml`, while this bundle ships id "mcp-rea" with
+ * the same serverName. DSH does not dedupe those rows: it rejects the later entry
+ * with a duplicate-server-name error, so which REA row survives depends on load
+ * order. The shim cannot prevent that, but it can name the conflict instead of
+ * leaving a missing row to be diagnosed from "the tools are gone".
+ *
+ * The parse is deliberately small: the two files it cares about are block
+ * mappings with one id/serverName per row, and anything it cannot attribute is
+ * ignored — a missed hint is acceptable, a false alarm is not. The mirrored shim
+ * cannot see a custom DSH_HOME (the harness strips DSH_* from an MCP child), so
+ * this falls back to `~/.dsh` like the rest of the bundle; the row has the same
+ * limitation.
+ */
+function foreignReaRegistration() {
+  const patch = path.join(dshHome(), "cordis.patch.yml");
+  let text;
+  try {
+    text = readFileSync(patch, "utf8");
+  } catch {
+    return null;
+  }
+  const unquote = (value) => value.replace(/^(['"])(.*)\1$/, "$2").trim();
+  // A row starts at `- id:`; the block runs to the next row, so a serverName can
+  // never be attributed to a row that does not contain it.
+  for (const block of text.split(/\r?\n(?=\s*-\s+id:\s*)/)) {
+    const id = /^\s*-\s+id:\s*(.+?)\s*$/m.exec(block);
+    const server = /^\s+serverName:\s*(.+?)\s*$/m.exec(block);
+    if (!id || !server || unquote(server[1]) !== "rea") continue;
+    const rowId = unquote(id[1]);
+    if (rowId !== "mcp-rea") return { patch, id: rowId };
+  }
+  return null;
+}
+
+/**
  * The provisioning lock is a small JSON record: { state, pid, at, exit? }.
  * `state: "running"` is written when a run is started (setup's own pid once it
  * exists), and the failing run rewrites it as `state: "failed"` — it is kept on
@@ -175,7 +212,16 @@ function maybeAutoProvision(root) {
     // *forever*, auto-provisioning never ran again, and main() printed nothing at
     // all for that outcome. The lock's own "honour it only while it is fresh"
     // comment described behaviour the code did not have.
-    rmSync(lock, { force: true });
+    try {
+      rmSync(lock, { force: true });
+    } catch {
+      // A read-only bundle root (system-wide install, chmod 555) cannot drop the
+      // stale lock either. Returning the same "cannot write here" outcome as the
+      // exclusive create below keeps the row alive: an uncaught EACCES killed the
+      // shim with a stack trace, which is louder than the old silence but just as
+      // unable to start REA.
+      return { started: false, reason: "unwritable", logPath };
+    }
   }
   try {
     mkdirSync(path.join(root, "logs"), { recursive: true });
@@ -351,6 +397,18 @@ function main() {
 
   const root = bundleRoot();
   const loaded = readBundleConfig(root);
+  // Upstream can add a second row for the same serverName; the shim cannot stop
+  // DSH from loading both rows, but saying so is better than doubled tools with
+  // no stated cause. The status report carries the same fact for diagnostics.
+  const duplicate = foreignReaRegistration();
+  if (duplicate && !argv.includes("--shim-status")) {
+    process.stderr.write(
+      `\n  dsh-plugin-rea (bundle): duplicate REA registration.\n` +
+        `  ${duplicate.patch} also registers serverName "rea" (id "${duplicate.id}").\n` +
+        `  This bundle's row is id "mcp-rea" with the same serverName; DSH rejects the later\n` +
+        `  entry as a duplicate server name, so only one survives. Keep exactly one of them.\n`,
+    );
+  }
 
   if (argv.includes("--shim-status")) {
     const report = {
@@ -360,6 +418,7 @@ function main() {
       reason: loaded.ok ? undefined : loaded.code,
       autoProvision: process.env.REA_BUNDLE_AUTO_PROVISION ?? "(default)",
     };
+    if (duplicate) report.duplicateRegistration = duplicate;
     if (loaded.ok) {
       report.paths = loaded.config.paths ?? {};
       report.versions = loaded.config.versions ?? {};

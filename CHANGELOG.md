@@ -2,6 +2,35 @@
 
 本插件遵循语义化版本。版本号变化说明「配置组合」这层的变化，与 REA 自身的版本无关。
 
+## 2.0.4 — 2026-10-17
+
+**两处已核实的缺陷：只读 bundle 目录下 shim 启动即崩；与上游 `rea setup --client dsh` 的同名注册冲突现在会被明确提示。**
+
+### 修复
+
+- **只读 bundle 根目录 + 陈旧 lock → shim 未捕获 EACCES 崩溃**：2.0.3 把删锁移出了 `if (fresh)`，却没包
+  try/catch。目录只读（`chmod 555`、系统级安装目录）且锁已陈旧时，`rmSync(lock)` 抛 `EACCES`，shim 以
+  未捕获异常退出（exit 1 + 堆栈）—— 比原来的静默更吵，但同样起不来。沙箱已复现（WSL `chmod 555`）。
+  现在删锁失败返回 `unwritable`，走既有的「无法写入，请手动跑 setup」路径（exit 78，行不崩）。
+- **与上游 `rea setup --client dsh` 的同名注册冲突**：该命令往 `<DSH_HOME>/cordis.patch.yml` 写入
+  `id: rea-mcp`、`serverName: rea`，而本包是 `id: mcp-rea`、同一个 `serverName`；DSH 对同名条目只保留
+  一个（后加载者报 duplicate server name）。已按上游 6.5.0 实测生成该文件确认。shim 现在启动时检测同
+  文件的 `serverName: rea`（id 不是 `mcp-rea`）并向 stderr 提示「二选一」，`--shim-status` 也会在
+  `duplicateRegistration` 下报告。
+
+### 文档
+
+- 两份 README 新增「只保留一条 REA 注册」小节：与 `rea setup --client dsh` 二选一，并说明两条路线的
+  取舍（零依赖供给 vs 上游官方纯配置注册）。
+- v1 分支 README 顶部加横幅：指向 2.x（`main`，默认推荐）与上游官方注册。
+
+### 验证
+
+- 单测 40 条：Windows 37 过 + 3 平台跳过；WSL 39 过 + 1 跳过（本轮新增 3 条，其中只读目录一条仅 POSIX）。
+- 反向验证：回退删锁的 try/catch → 只读目录测试在 WSL 必红（EACCES/exit 1）；回退冲突检测 → 重复注册
+  测试必红。
+- `verify-branch.ps1` 全绿。
+
 ## 2.0.3 — 2026-10-16
 
 **修复 11 处已核实的缺陷（每条都先确认存在、并配了"回退即变红"的回归测试）；上游 REA 钉子从 6.4.0 升到 6.5.0。**

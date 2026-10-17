@@ -77,6 +77,9 @@ patch 里不含任何机器路径**。
 `mcp__rea__*` 工具面；区别只在"谁准备运行时"。从 1.x 到 2.x 只要两条命令，见
 [从 1.x 升级](#从-1x-升级)。
 
+上游现在也能自己注册进 dsh（`rea setup --client dsh`）：那基本就是上游维护的 1.x 模式 —— 只写配置，
+Node/REA/Ghidra 由你准备。本包是零依赖路线。三条路选一条，不要同时留两行 `serverName: rea`。
+
 ## 安装
 
 **前置什么都不用装。** 在干净的 Windows x64 机器上：
@@ -103,6 +106,10 @@ dsh plugin --profile <profile> add github:czcdr/dsh-plugin-rea#v2.0.0
 ```
 node scripts/setup.mjs --reuse      # 或先 --dry-run 看计划
 ```
+
+如果 Node 由你自备（而不是让 setup 去取），它必须满足 REA 的 engines：
+`^22.19.0 || ^24.11.0 || >=26.0.0`（用 `node -v` 核对）。版本偏低不会在安装时失败，而是到 MCP 行
+启动时才失败 —— 表现就是"没有反应"。
 
 反过来**先装插件**也可以，但要分两步：发布的行指向 `<DSH_HOME>/plugins/rea-bundle/bin/rea-shim.mjs`，
 而那个文件**只有 setup 会创建**——所以在第一次供给之前，该行会以 `MODULE_NOT_FOUND` 退出，也就没有
@@ -159,6 +166,25 @@ node bin/rea-shim.mjs --shim-print-env   # MCP 子进程将看到的环境变量
 `cordis.patch.yml` 按 id 覆盖即可 —— 那个文件是机器本地的，永不发布。一个 profile 里只允许一行使用
 `serverName: rea`。
 
+### 只保留一条 REA 注册
+
+上游 REA 6.5.0 起可以自己注册进 DSH：
+
+```
+rea setup --client dsh
+```
+
+它会把一行 `id: rea-mcp`、`serverName: rea` 写进 `<DSH_HOME>/cordis.patch.yml`。本包的行是
+`id: mcp-rea`、同样 `serverName: rea`，而 DSH 对同名条目只保留一个：后加载的那行会以
+duplicate server name 报错并加载失败，最终留下哪一行取决于加载顺序。**二选一，不要同时用。**
+
+选哪个？上游那条是纯配置路线：需要 Node 满足 REA engines、`rea-agents` 可达，Ghidra/JDK 由你
+自己准备。本包是零依赖路线：首次运行自动取 Node、REA、JDK、Ghidra。两者的 patch 形态与
+`mcp__rea__*` 工具面相同。
+
+shim 在能看到该文件时会在启动时提示冲突 —— MCP 子进程里拿不到自定义 `DSH_HOME`，那种情况下它会
+退回 `~/.dsh`；`node bin/rea-shim.mjs --shim-status` 会把冲突列在 `duplicateRegistration` 下。
+
 ## 验证
 
 随便发一个 `mcp__rea__*` 调用 —— `binary_session` 会报引擎各项检查
@@ -203,6 +229,10 @@ shim** 的 MCP `initialize` 握手返回 `serverInfo {name: rea, version: 6.5.0}
   同一个地址 `Invoke-WebRequest` 通、Node 却 `ECONNRESET`/超时。setup 自己解析代理
   （环境变量优先，Windows 上回退读注册表）并用 CONNECT 隧道，`NO_PROXY` 也照常生效。
 - REA 的部分工具会启动进程、写文件、访问网络 —— DSH 的权限策略照常适用。只分析你有权检视的样本。
+- MCP 子进程与它拉起的引擎都是以**你的身份**运行的普通进程。DSH 的工具审批管的是模型发起的调用，
+  管不到这个子进程自己去读、写或发送什么；请把插件当作你安装的第三方代码来对待。
+- Linux 上，上游的进程归属检查依赖 PATH 上**兼容 procps 的 `ps`**；Ghidra/JADX 与固件工具会用到它。
+  极简镜像里缺它只会让这些工具失败，不影响整体安装。
 - `scripts/setup.mjs` 为 REA CLI 跑的是带 `--ignore-scripts` 的 `npm install`：官方 tarball 不带
   `node_modules`，必须解析依赖闭包；而供给过程中**刻意跳过包的 lifecycle 脚本**。这一步也是**唯一**用不上
   本插件自己的路由/代理回退的环节 —— npm 只从环境读 `HTTPS_PROXY`/`HTTP_PROXY` 与
