@@ -2,6 +2,34 @@
 
 本插件遵循语义化版本。版本号变化说明「配置组合」这层的变化，与 REA 自身的版本无关。
 
+## 2.0.9 — 未发布（仓库已更新，未打 tag / 未发 npm）
+
+**2.0.8 的两处发布前问题（假回退、乱码）与若干文档缺口；不改行为，只让失败路径说真话。**
+
+### 修复
+
+- **`reexecFromCheckout` 的「回退」是假话**：spawn 失败时只打印「继续用镜像副本」，函数却返回了，`main()` 已经
+  return —— 没有 `exit` 事件、事件循环排空、进程以 **exit 0 静默退出**，行看起来启动成功却没有任何工具。现在它返回
+  Promise：真正启动成功才接管退出码，失败则 `false`，`main()` 继续用本地副本正常启动，并如实说明在回退。
+- **乱码 `鈥?` 混进用户可见输出**：2.0.7 在 GBK 编辑器里碰过 `bin/rea-shim.mjs`，16 处破折号被写成 `鈥?`，其中两条是
+  stderr 消息（首次自动供给、上次供给失败）—— 每个用户都会看到。全部还原为 `— `（含被吃掉的空格）。
+- **开发时可能测到「已安装插件」而不是自己的改动**：checkout 副本会顺着 bundle 的 `mirror.json` 转发到插件目录。
+  现在 checkout（带 `cordis.patch.yml`）永不转发，只有镜像副本会；注释也改成与行为一致。
+
+### 文档 / CI
+
+- 两份 README 的钉版本示例 `#v2.0.0` → `#v2.0.8`（原示例恰好是历史坑最多的那一版）；README 的「机器上已有 REA」一节
+  补上 Windows 限制：**强制结束 shim 不会带走被委派的 REA**。
+- `docs/bundle-design.md`（随包发布）补上 2.0.7 的 launch mode 与 2.0.8 的镜像自愈，含 `mirror.json` 的
+  `shimSha256` / `pluginVersion` / `dshHome` 三个字段与控制流图。
+- CI 新增「README 必须逐字引用 package.json 的 `engines.dsh`」——这条原先只有本地 `verify-branch.ps1` 有，CI 里没有。
+- `systemReaCandidates` 的去重键改用传入的 `platform` 参数（测试缝一致，生产无变化）。
+
+### 验证
+
+- 单测 **68 条**（65 过 + 3 平台跳过；新增「checkout 副本不转发」一条）；镜像转发测试改为真的运行镜像副本。
+- `verify-branch.ps1` 39 项全绿；`audit-manifest` clean；`host-compat` 10 covered / 5 outside。
+
 ## 2.0.8 — 2026-10-18
 
 **2.0.7 的启动检测在两种边界上会失控：一个包着本 shim 的 `rea` 会让探针递归成进程链；超时探针会漏掉一个孙进程。两条都已修，并补了复现测试。**

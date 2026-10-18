@@ -100,7 +100,7 @@ releases, checksum-verified). Then install the plugin for your profile:
 ```
 dsh plugin --profile <profile> add dsh-plugin-rea
 # or pin this release instead of tracking npm latest:
-dsh plugin --profile <profile> add github:czcdr/dsh-plugin-rea#v2.0.0
+dsh plugin --profile <profile> add github:czcdr/dsh-plugin-rea#v2.0.8
 ```
 
 > **On an Electron host (the DeepSeek Harness desktop app) the profile is owned by the application.**
@@ -161,6 +161,9 @@ runs **that**, exactly as the 1.x line did, and nothing is provisioned:
   list says why a candidate was skipped (`"exit 7"`, `"inside the bundle"`, `"timeout"`).
 - A delegated child carries `REA_BUNDLE_DELEGATED=1`, so a wrapper that calls this shim cannot make it delegate to
   itself forever.
+- **On Windows a forced kill of the shim does not reap the delegated REA.** There is no job object here: Task Manager
+  or a supervisor terminating the shim leaves your `rea` running with the row's pipes (a console Ctrl+C reaches the
+  whole process group and does stop it). On POSIX the child is in the same group and dies with the terminal.
 
 ## Configure — nothing
 

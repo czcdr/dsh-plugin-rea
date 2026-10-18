@@ -51,6 +51,23 @@ jobs:
         # and a drifted floor drops hosts the README still lists.
         run: node scripts/host-compat.mjs
 
+      - name: The READMEs quote the declared DSH range verbatim
+        # The same comparison verify-branch.ps1 makes locally. Without it here, a
+        # stale quote survives every CI signal: the JSON, host-compat and the
+        # audit all agree while the sentence a human reads names another ceiling
+        # (that is how `<0.3.0` outlived the move to `<0.3.0-0`).
+        run: |
+          node -e "
+            const p = require('./package.json');
+            const { readFileSync } = require('fs');
+            const fail = (m) => { console.error('FAIL: ' + m); process.exit(1) };
+            for (const doc of ['README.md', 'README.zh-CN.md']) {
+              const text = readFileSync(doc, 'utf8');
+              if (!text.includes(p.engines.dsh)) fail(doc + ' does not quote engines.dsh (' + p.engines.dsh + ')');
+            }
+            console.log('readme range ok');
+          "
+
       - name: JSON files parse
         run: |
           node -e "

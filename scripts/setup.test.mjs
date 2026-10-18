@@ -1313,13 +1313,13 @@ function writeFakeRea(dir, { version = "6.9.0", exitForVersion = 0, runExit = 0,
   return file;
 }
 
-function runShimIsolated(env, args) {
+function runShimIsolated(env, args, shim = path.join(REPO_ROOT, "bin", "rea-shim.mjs")) {
   const merged = { ...process.env, ...env };
   // Windows keeps PATH and Path as separate variables (both are "in" the
   // environment), and a child that reads Path while the test set PATH would see
   // the machine's real search path instead of the fixture's.
   if (process.platform === "win32" && Object.prototype.hasOwnProperty.call(env, "PATH")) delete merged.Path;
-  return spawnSync(process.execPath, [path.join(REPO_ROOT, "bin", "rea-shim.mjs"), ...args], {
+  return spawnSync(process.execPath, [shim, ...args], {
     encoding: "utf8",
     timeout: 60000,
     env: merged,
@@ -1662,7 +1662,14 @@ test("a mirrored launcher re-execs the plugin's launcher when they differ", () =
   const marker = path.join(f.root, "checkout-ran");
   checkoutStub(f.checkout, marker);
   try {
-    const run = runShimIsolated({ REA_BUNDLE_ROOT: f.bundle, REA_BUNDLE_AUTO_PROVISION: "0", REA_BUNDLE_LAUNCH: "bundle" }, ["mcp"]);
+    // The mirrored copy is what the row launches, and the checkout guard means a
+    // checkout shim refuses to hop at all — so the fixture must be exercised as
+    // the mirror it is meant to be.
+    const run = runShimIsolated(
+      { REA_BUNDLE_ROOT: f.bundle, REA_BUNDLE_AUTO_PROVISION: "0", REA_BUNDLE_LAUNCH: "bundle" },
+      ["mcp"],
+      path.join(f.bundle, "bin", "rea-shim.mjs"),
+    );
     assert.equal(run.status, 7, `expected the checkout's status, got ${run.status}: ${run.stderr}`);
     assert.equal(existsSync(marker), true, "the checkout launcher must have run");
   } finally {
@@ -1678,6 +1685,7 @@ test("the re-exec happens once, and a pinned guard stops it", () => {
     const run = runShimIsolated(
       { REA_BUNDLE_ROOT: f.bundle, REA_BUNDLE_AUTO_PROVISION: "0", REA_BUNDLE_LAUNCH: "bundle", REA_BUNDLE_SHIM_REEXEC: "1" },
       ["mcp"],
+      path.join(f.bundle, "bin", "rea-shim.mjs"),
     );
     // The guard is set, so the mirrored copy runs its own logic: bundle pinned and
     // nothing provisioned means EX_CONFIG, and the checkout never starts.
@@ -1693,11 +1701,34 @@ test("--shim-status reports a stale mirror instead of re-execing it", () => {
   const marker = path.join(f.root, "checkout-ran");
   checkoutStub(f.checkout, marker);
   try {
-    const run = runShimIsolated({ REA_BUNDLE_ROOT: f.bundle, REA_BUNDLE_AUTO_PROVISION: "0", REA_BUNDLE_LAUNCH: "bundle" }, ["--shim-status"]);
+    const run = runShimIsolated(
+      { REA_BUNDLE_ROOT: f.bundle, REA_BUNDLE_AUTO_PROVISION: "0", REA_BUNDLE_LAUNCH: "bundle" },
+      ["--shim-status"],
+      path.join(f.bundle, "bin", "rea-shim.mjs"),
+    );
     const report = JSON.parse(run.stdout);
     assert.equal(report.mirror.stale, true, JSON.stringify(report.mirror));
     assert.match(report.mirror.reason, /different launcher/);
     assert.equal(existsSync(marker), false, "status is a query; it must not start anything");
+  } finally {
+    f.clean();
+  }
+});
+
+test("a checkout shim does not hop into the installed plugin", () => {
+  const f = mirrorFixture();
+  const marker = path.join(f.root, "checkout-ran");
+  checkoutStub(f.checkout, marker);
+  try {
+    // The repository's own shim is a CHECKOUT (it ships cordis.patch.yml). A
+    // developer running it must keep testing the edit in front of them, not a
+    // different plugin that the bundle's record happens to name.
+    const run = runShimIsolated(
+      { REA_BUNDLE_ROOT: f.bundle, REA_BUNDLE_AUTO_PROVISION: "0", REA_BUNDLE_LAUNCH: "bundle" },
+      ["mcp"],
+    );
+    assert.equal(run.status, 78, run.stderr);
+    assert.equal(existsSync(marker), false, "a checkout must never hop into another copy");
   } finally {
     f.clean();
   }
@@ -1708,7 +1739,11 @@ test("an identical mirror is not stale and is not re-exec'd", () => {
   const same = path.join(f.checkout, "bin", "rea-shim.mjs");
   copyFileSync(path.join(f.bundle, "bin", "rea-shim.mjs"), same);
   try {
-    const run = runShimIsolated({ REA_BUNDLE_ROOT: f.bundle, REA_BUNDLE_AUTO_PROVISION: "0", REA_BUNDLE_LAUNCH: "bundle" }, ["--shim-status"]);
+    const run = runShimIsolated(
+      { REA_BUNDLE_ROOT: f.bundle, REA_BUNDLE_AUTO_PROVISION: "0", REA_BUNDLE_LAUNCH: "bundle" },
+      ["--shim-status"],
+      path.join(f.bundle, "bin", "rea-shim.mjs"),
+    );
     const report = JSON.parse(run.stdout);
     assert.equal(report.mirror.stale, false, JSON.stringify(report.mirror));
     assert.equal(report.mirror.reason, "this copy matches the plugin");

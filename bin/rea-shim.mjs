@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * rea-shim 鈥?the process the DSH MCP row launches.
+ * rea-shim — the process the DSH MCP row launches.
  *
  * Why this exists: the published `cordis.patch.yml` must carry no machine path,
  * yet REA needs absolute paths for every dependency. The shim is the seam: it
@@ -10,7 +10,7 @@
  * It downloads nothing, writes nothing, and never touches PATH.
  *
  * Exit codes:  0 child exited normally   * child's own status
- *              78 EX_CONFIG  bundle not provisioned (or unusable) 鈥?the row has
+ *              78 EX_CONFIG  bundle not provisioned (or unusable) — the row has
  *                            `failOnStartupError: false`, so the harness stays up
  *                            and the message is the operator's remediation.
  */
@@ -74,11 +74,11 @@ function dshHomeFor(root) {
  *    DSH_HOME: the harness strips every `DSH_*` name from an MCP child's
  *    environment (case-insensitively, because Windows is), so a custom DSH_HOME
  *    would send it to `~/.dsh`, where it would report "not provisioned" for a
- *    bundle sitting right next to it 鈥?and start a second ~800 MB run there.
+ *    bundle sitting right next to it — and start a second ~800 MB run there.
  *  * The **checkout** copy (`<plugin>/bin/rea-shim.mjs`) is what a human runs, e.g.
  *    `npm run bundle:status`, from a shell where DSH_HOME *is* visible. Its own
  *    directory is the plugin, not the bundle, so resolving to itself would report
- *    "not provisioned" on a fully provisioned machine 鈥?and a bare
+ *    "not provisioned" on a fully provisioned machine — and a bare
  *    `node bin/rea-shim.mjs mcp` would provision ~800 MB into the checkout.
  *
  * Only the checkout ships `cordis.patch.yml`, so that file is the discriminator.
@@ -111,7 +111,7 @@ function usableSetup(dir) {
  * The mirrored copy is a snapshot: after a plugin upgrade it still holds the
  * previous manifest, so it would provision the previous versions forever. setup
  * writes <bundle>/mirror.json naming the real checkout; prefer that while it is
- * usable, and fall back to the local copy 鈥?which is also all a first run has.
+ * usable, and fall back to the local copy — which is also all a first run has.
  */
 function provisioningScript(root) {
   try {
@@ -167,7 +167,7 @@ function foreignReaRegistration(root) {
 /**
  * The provisioning lock is a small JSON record: { state, pid, at, exit? }.
  * `state: "running"` is written when a run is started (setup's own pid once it
- * exists), and the failing run rewrites it as `state: "failed"` 鈥?it is kept on
+ * exists), and the failing run rewrites it as `state: "failed"` — it is kept on
  * purpose so a broken setup cannot be re-downloaded in a loop. A legacy
  * plain-number lock is still honoured as "running".
  */
@@ -205,7 +205,7 @@ function pidAlive(pid) {
  * a killed attempt is simply continued on the next start.
  *
  * Set REA_BUNDLE_AUTO_PROVISION=0 to require an explicit `setup.mjs` run.
- * Returns { started, reason, logPath } 鈥?the caller words its message from
+ * Returns { started, reason, logPath } — the caller words its message from
  * `reason`, because "provisioning started in the background" was also printed
  * for a lock left behind by a run that had already failed, and for one whose
  * process was long gone.
@@ -242,7 +242,7 @@ function maybeAutoProvision(root) {
     // Reached when the lock is older than the freshness window, or its holder is
     // gone and never wrote an outcome (harness restart, power loss, a kill): what
     // it records is not happening any more. This removal is the whole point of the
-    // freshness rule 鈥?without it the exclusive create below failed with EEXIST
+    // freshness rule — without it the exclusive create below failed with EEXIST
     // *forever*, auto-provisioning never ran again, and main() printed nothing at
     // all for that outcome. The lock's own "honour it only while it is fresh"
     // comment described behaviour the code did not have.
@@ -299,7 +299,7 @@ function fail(message, detail) {
   if (detail) lines.push("", "  detail: " + detail);
   // Point at the real checkout when the record allows it: running the mirrored
   // copy is fine, but it can only ever provision the manifest it was mirrored
-  // with 鈥?and a bundle mirrored before the manifest travelled with it has no
+  // with — and a bundle mirrored before the manifest travelled with it has no
   // usable copy at all, so the honest answer is then "run the plugin's own script".
   const root = bundleRoot();
   const setupScript = provisioningScript(root);
@@ -350,7 +350,7 @@ function resolveRea(config, root) {
   // The fallback has to match where setup actually installs the package:
   // `npm install --prefix <root>/vendor` resolves into vendor/node_modules, so a
   // fallback without that segment named a directory that never exists. It only
-  // fires when an older bundle.json has no paths.reaEntry 鈥?which is exactly when
+  // fires when an older bundle.json has no paths.reaEntry — which is exactly when
   // a wrong fallback turns a usable install into "the vendored REA CLI is gone".
   const reaEntry = paths.reaEntry
     ?? path.join(root, "vendor", "node_modules", "rea-agents", "scripts", "rea.mjs");
@@ -407,7 +407,7 @@ function childEnvironment(config) {
  * the machine already has one, the honest thing to do is run it.
  *
  * The 1.x line was exactly that: `rea mcp` off PATH, user-managed Node and
- * Ghidra. So "use the system install" is not a new code path invented here 鈥?it
+ * Ghidra. So "use the system install" is not a new code path invented here — it
  * is the 1.x contract, reachable from the 2.x row. `auto` (the default) prefers
  * the system install and falls back to the provisioned bundle; `bundle` pins the
  * old behaviour; `system` insists (and fails loudly instead of provisioning
@@ -466,7 +466,7 @@ function systemReaNames(platform = process.platform) {
 /**
  * Every path worth probing, most explicit first.
  *
- * `REA_BUNDLE_SYSTEM_REA` names one binary outright 鈥?that is both the test
+ * `REA_BUNDLE_SYSTEM_REA` names one binary outright — that is both the test
  * seam and a real operator need (an install that is not on the harness's PATH,
  * which on Desktop is not the user's shell PATH).
  */
@@ -488,7 +488,9 @@ function systemReaCandidates({ env = process.env, platform = process.platform } 
   }
   const seen = new Set();
   return candidates.filter((candidate) => {
-    const key = process.platform === "win32" ? candidate.toLowerCase() : candidate;
+    // Keyed on the platform being RESOLVED, not on the one this process happens
+    // to run: the tests pass `platform` to exercise both shapes on one machine.
+    const key = platform === "win32" ? candidate.toLowerCase() : candidate;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -724,7 +726,7 @@ function compareDotted(a, b) {
  * the one this bundle provisioned would silently take the tool count back
  * (6.4.0 ships 170 tools, 6.5.0 ships 207), so the newer of the two wins and
  * the older is only used when asked for by name. `bundle` and `system` are
- * honoured literally 鈥?`system` fails loudly rather than provisioning 800 MB
+ * honoured literally — `system` fails loudly rather than provisioning 800 MB
  * behind an operator who asked for their own REA.
  */
 async function resolveLaunch({ root, bundleVersion = null, bundleProvisioned = false, env = process.env, platform = process.platform } = {}) {
@@ -910,32 +912,54 @@ function describeMirror(root, { self = fileURLToPath(import.meta.url) } = {}) {
   };
 }
 
-/** Run the checkout's launcher instead of this copy, once. */
+/**
+ * Run the checkout's launcher instead of this copy, once.
+ *
+ * Resolves `true` when the child actually started (its exit then becomes this
+ * process's exit), and `false` when it did not — the caller MUST then continue
+ * with its own launch path. The first version of this printed "continuing with
+ * the mirrored copy" on `error` and returned: nothing continued, no `exit` event
+ * followed a failed spawn, the loop drained, and the row saw exit 0 with no
+ * tools and no message. A fallback that is announced but not performed is worse
+ * than none, because it hides the failure it was written for.
+ */
 function reexecFromCheckout(source, argv) {
   const child = spawn(process.execPath, [source, ...argv], {
     stdio: "inherit",
     env: { ...process.env, REA_BUNDLE_SHIM_REEXEC: "1" },
     windowsHide: true,
   });
-  child.on("error", () => {
-    // Falling back is better than failing: the copy still knows how to launch.
-    process.stderr.write(`rea-shim: could not run ${source}; continuing with the mirrored copy.\n`);
+  return new Promise((resolve) => {
+    let started = false;
+    child.once("spawn", () => {
+      started = true;
+      resolve(true);
+    });
+    child.once("error", () => {
+      if (started) return;
+      resolve(false);
+    });
+    child.once("exit", (code, signal) => {
+      if (!started) {
+        // Exit without a spawn event: the child never ran. Let the caller fall
+        // back rather than exiting 0 on its behalf.
+        resolve(false);
+        return;
+      }
+      if (signal) {
+        const signals = { SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGKILL: 9, SIGTERM: 15 };
+        process.exit(128 + (signals[signal] ?? 0));
+      }
+      process.exit(code ?? 0);
+    });
   });
-  child.on("exit", (code, signal) => {
-    if (signal) {
-      const signals = { SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGKILL: 9, SIGTERM: 15 };
-      process.exit(128 + (signals[signal] ?? 0));
-    }
-    process.exit(code ?? 0);
-  });
-  return null;
 }
 
 /**
  * Usage text, also what a bare invocation prints.
  *
  * `package.json` exposes this file as the `rea-bundle-status` bin, and npm's bin
- * shim can only forward the arguments a user typed 鈥?it cannot append a flag. So a
+ * shim can only forward the arguments a user typed — it cannot append a flag. So a
  * bare `rea-bundle-status`, which is exactly what that name invites, used to fall
  * through to the launch path: it started REA, and on an unprovisioned machine it
  * began an ~800 MB download. Reporting usage instead makes the command's behaviour
@@ -973,9 +997,21 @@ async function main() {
   // market upgrade never re-runs setup. One hop, guarded, and never for the
   // status query — there the staleness is reported instead.
   const mirror = describeMirror(root);
-  if (mirror !== null && mirror.stale && process.env.REA_BUNDLE_SHIM_REEXEC !== "1" && !argv.includes("--shim-status")) {
+  // A CHECKOUT copy is the source, not a mirror: hopping from it into whatever
+  // the bundle's record names would silently run a different plugin — a developer
+  // testing a local edit would be testing the installed one instead. The
+  // discriminator is the one bundleRoot() already uses: only the checkout ships
+  // cordis.patch.yml.
+  const isCheckout = existsSync(path.join(PLUGIN_ROOT, "cordis.patch.yml"));
+  if (!isCheckout && mirror !== null && mirror.stale && process.env.REA_BUNDLE_SHIM_REEXEC !== "1" && !argv.includes("--shim-status")) {
     const source = pluginCheckout(root);
-    if (source !== null) return reexecFromCheckout(source, argv);
+    if (source !== null) {
+      const handed = await reexecFromCheckout(source, argv);
+      if (handed) return null;
+      // The child never started (a spawn failure, or it exited before the spawn
+      // event). Say so and run this copy for real — the point of the fallback.
+      process.stderr.write(`rea-shim: could not start ${source}; running the mirrored copy instead.\n`);
+    }
   }
   const loaded = readBundleConfig(root);
   // Decide what to run before asking whether the bundle is provisioned: a
@@ -1073,12 +1109,12 @@ async function main() {
     const provisioning = maybeAutoProvision(root);
     if (provisioning.started) {
       process.stderr.write(
-        `\n  dsh-plugin-rea (bundle): first run 鈥?provisioning started in the background.\n  progress: ${provisioning.logPath}\n`,
+        `\n  dsh-plugin-rea (bundle): first run — provisioning started in the background.\n  progress: ${provisioning.logPath}\n`,
       );
     } else if (provisioning.reason === "last-run-failed") {
       process.stderr.write(
         `\n  dsh-plugin-rea (bundle): the last provisioning attempt failed (exit ${provisioning.exit ?? "?"}).\n` +
-          `  Nothing is running right now 鈥?read the log, then re-run setup.\n  log: ${provisioning.logPath}\n`,
+          `  Nothing is running right now — read the log, then re-run setup.\n  log: ${provisioning.logPath}\n`,
       );
     } else if (provisioning.reason === "in-flight") {
       // A live run owns the lock. Saying nothing here is what made a wedged

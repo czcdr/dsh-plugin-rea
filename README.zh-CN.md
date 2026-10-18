@@ -94,7 +94,7 @@ profile 安装插件：
 ```
 dsh plugin --profile <profile> add dsh-plugin-rea
 # 或钉住这个版本，而不是跟着 npm latest 走：
-dsh plugin --profile <profile> add github:czcdr/dsh-plugin-rea#v2.0.0
+dsh plugin --profile <profile> add github:czcdr/dsh-plugin-rea#v2.0.8
 ```
 
 > **Electron 宿主（DeepSeek Harness 桌面版）的 profile 由应用独占。** 那种机器上 `dsh plugin --profile desktop …`
@@ -149,6 +149,9 @@ node scripts/setup.mjs --reuse      # 或先 --dry-run 看计划
 - `--shim-status` 会把判断结果打出来 —— `launch.mode`、`launch.reason`、`launch.systemRea`，`launch.rejected` 里
   写的是每个候选被跳过的原因（`"exit 7"`、`"inside the bundle"`、`"timeout"`）。
 - 被委派的子进程带着 `REA_BUNDLE_DELEGATED=1`，所以一个调用本 shim 的 wrapper 不会让它无限委派给自己。
+- **Windows 上强制结束 shim 不会带走被委派的 REA**：这里没有 job object，任务管理器或 supervisor 终止 shim 时，
+  你自己的 `rea` 会继续占着这一行的管道（控制台 Ctrl+C 会发给整个进程组，那种情况下会一起停）。POSIX 上子进程
+  在同一进程组，随终端一起退出。
 
 ## 配置 —— 不需要
 

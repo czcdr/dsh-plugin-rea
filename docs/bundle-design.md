@@ -83,7 +83,10 @@ through `failOnStartupError: false` without breaking the harness.
 ```
 dsh starts
   └─ MCP row: node <bundle root>/bin/rea-shim.mjs   (setup mirrors it there)
-       ├─ bundle.json present & components verify  → exec REA (normal path)
+       ├─ mirrored copy differs from the installed plugin → re-exec that copy, once
+       ├─ a working `rea` on PATH is at least as new as the bundle
+       │                                            → exec it (the 1.x contract)
+       ├─ bundle.json present & components verify  → exec the provisioned REA
        ├─ missing, auto-provision allowed         → start setup detached, print
        │                                            remediation, exit non-zero
        └─ missing, auto-provision refused         → print exact command, exit
@@ -129,6 +132,26 @@ Two notes on stages that exist because their absence was a bug:
   harness's own dialect, `args[0]` became `{"[object Object]": "..."}` and the
   row could not launch at all. Any future expression with a ternary needs the
   quotes; `audit-manifest.mjs` rejects the bare form.
+- **Launch mode (2.0.7).** 2.x exists to supply a runtime a machine lacks, so a
+  machine that already has one should not be provisioned. Before touching bundle
+  state the shim asks whether `rea` is on PATH and answers `--version`; if it
+  does, and its version is not older than `bundle.json`'s `versions.reaAgents`,
+  the row execs that install exactly as the 1.x row did. The probe is asynchronous
+  and bounded (8 s: a `.cmd` shim needs ~2.4 s), runs with
+  `REA_BUNDLE_DELEGATED=1` and `REA_BUNDLE_AUTO_PROVISION=0` so a candidate that
+  wraps this shim cannot recurse or start an 800 MB run, and kills its whole tree
+  on timeout. `REA_BUNDLE_LAUNCH=auto|system|bundle` overrides the choice; an
+  unorderable pair (a prerelease on either side) keeps the bundle.
+- **Self-healing mirror (2.0.8).** The row launches a COPY, and a market upgrade
+  runs no setup, so without this the copy keeps executing the code it was made
+  from — invisibly, because it still works. The copy therefore compares its own
+  hash with `<mirror.json.pluginRoot>/bin/rea-shim.mjs` and re-execs that file
+  when they differ: one hop, guarded by `REA_BUNDLE_SHIM_REEXEC`, and only from a
+  mirror (a checkout ships `cordis.patch.yml`, so it never hops into another
+  copy). `mirror.json` carries `shimSha256`, `pluginVersion` and `dshHome` —
+  the last one because the harness strips `DSH_*` from an MCP child, so the
+  duplicate-registration check would otherwise read `~/.dsh` on a machine with a
+  custom home. `--shim-status` reports `mirror.stale` instead of hopping.
 - **3 (fetch).** Route order is deliberate and environment-dependent: direct
   first, then the system proxy, and on Windows the .NET route ahead of both
   because it follows the GitHub release-asset redirect that the Node routes
