@@ -2,6 +2,54 @@
 
 本插件遵循语义化版本。版本号变化说明「配置组合」这层的变化，与 REA 自身的版本无关。
 
+## 2.0.7 — 2026-10-18
+
+**机器上已有可用的 REA 时，2.x 直接按 1.x 的方式跑它（环境检测 + 委派），不再供给；同时把 2.0.6 的宿主声明收紧到真的能证明的范围。**
+
+### 新增：环境检测 → 跑 1.x 的那条路
+
+- **启动时判断该跑谁**：`rea` 在 PATH 上且能应答 `--version`，就用它（`rea mcp`，用户自己的 Node 与 PATH）；否则走供给的
+  bundle。这正是 1.x 的契约，现在从 2.x 的行里也能到。
+- **版本优先级**：系统 REA 比供给的旧就不抢（6.4.0 是 170 个工具、6.5.0 是 207 个，静默回退工具数是真回归）。相等或更新
+  才切；预发布/无法比较时保守留 bundle。
+- **覆盖**：`REA_BUNDLE_LAUNCH=auto|system|bundle`（默认 auto）、`REA_BUNDLE_SYSTEM_REA=<path>` 点名不在 PATH 上的二进制。
+  `system` 在找不到时**报错退出**，而不是替用户去下 800 MB。
+- **`--shim-status` 报告决定**：`launch.{preference,mode,reason,unusable,systemRea,rejected}`；`--shim-print-env` 在 system
+  模式下打印 `{launch,rea,version}`。
+- **防自委派**：被委派的子进程带 `REA_BUNDLE_DELEGATED=1`，一个调用本 shim 的 wrapper 不会让委派无限递归。
+
+### 修复（两轮独立复核，逐条可复现）
+
+- **委派参数被加引号**：`cmd /c` 下 `.cmd` 的 `%*` 收到的是 `"mcp"` 而不是 `mcp` —— 探针能过、委派是坏的。现在只给路径加
+  引号，参数原样传（行固定传 `mcp`；需要 shell 引号的参数本就不在这条路上）。
+- **探测预算 3s 与真机同量级**：实测经 `.cmd` 的 `rea --version` 为 2.4s（并发 2.8–3.0s），3s 预算等于掷硬币。改为 8s；超时
+  用 `taskkill /T /F` 杀进程树，不再只杀 cmd.exe 而留下一个占着管道的 REA。
+- **Windows 信号转发是错的**：`child.kill("SIGINT")` 只 TerminateProcess(cmd.exe)，里面的 REA 继续跑；现在 Windows 走
+  `taskkill /T`，POSIX 不重复转发（stdio inherit 已由进程组投递）。
+- **`--shim-status` 退出码**：`system` 被点名但不可用时曾返回 0（bundle 恰好已供给），实际启动却 78；现在按「这一行能不能
+  起来」返回，并新增 `launch.unusable` 字段。
+- **候选判定**：`existsSync` 换成 `statSync().isFile()`（名为 `rea.cmd` 的目录曾被当成坏安装）；PATH 项去引号、跳过相对项；
+  显式路径被拒时理由如实报告。
+- **`fail()` 的补救命令补上 `--root`**：shim 用 `REA_BUNDLE_ROOT` 解析出的根与 setup 的默认根可以不同，照着旧提示执行会供给
+  到另一个根。
+- **`engine.dsh` 上限收紧**：`<0.3.0` 在 includePrerelease 语义下会放行 `0.3.0-alpha.1`/`0.3.0-rc.1`；改为 `<0.3.0-0`，并用
+  市场自己的 `satisfiesRange` 逐版本核对。
+- **`host-compat.mjs` 的测试加固**：发布清单逐项钉住；新增「低地板必须被判为泄漏」的反向对照（原实现把 `leaked` 改成 `[]`
+  仍然全绿）；`+build` 元数据按 semver 接受、`v` 前缀与零填充预发布按 semver 拒绝。
+- **环境独立性**：`setup.mjs` 自检的 shim 步骤钉 `bundle` 模式（否则机器上更新的 REA 会冒充本次供给的产物）；CI 两个 job
+  各加 job 级 `REA_BUNDLE_LAUNCH=bundle`；测试里的每个 shim 调用点都钉住模式，测试不再随机器变。
+- **`rea-bundle-bootstrap.ps1` 认 `REA_BUNDLE_ROOT`**：四份代码里只有它忽略这个覆盖，导致 bootstrap 把 800 MB 装到
+  `<DSH_HOME>/plugins/rea-bundle`，而 shim/setup/check-updates 去 `REA_BUNDLE_ROOT` 找，看到空 bundle 再起一次。
+- 中文 README 的「更新到 2.0.4」措辞改正为「更新到 2.0.5」。
+
+### 验证
+
+- 单测 **60 条**（新增 12 条：6 条启动模式 + 1 条清单钉住 + 1 条泄漏反向对照 + 1 条 semver 容差 + 3 条 PATH/空格路径/委派退出码），
+  Windows 57 过 + 3 平台跳过。
+- `verify-branch.ps1` 全绿；`audit-manifest.mjs` clean；`host-compat.mjs` 10 covered / 5 correctly outside。
+- 真机：全局 `rea` 6.4.0 与供给的 6.5.0 并存时 `auto` 留 bundle（不降工具数），`REA_BUNDLE_LAUNCH=system` 才切过去。
+
+
 ## 2.0.6 — 2026-10-18
 
 **声明宿主版本：`engines.dsh` 覆盖 `0.1.7-rc.2` … `0.2.1-rc.2` 全部发布版本，市场卡片因此显示「兼容」而不是「未声明」。**

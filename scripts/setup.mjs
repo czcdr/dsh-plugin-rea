@@ -1553,7 +1553,11 @@ if (!options.dryRun) {
     const shim = spawnSync(process.execPath, [mirroredShim, "--version"], {
       encoding: "utf8",
       timeout: 120000,
-      env: { ...process.env, REA_BUNDLE_ROOT: options.root },
+      // Pin the bundle path: this step exists to confirm the shim relays the REA
+      // THIS run provisioned. Under the default `auto` mode a machine that also
+      // has a newer global REA answers with its own version, and the step would
+      // report success for something this run never verified.
+      env: { ...process.env, REA_BUNDLE_ROOT: options.root, REA_BUNDLE_LAUNCH: "bundle" },
     });
     const output = `${shim.stdout ?? ""}${shim.stderr ?? ""}`.trim();
     const ok = shim.status === 0 && /\d+\.\d+\.\d+/.test(output);

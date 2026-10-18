@@ -24,6 +24,15 @@
  * shape for a gate. When a release is added upstream, add it here too — that
  * edit is the reminder to re-check the row against the new host.
  *
+ * SEMANTICS: this file evaluates the declaration the way `includePrerelease:
+ * true` does, and that choice is not stylistic. Both consumers of `engines.dsh`
+ * in this ecosystem pass that option — dshmarket's discovery
+ * (`satisfiesRange(host, declared, { includePrerelease: true })` in
+ * `deriveHostCompatibility`) and the host's own peer gate — so a plain semver
+ * reading, where `0.2.0-rc.2` does NOT satisfy `>=0.1.7-rc.2 <0.3.0-0` (a
+ * prerelease must be named by a comparator on its own tuple), would disagree
+ * with the verdict users actually see. The tests pin the option's effect.
+ *
  * Usage: `node scripts/host-compat.mjs` (exit 0 = every listed release is
  * covered by the declared range; exit 1 = at least one is not).
  */
@@ -59,6 +68,12 @@ export const HOST_RELEASES = [
 /** Hosts that must fall OUTSIDE the declaration, for the other direction. */
 export const OUTSIDE_HOSTS = [
   '0.3.0',
+  // Prereleases of the NEXT line are the case a plain `<0.3.0` ceiling lets
+  // through: with `includePrerelease` they sort below `0.3.0` itself. The
+  // declared ceiling is `<0.3.0-0`, semver's idiom for "nothing from 0.3.0",
+  // and these entries are what proves it does what it says.
+  '0.3.0-rc.1',
+  '0.3.0-alpha.1',
   '0.1.7-rc.1',
   '0.1.7-alpha.2',
 ]
@@ -67,15 +82,25 @@ const SEMVER = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/
 
 /**
  * Split a version into comparable parts.
+ *
+ * Build metadata (`+sha`) is dropped, as semver says it must be for precedence
+ * and as node-semver does for comparison: a host that reports
+ * `0.2.0-rc.2+build.7` is running 0.2.0-rc.2. Everything else is deliberately
+ * strict — a leading `v` or a zero-padded identifier is rejected rather than
+ * guessed at, because this gate exists to catch a declaration nobody checked and
+ * a guess would put the guess in charge.
  * @param {string} version - a plain semver string, no range operators.
  * @returns {{ parts: number[], pre: (string|number)[] } | null} null when unparseable.
  */
 export function parseVersion(version) {
-  const match = SEMVER.exec(version.trim())
+  const cleaned = String(version ?? '').trim().replace(/\+.*$/, '')
+  const match = SEMVER.exec(cleaned)
   if (match === null) return null
-  const pre = match[4] === undefined
-    ? []
-    : match[4].split('.').map(part => (/^\d+$/.test(part) ? Number(part) : part))
+  const raw = match[4] === undefined ? [] : match[4].split('.')
+  // semver forbids a zero-padded numeric prerelease identifier (`0.2.1-01`);
+  // accepting one would make this gate read a typo as a version.
+  if (raw.some(part => /^\d+$/.test(part) && part.length > 1 && part.startsWith('0'))) return null
+  const pre = raw.map(part => (/^\d+$/.test(part) ? Number(part) : part))
   return { parts: [Number(match[1]), Number(match[2]), Number(match[3])], pre }
 }
 

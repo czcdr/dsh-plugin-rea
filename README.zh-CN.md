@@ -131,6 +131,25 @@ node scripts/setup.mjs --reuse      # 或先 --dry-run 看计划
 暴露的配置面与发布的行完全一致（`serverName`、`transport`、`command`、`args`、`env`、`failOnStartupError`），
 并且两个 tag 都有 `dsh.bundle.patch`。范围之外的宿主可能照样能用，只是没有替它声明。
 
+### 机器上已有 REA 就直接用它
+
+2.x 存在的意义是补上机器缺的东西。如果 REA 已经装好——`rea` 在 PATH 上，也就是 1.x 的形态——这一行就**直接跑它**，
+和 1.x 一模一样，不再做任何供给：
+
+| 机器上的情况 | 这一行跑什么 |
+|---|---|
+| `rea` 在 PATH 上，且不比供给的版本旧 | 你自己那份（`rea mcp`），用你的 Node 和你的 PATH |
+| `rea` 在 PATH 上，但比供给的版本旧 | 供给出来的 bundle —— 旧的全局 CLI 会把工具数往回退（6.4.0 是 170 个，6.5.0 是 207 个） |
+| PATH 上没有 `rea` | 供给出来的 bundle，首次使用时自行供给 |
+
+- `REA_BUNDLE_LAUNCH=auto|system|bundle` 覆盖这个判断（默认 `auto`）；`REA_BUNDLE_SYSTEM_REA=<path>` 用来点名一个
+  不在 PATH 上的可执行文件。
+- 探测用的是 CLI 自己的 `--version`，上限 8 秒：Windows 上的 `.cmd` 垫片要 ~2.4 秒才答得出来，所以这个检查每次启动
+  只做一次，而且只在真的存在 `rea` 时才做。
+- `--shim-status` 会把判断结果打出来 —— `launch.mode`、`launch.reason`、`launch.systemRea`，`launch.rejected` 里
+  写的是每个候选被跳过的原因（`"exit 7"`、`"inside the bundle"`、`"timeout"`）。
+- 被委派的子进程带着 `REA_BUNDLE_DELEGATED=1`，所以一个调用本 shim 的 wrapper 不会让它无限委派给自己。
+
 ## 配置 —— 不需要
 
 发布的那一行**不含任何机器路径**：
@@ -264,7 +283,7 @@ shim** 的 MCP `initialize` 握手返回 `serverInfo {name: rea, version: 6.5.0}
 ### 在市场里更新
 
 在哪儿装的就在哪儿更新。更新到 **2.0.5 及以上**是常规操作；而把已装的 2.0.1–2.0.4 通过应用内市场**更新到
-2.0.4**，在健康的 profile 上连续失败了三次：
+2.0.5**，在健康的 profile 上连续失败了三次：
 
 > dsh-plugin-rea 更新后缺少入口文件（package.json 的 main/exports 指向的文件不存在），且未能验证恢复原版本文件
 

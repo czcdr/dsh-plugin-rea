@@ -30,6 +30,11 @@ function Write-Step([string]$Message) { Write-Host "[bootstrap] $Message" }
 
 # --- where things go -------------------------------------------------------
 
+# Same precedence as setup.mjs, the shim and check-updates.ps1: explicit override,
+# then DSH_HOME, then ~/.dsh. An override this script alone ignored would put
+# ~800 MB into <DSH_HOME>/plugins/rea-bundle while every reader looked in
+# REA_BUNDLE_ROOT, saw an empty bundle, and started a second run.
+if (-not $Root -or $Root.Trim() -eq '') { $Root = $env:REA_BUNDLE_ROOT }
 if (-not $Root -or $Root.Trim() -eq '') {
   $home2 = $env:DSH_HOME
   if (-not $home2 -or $home2.Trim() -eq '') { $home2 = Join-Path $HOME '.dsh' }

@@ -142,6 +142,26 @@ What was actually compared across that range is the row provider: `packages/mcp/
 `env`, `failOnStartupError`), and `dsh.bundle.patch` exists at both tags. A host outside the range can still work; it is
 simply not claimed.
 
+### A REA you already have is used as-is
+
+2.x exists to supply what a machine is missing. If REA is already installed — `rea` on PATH, the 1.x setup — the row
+runs **that**, exactly as the 1.x line did, and nothing is provisioned:
+
+| What the machine has | What the row runs |
+|---|---|
+| `rea` on PATH, at least as new as the provisioned build | your REA (`rea mcp`), with your Node and your PATH |
+| `rea` on PATH but older than the provisioned build | the provisioned bundle — a stale global CLI would take the tool count backwards (6.4.0 ships 170 tools, 6.5.0 ships 207) |
+| no `rea` on PATH | the provisioned bundle, provisioning itself on first use |
+
+- `REA_BUNDLE_LAUNCH=auto|system|bundle` overrides the decision (`auto` is the default); `REA_BUNDLE_SYSTEM_REA=<path>`
+  names a binary that is not on PATH.
+- The probe is the CLI's own `--version`, bounded at 8 s: a `.cmd` shim on Windows takes ~2.4 s to answer, so the check
+  runs once per start and only when a `rea` actually exists.
+- `--shim-status` prints the decision — `launch.mode`, `launch.reason`, `launch.systemRea` — and its `launch.rejected`
+  list says why a candidate was skipped (`"exit 7"`, `"inside the bundle"`, `"timeout"`).
+- A delegated child carries `REA_BUNDLE_DELEGATED=1`, so a wrapper that calls this shim cannot make it delegate to
+  itself forever.
+
 ## Configure — nothing
 
 The shipped row carries **no machine path**:

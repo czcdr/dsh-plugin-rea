@@ -213,7 +213,10 @@ const SHIM_SOURCE = path.join(path.dirname(fileURLToPath(import.meta.url)), ".."
 function shimBundleRoot(shimFile, env) {
   const run = spawnSync(process.execPath, [shimFile, "--shim-status"], {
     encoding: "utf8",
-    env: { ...process.env, REA_BUNDLE_AUTO_PROVISION: "0", ...env },
+    // These tests assert bundle-root resolution, not the launch decision. Pinning
+    // the mode keeps them independent of whether THIS machine has a REA on PATH
+    // (and keeps them from paying for a probe on every spawn).
+    env: { ...process.env, REA_BUNDLE_AUTO_PROVISION: "0", REA_BUNDLE_LAUNCH: "bundle", ...env },
   });
   // --shim-status prints its report even when no bundle exists yet (exit 78).
   return JSON.parse(run.stdout).bundleRoot;
@@ -821,6 +824,10 @@ function runShim(bundle, args, extraEnv = {}) {
     ...process.env,
     DSH_HOME: path.join(path.dirname(bundle), "dsh-home"),
     REA_BUNDLE_ROOT: bundle,
+    // The bundle path is what these tests assert. Without this pin the shim
+    // would take its `auto` branch and, on a machine that happens to have a REA
+    // on PATH, delegate to it instead of exercising the code under test.
+    REA_BUNDLE_LAUNCH: "bundle",
     ...extraEnv,
   };
   delete env.REA_BUNDLE_AUTO_PROVISION;
@@ -944,7 +951,7 @@ test("a second REA registration is reported instead of silently duplicated", () 
 
     const status = spawnSync(process.execPath, [path.join(bundle, "bin", "rea-shim.mjs"), "--shim-status"], {
       encoding: "utf8",
-      env: { ...process.env, DSH_HOME: home, REA_BUNDLE_ROOT: bundle },
+      env: { ...process.env, DSH_HOME: home, REA_BUNDLE_ROOT: bundle, REA_BUNDLE_LAUNCH: "bundle" },
     });
     assert.equal(JSON.parse(status.stdout).duplicateRegistration.id, "rea-mcp");
   } finally {
@@ -1123,7 +1130,7 @@ test("the fallback vendored-REA path matches where setup installs it", () => {
     const run = spawnSync(process.execPath, [path.join(REPO_ROOT, "bin", "rea-shim.mjs"), "--shim-status"], {
       encoding: "utf8",
       timeout: 60000,
-      env: { ...process.env, REA_BUNDLE_ROOT: bundle, REA_BUNDLE_AUTO_PROVISION: "0" },
+      env: { ...process.env, REA_BUNDLE_ROOT: bundle, REA_BUNDLE_AUTO_PROVISION: "0", REA_BUNDLE_LAUNCH: "bundle" },
     });
     const report = JSON.parse(run.stdout);
     assert.equal(report.rea.ok, true, JSON.stringify(report.rea));
@@ -1212,8 +1219,30 @@ test("the entry loads as a cordis plugin and does nothing", async () => {
 test("the manifest declares a DSH host range the market can read", () => {
   const range = declaredHostRange(REPO_ROOT);
   assert.equal(typeof range, "string", "engines.dsh must be declared; without it the market reports the plugin as unknown");
+  // The string is pinned, not just parsed: the ceiling decides which hosts are
+  // admitted, and `<0.3.0` vs `<0.3.0-0` is exactly the difference between
+  // "no 0.3.0" and "0.3.0-alpha.1 is fine" once prereleases are included.
+  assert.equal(range, ">=0.1.7-rc.2 <0.3.0-0");
   assert.throws(() => satisfiesDeclaredRange("0.2.0-rc.2", "not a range"), "the gate must reject an unparseable range");
   assert.doesNotThrow(() => satisfiesDeclaredRange("0.2.0-rc.2", range));
+});
+
+test("the release list this gate checks is the published one", () => {
+  // Pinned literally: deleting an entry from the list would otherwise shrink the
+  // coverage claim silently, and every test below would still pass.
+  assert.deepEqual(HOST_RELEASES, [
+    "0.2.1-rc.2",
+    "0.2.1-rc.1",
+    "0.2.1-alpha.5",
+    "0.2.1-alpha.4",
+    "0.2.1-alpha.3",
+    "0.2.1-alpha.2",
+    "0.2.1-alpha.1",
+    "0.2.0-rc.2",
+    "0.2.0-rc.1",
+    "0.1.7-rc.2",
+  ]);
+  assert.deepEqual(OUTSIDE_HOSTS, ["0.3.0", "0.3.0-rc.1", "0.3.0-alpha.1", "0.1.7-rc.1", "0.1.7-alpha.2"]);
 });
 
 test("every released DSH host is inside the declared range, and nothing untested is", () => {
@@ -1221,7 +1250,7 @@ test("every released DSH host is inside the declared range, and nothing untested
   const { covered, uncovered, leaked } = checkHostCoverage(range);
   assert.deepEqual(uncovered, [], `these releases fall outside ${range}`);
   assert.deepEqual(leaked, [], `the declaration also admits ${leaked.join(", ")}, which nobody tested`);
-  assert.equal(covered.length, HOST_RELEASES.length, "every release in the list must be covered");
+  assert.deepEqual(covered, HOST_RELEASES, "every release in the list must be covered");
 });
 
 test("the host-range gate rejects a plausible but wrong declaration", () => {
@@ -1230,10 +1259,16 @@ test("the host-range gate rejects a plausible but wrong declaration", () => {
   // prerelease sorts BELOW its release, it drops the whole 0.2.0-rc line as well
   // as 0.1.7. That is the trap this test exists for: the typo looks like it names
   // the running host.
-  const drifted = checkHostCoverage(">=0.2.0 <0.3.0");
+  const drifted = checkHostCoverage(">=0.2.0 <0.3.0-0");
   assert.deepEqual(drifted.uncovered, ["0.2.0-rc.2", "0.2.0-rc.1", "0.1.7-rc.2"], "a 0.2.0 floor must be seen dropping the 0.2.0 prereleases");
-  // And the ceiling is load bearing: the next minor line is a host nobody audited.
-  assert.equal(satisfiesDeclaredRange("0.3.0", ">=0.1.7-rc.2 <0.3.0"), false);
+  // The OTHER half of the gate needs its own control: a floor low enough to admit
+  // a host nobody audited must be reported as a leak, not silently accepted.
+  const loose = checkHostCoverage(">=0.1.0 <0.3.0-0");
+  assert.deepEqual(loose.leaked, ["0.1.7-rc.1", "0.1.7-alpha.2"], "a low floor must be seen admitting the earlier prereleases");
+  // And the ceiling is load bearing: the next minor line is a host nobody audited,
+  // including its prereleases, which `<0.3.0` would have let through.
+  assert.equal(satisfiesDeclaredRange("0.3.0", ">=0.1.7-rc.2 <0.3.0-0"), false);
+  assert.equal(satisfiesDeclaredRange("0.3.0-rc.1", ">=0.1.7-rc.2 <0.3.0-0"), false);
 });
 
 test("prerelease ordering matches semver, not string order", () => {
@@ -1242,5 +1277,290 @@ test("prerelease ordering matches semver, not string order", () => {
   assert.equal(compareVersions("0.2.0-rc.2", "0.2.0-rc.1"), 1);
   // String comparison would sort "alpha.10" before "alpha.5"; semver does not.
   assert.equal(compareVersions("0.2.1-alpha.10", "0.2.1-alpha.5"), 1);
-  assert.equal(OUTSIDE_HOSTS.length > 0, true);
+});
+
+test("the evaluator reads the two tolerances semver does, and refuses the rest", () => {
+  // Build metadata carries no precedence: a host reporting it is that version.
+  assert.equal(satisfiesDeclaredRange("0.2.0-rc.2+build.7", ">=0.1.7-rc.2 <0.3.0-0"), true);
+  // Everything else is refused rather than guessed at — a gate that accepts `v`
+  // prefixes and zero-padded identifiers would also accept a typo.
+  assert.throws(() => satisfiesDeclaredRange("v0.2.0-rc.2", ">=0.1.7-rc.2 <0.3.0-0"));
+  assert.throws(() => satisfiesDeclaredRange("0.2.1-01", ">=0.1.7-rc.2 <0.3.0-0"));
+});
+
+/* ------------------------------------------------------- the launch decision */
+
+// 2.x supplies a runtime the machine may not have; when it HAS one, the row must
+// use it — the 1.x contract. These tests own that decision, so every one of them
+// isolates PATH: without it the suite would silently depend on whatever `rea`
+// the machine running it happens to have, which is the one thing a test of a
+// machine-dependent decision must not do.
+
+function writeFakeRea(dir, { version = "6.9.0", exitForVersion = 0, runExit = 0, record = null } = {}) {
+  const file = path.join(dir, process.platform === "win32" ? "rea.cmd" : "rea");
+  if (process.platform === "win32") {
+    const lines = ["@echo off", 'if "%1"=="--version" (', `  echo ${version}`, `  exit /b ${exitForVersion}`, ")"];
+    if (record !== null) lines.push(`echo %* > "${record}"`);
+    lines.push(`exit /b ${runExit}`);
+    writeFileSync(file, lines.join("\r\n") + "\r\n");
+  } else {
+    const lines = ["#!/bin/sh", `if [ "$1" = "--version" ]; then echo ${version}; exit ${exitForVersion}; fi`];
+    if (record !== null) lines.push(`echo "$*" > "${record}"`);
+    lines.push(`exit ${runExit}`);
+    writeFileSync(file, lines.join("\n") + "\n");
+    chmodSync(file, 0o755);
+  }
+  return file;
+}
+
+function runShimIsolated(env, args) {
+  const merged = { ...process.env, ...env };
+  // Windows keeps PATH and Path as separate variables (both are "in" the
+  // environment), and a child that reads Path while the test set PATH would see
+  // the machine's real search path instead of the fixture's.
+  if (process.platform === "win32" && Object.prototype.hasOwnProperty.call(env, "PATH")) delete merged.Path;
+  return spawnSync(process.execPath, [path.join(REPO_ROOT, "bin", "rea-shim.mjs"), ...args], {
+    encoding: "utf8",
+    timeout: 60000,
+    env: merged,
+  });
+}
+
+function launchFixture() {
+  const root = mkdtempSync(path.join(tmpdir(), "rea-launch-"));
+  const emptyPath = path.join(root, "empty-path");
+  mkdirSync(emptyPath, { recursive: true });
+  return {
+    root,
+    emptyPath,
+    bundleRoot: path.join(root, "bundle"),
+    bin: path.join(root, "bin"),
+    record: path.join(root, "record.txt"),
+    clean() {
+      rmSync(root, { recursive: true, force: true });
+    },
+  };
+}
+
+test("a machine with its own REA runs the 1.x way, and no bundle is required", () => {
+  const f = launchFixture();
+  mkdirSync(f.bin, { recursive: true });
+  const rea = writeFakeRea(f.bin, { version: "6.9.0", record: f.record });
+  try {
+    const env = {
+      PATH: f.emptyPath,
+      REA_BUNDLE_SYSTEM_REA: rea,
+      REA_BUNDLE_ROOT: f.bundleRoot,
+      REA_BUNDLE_AUTO_PROVISION: "0",
+      REA_BUNDLE_LAUNCH: "",
+    };
+    const status = runShimIsolated(env, ["--shim-status"]);
+    const report = JSON.parse(status.stdout);
+    assert.equal(status.status, 0, status.stderr);
+    assert.equal(report.launch.mode, "system", JSON.stringify(report.launch));
+    assert.equal(report.launch.systemRea.version, "6.9.0");
+    // Unprovisioned and still healthy: the row does not depend on the bundle.
+    assert.equal(report.provisioned, false);
+    assert.equal(existsSync(path.join(f.bundleRoot, "bundle.json")), false, "no provisioning may be started");
+
+    const run = runShimIsolated(env, ["mcp"]);
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(readFileSync(f.record, "utf8").trim(), "mcp", "the system REA must receive the row's arguments");
+  } finally {
+    f.clean();
+  }
+});
+
+test("REA_BUNDLE_LAUNCH=bundle keeps the bundle path even with a REA on PATH", () => {
+  const f = launchFixture();
+  mkdirSync(f.bin, { recursive: true });
+  const rea = writeFakeRea(f.bin);
+  try {
+    const run = runShimIsolated(
+      { PATH: f.emptyPath, REA_BUNDLE_SYSTEM_REA: rea, REA_BUNDLE_ROOT: f.bundleRoot, REA_BUNDLE_AUTO_PROVISION: "0", REA_BUNDLE_LAUNCH: "bundle" },
+      ["--shim-status"],
+    );
+    const report = JSON.parse(run.stdout);
+    assert.equal(report.launch.mode, "bundle");
+    assert.equal(report.launch.reason, "pinned by REA_BUNDLE_LAUNCH=bundle");
+    assert.equal(run.status, 78, "an unpinned bundle that is not provisioned still reports EX_CONFIG");
+  } finally {
+    f.clean();
+  }
+});
+
+test("an older system REA does not displace a newer provisioned one unless pinned", () => {
+  const f = launchFixture();
+  mkdirSync(f.bin, { recursive: true });
+  mkdirSync(f.bundleRoot, { recursive: true });
+  const rea = writeFakeRea(f.bin, { version: "6.4.0" });
+  try {
+    writeFileSync(
+      path.join(f.bundleRoot, "bundle.json"),
+      JSON.stringify({ schema: 1, paths: { node: process.execPath }, versions: { reaAgents: "6.5.0" } }),
+    );
+    const base = { PATH: f.emptyPath, REA_BUNDLE_SYSTEM_REA: rea, REA_BUNDLE_ROOT: f.bundleRoot, REA_BUNDLE_AUTO_PROVISION: "0" };
+    const auto = JSON.parse(runShimIsolated({ ...base, REA_BUNDLE_LAUNCH: "" }, ["--shim-status"]).stdout);
+    assert.equal(auto.launch.mode, "bundle");
+    assert.match(auto.launch.reason, /older than the provisioned one/);
+    const pinned = JSON.parse(runShimIsolated({ ...base, REA_BUNDLE_LAUNCH: "system" }, ["--shim-status"]).stdout);
+    assert.equal(pinned.launch.mode, "system");
+    assert.match(pinned.launch.reason, /pinned by REA_BUNDLE_LAUNCH=system/);
+  } finally {
+    f.clean();
+  }
+});
+
+test("a candidate that cannot answer --version is rejected, not launched", () => {
+  const f = launchFixture();
+  mkdirSync(f.bin, { recursive: true });
+  const rea = writeFakeRea(f.bin, { exitForVersion: 7 });
+  try {
+    const run = runShimIsolated(
+      { PATH: f.emptyPath, REA_BUNDLE_SYSTEM_REA: rea, REA_BUNDLE_ROOT: f.bundleRoot, REA_BUNDLE_AUTO_PROVISION: "0", REA_BUNDLE_LAUNCH: "" },
+      ["--shim-status"],
+    );
+    const report = JSON.parse(run.stdout);
+    assert.equal(report.launch.mode, "bundle");
+    assert.equal(report.launch.systemRea, null);
+    assert.deepEqual(report.launch.rejected.map(r => r.reason), ["exit 7"]);
+    assert.equal(run.status, 78);
+  } finally {
+    f.clean();
+  }
+});
+
+test("REA_BUNDLE_LAUNCH=system refuses instead of provisioning", () => {
+  const f = launchFixture();
+  const missing = path.join(f.bin, "no-such-rea");
+  try {
+    const run = runShimIsolated(
+      { PATH: f.emptyPath, REA_BUNDLE_SYSTEM_REA: missing, REA_BUNDLE_ROOT: f.bundleRoot, REA_BUNDLE_AUTO_PROVISION: "1", REA_BUNDLE_LAUNCH: "system" },
+      ["mcp"],
+    );
+    assert.equal(run.status, 78, run.stdout);
+    assert.match(run.stderr, /REA_BUNDLE_LAUNCH=system was requested/);
+    assert.equal(existsSync(f.bundleRoot), false, "a pinned system launch must not create a bundle");
+  } finally {
+    f.clean();
+  }
+});
+
+test("an unknown REA_BUNDLE_LAUNCH value is reported and treated as auto", () => {
+  const f = launchFixture();
+  mkdirSync(f.bin, { recursive: true });
+  const rea = writeFakeRea(f.bin, { version: "6.9.0" });
+  try {
+    const run = runShimIsolated(
+      { PATH: f.emptyPath, REA_BUNDLE_SYSTEM_REA: rea, REA_BUNDLE_ROOT: f.bundleRoot, REA_BUNDLE_AUTO_PROVISION: "0", REA_BUNDLE_LAUNCH: "nonsense" },
+      ["--shim-status"],
+    );
+    assert.match(run.stderr, /REA_BUNDLE_LAUNCH="nonsense" is not one of/);
+    assert.equal(JSON.parse(run.stdout).launch.mode, "system");
+  } finally {
+    f.clean();
+  }
+});
+
+test("the system REA is found through PATH itself, not only through the override", () => {
+  const f = launchFixture();
+  mkdirSync(f.bin, { recursive: true });
+  writeFakeRea(f.bin, { version: "6.9.0" });
+  try {
+    const run = runShimIsolated(
+      { PATH: f.bin, REA_BUNDLE_ROOT: f.bundleRoot, REA_BUNDLE_AUTO_PROVISION: "0", REA_BUNDLE_LAUNCH: "" },
+      ["--shim-status"],
+    );
+    const report = JSON.parse(run.stdout);
+    assert.equal(report.launch.mode, "system", JSON.stringify(report.launch));
+    assert.equal(report.launch.systemRea.version, "6.9.0");
+    assert.equal(run.status, 0);
+  } finally {
+    f.clean();
+  }
+});
+
+test("a REA installed under a path with a space is probed and launched", () => {
+  const f = launchFixture();
+  const spaced = path.join(f.root, "rea space");
+  mkdirSync(spaced, { recursive: true });
+  const rea = writeFakeRea(spaced, { version: "6.9.0", record: f.record });
+  try {
+    const env = { PATH: f.emptyPath, REA_BUNDLE_SYSTEM_REA: rea, REA_BUNDLE_ROOT: f.bundleRoot, REA_BUNDLE_AUTO_PROVISION: "0", REA_BUNDLE_LAUNCH: "" };
+    const status = JSON.parse(runShimIsolated(env, ["--shim-status"]).stdout);
+    assert.equal(status.launch.mode, "system", JSON.stringify(status.launch));
+    const run = runShimIsolated(env, ["mcp"]);
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(readFileSync(f.record, "utf8").trim(), "mcp");
+  } finally {
+    f.clean();
+  }
+});
+
+test("the delegated process's exit status is the shim's exit status", () => {
+  const f = launchFixture();
+  mkdirSync(f.bin, { recursive: true });
+  const rea = writeFakeRea(f.bin, { version: "6.9.0", runExit: 9 });
+  try {
+    const run = runShimIsolated(
+      { PATH: f.emptyPath, REA_BUNDLE_SYSTEM_REA: rea, REA_BUNDLE_ROOT: f.bundleRoot, REA_BUNDLE_AUTO_PROVISION: "0", REA_BUNDLE_LAUNCH: "" },
+      ["mcp"],
+    );
+    assert.equal(run.status, 9, `the row must see REA's own status, got ${run.status}`);
+  } finally {
+    f.clean();
+  }
+});
+
+test("a REA inside the bundle is not treated as a system install", () => {
+  const f = launchFixture();
+  mkdirSync(f.bundleRoot, { recursive: true });
+  const inside = writeFakeRea(f.bundleRoot, { version: "6.9.0" });
+  try {
+    const run = runShimIsolated(
+      { PATH: f.emptyPath, REA_BUNDLE_SYSTEM_REA: inside, REA_BUNDLE_ROOT: f.bundleRoot, REA_BUNDLE_AUTO_PROVISION: "0", REA_BUNDLE_LAUNCH: "" },
+      ["--shim-status"],
+    );
+    const report = JSON.parse(run.stdout);
+    assert.equal(report.launch.mode, "bundle");
+    assert.equal(report.launch.systemRea, null);
+    assert.deepEqual(report.launch.rejected.map(r => r.reason), ["inside the bundle"]);
+  } finally {
+    f.clean();
+  }
+});
+
+test("REA_BUNDLE_LAUNCH=bundle never probes the machine", () => {
+  const f = launchFixture();
+  mkdirSync(f.bin, { recursive: true });
+  // Any invocation at all leaves the record behind — including --version, which
+  // is exactly what `auto` would run.
+  const rea = writeFakeRea(f.bin, { version: "6.9.0", record: f.record });
+  try {
+    runShimIsolated(
+      { PATH: f.bin, REA_BUNDLE_SYSTEM_REA: rea, REA_BUNDLE_ROOT: f.bundleRoot, REA_BUNDLE_AUTO_PROVISION: "0", REA_BUNDLE_LAUNCH: "bundle" },
+      ["--shim-status"],
+    );
+    assert.equal(existsSync(f.record), false, "the pinned bundle path must not pay for a probe");
+  } finally {
+    f.clean();
+  }
+});
+
+test("--shim-print-env reports the system launch instead of a child environment", () => {
+  const f = launchFixture();
+  mkdirSync(f.bin, { recursive: true });
+  const rea = writeFakeRea(f.bin, { version: "6.9.0", record: f.record });
+  try {
+    const run = runShimIsolated(
+      { PATH: f.emptyPath, REA_BUNDLE_SYSTEM_REA: rea, REA_BUNDLE_ROOT: f.bundleRoot, REA_BUNDLE_AUTO_PROVISION: "0", REA_BUNDLE_LAUNCH: "" },
+      ["--shim-print-env"],
+    );
+    const printed = JSON.parse(run.stdout);
+    assert.equal(printed.launch, "system");
+    assert.equal(printed.version, "6.9.0");
+    assert.equal(existsSync(f.record), false, "printing the environment must not start REA");
+  } finally {
+    f.clean();
+  }
 });

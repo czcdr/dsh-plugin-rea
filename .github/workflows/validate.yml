@@ -11,6 +11,11 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    # The shim's launch decision reads this machine's REA. No runner has one, so
+    # the default `auto` would happen to take the bundle path today — pin it so
+    # that stays true if an image ever ships REA.
+    env:
+      REA_BUNDLE_LAUNCH: bundle
     steps:
       - uses: actions/checkout@v4
 
@@ -183,6 +188,10 @@ jobs:
     # The tests are platform-sensitive on purpose: each platform exercises the
     # download route it actually chooses.
     runs-on: windows-latest
+    # Same pin as the ubuntu job: the launch decision must not depend on what the
+    # runner image happens to have installed.
+    env:
+      REA_BUNDLE_LAUNCH: bundle
     steps:
       - uses: actions/checkout@v4
 
