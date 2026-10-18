@@ -127,7 +127,7 @@ by the shim itself, which provisions in the background.
 
 ### Which DSH versions
 
-`package.json` declares `engines.dsh: ">=0.1.7-rc.2 <0.3.0"`, and that declaration is the answer the plugin market
+`package.json` declares `engines.dsh: ">=0.1.7-rc.2 <0.3.0-0"`, and that declaration is the answer the plugin market
 reads: with it the card says **compatible**; without it the market can only say *unknown*. The range is not a guess —
 it is the dsh release list this plugin is checked against, and `node scripts/host-compat.mjs` fails the build when the
 two disagree:

@@ -73,9 +73,13 @@ function Test-NodeEngines([string]$node, [string]$engines) {
 # bundle.json：把全局路径当默认是 1.x 的答案，在 2.x 机器上会让这一节指向错误的
 # 对象（"全局包丢了"），并给出错误的升级动作（npm i -g）。
 $bundleRootEarly = $env:REA_BUNDLE_ROOT
+# Resolve the home unconditionally: the profile section below needs it whether or
+# not REA_BUNDLE_ROOT was set, and computing it only inside the fallback branch
+# left it $null — `Join-Path $null 'profiles'` throws, so the section degraded to
+# "no profile" on exactly the machines that use the override.
+$homeEarly = $env:DSH_HOME
+if (-not $homeEarly) { $homeEarly = Join-Path $HOME '.dsh' }
 if (-not $bundleRootEarly) {
-  $homeEarly = $env:DSH_HOME
-  if (-not $homeEarly) { $homeEarly = Join-Path $HOME '.dsh' }
   $bundleRootEarly = Join-Path $homeEarly 'plugins\rea-bundle'
 }
 $bundleState = $null

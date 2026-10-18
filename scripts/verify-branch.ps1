@@ -90,6 +90,14 @@ Check 'main resolves to a shipped file' ($pkg.main -and (Test-Path (Join-Path $r
 Check 'package.json declares engines.dsh' (-not [string]::IsNullOrWhiteSpace($pkg.engines.dsh)) ''
 $compat = & node scripts\host-compat.mjs 2>&1
 Check 'engines.dsh covers every released DSH host' ($LASTEXITCODE -eq 0) (($compat | Select-Object -Last 2) -join ' ')
+# Both READMEs quote the range verbatim, and a stale quote is invisible: JSON,
+# host-compat and the audit all agree while the sentence a human reads names a
+# different ceiling. That is exactly how `<0.3.0` survived in the docs after the
+# declaration moved to `<0.3.0-0`, so the comparison lives here now.
+foreach ($doc in @('README.md', 'README.zh-CN.md')) {
+  $text = Get-Content (Join-Path $root $doc) -Raw -Encoding UTF8
+  Check "$doc quotes the declared engines.dsh" $text.Contains([string]$pkg.engines.dsh) "expected $($pkg.engines.dsh)"
+}
 foreach ($script in @('bundle:setup', 'bundle:status', 'bundle:audit', 'bundle:test', 'bundle:host-compat')) {
   Check "scripts.$script exists" ($pkg.scripts.PSObject.Properties.Name -contains $script) ''
 }

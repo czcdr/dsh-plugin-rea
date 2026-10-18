@@ -32,8 +32,11 @@
 
 ### 验证
 
-- 单测 **62 条**（新增 2 条：wrapper 递归必须被判定为 `exit 78` 且 20 秒内收敛；`ComSpec` 失效仍能识别 `.cmd` REA）：Windows 59 过 + 3 平台跳过。
-- `verify-branch.ps1` 全绿；`audit-manifest` clean；`host-compat` 10 covered / 5 correctly outside。
+- 单测 **67 条**（2.0.7 是 60 条，本轮 +7：wrapper 递归必须被判为 `exit 78` 且 20 秒内收敛；`ComSpec` 失效仍识别 `.cmd` REA；
+  镜像自愈的转发/守卫/`stale` 上报/同内容不转发；`DSH_HOME` 被抹时从 `mirror.json` 找到真实 home 并报出重复注册）：
+  Windows 64 过 + 3 平台跳过。
+- `verify-branch.ps1` 全绿（39 项），含「两份 README 必须写出 package.json 里的 `engines.dsh` 原文」；`audit-manifest` clean；
+  `host-compat` 10 covered / 5 correctly outside。
 - 手工复现三例：wrapper 递归 0.2 秒收敛、0 残留进程；挂起候选 8.3 秒放弃且无 `PING` 残留；`ComSpec` 指向空路径仍识别系统 REA。
 
 

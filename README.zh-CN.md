@@ -118,7 +118,7 @@ node scripts/setup.mjs --reuse      # 或先 --dry-run 看计划
 
 ### 支持哪些 DSH 版本
 
-`package.json` 里声明了 `engines.dsh: ">=0.1.7-rc.2 <0.3.0"`，这就是插件市场读的那句话：有它，卡片显示
+`package.json` 里声明了 `engines.dsh: ">=0.1.7-rc.2 <0.3.0-0"`，这就是插件市场读的那句话：有它，卡片显示
 **兼容**；没有它，市场只能说*未声明*。这个范围不是猜的——它对应本插件实际核对过的 dsh 发布列表，
 `node scripts/host-compat.mjs` 会在两者不一致时让构建失败：
 
