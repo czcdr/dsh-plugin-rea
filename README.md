@@ -337,6 +337,12 @@ back on the next start.
 
 - **This plugin** never updates itself. Installed from a market? Update it there. Installed from a `file:`
   checkout? Overwrite the directory and reinstall.
+- **The row runs a COPY of this plugin's launcher.** `<DSH_HOME>/plugins/rea-bundle/bin/rea-shim.mjs` is a mirror
+  made by setup, so a market upgrade replaces the package but not the file the row executes — until setup runs
+  again. From **2.0.8** the mirror notices that the installed plugin ships a different launcher and re-execs it
+  (one hop, guarded by `REA_BUNDLE_SHIM_REEXEC`), so upgrades carry. On an older version the mirror stays behind
+  silently; `--shim-status` now reports `mirror.stale`, and `check-updates.ps1` says to re-run setup. If you are
+  upgrading from 2.0.0–2.0.7, run `node scripts/setup.mjs` once after the upgrade.
 - **Upgrading from `2.0.0-bundle.1`**: that release mirrored the shim and `setup.mjs` but not the manifest,
   and recorded nothing about the plugin checkout, so a bundle it provisioned cannot repair itself — its
   background provisioning dies on the missing manifest, invisibly, and its own lock suppresses retries for

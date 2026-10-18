@@ -340,7 +340,27 @@ if (-not (Test-Path $manifestPath)) {
         Warn ("TOFU（无厂商校验和，取首次实测值）: " + (@($state.unverifiedChecksums) -join ', '))
       }
       $mirrored = Join-Path $bundleRoot 'bin\rea-shim.mjs'
-      if (Test-Path $mirrored) { Ok 'MCP 行指向的 shim 已就位' }
+      if (Test-Path $mirrored) {
+        Ok 'MCP 行指向的 shim 已就位'
+        # The row launches this COPY, so a plugin upgrade that does not re-run
+        # setup leaves the old launcher in place — visible only as "the new
+        # version behaves like the old one". Compare it with the checkout the
+        # mirror record names.
+        $mirrorRecord = Join-Path $bundleRoot 'mirror.json'
+        if (Test-Path $mirrorRecord) {
+          try {
+            $record = Get-Content $mirrorRecord -Raw -Encoding UTF8 | ConvertFrom-Json
+            $pluginShim = if ($record.pluginRoot) { Join-Path $record.pluginRoot 'bin\rea-shim.mjs' } else { $null }
+            if ($pluginShim -and (Test-Path $pluginShim)) {
+              $same = (Get-FileHash $mirrored -Algorithm SHA256).Hash -eq (Get-FileHash $pluginShim -Algorithm SHA256).Hash
+              if ($same) { Ok '镜像 shim 与插件一致（行跑的就是这个版本）' }
+              else { Warn "镜像 shim 落后于插件（$($record.pluginRoot)）—— 行仍在跑旧副本；重跑 node scripts/setup.mjs 让它换成新版本" }
+            } else {
+              Warn "mirror.json 指向的插件目录已不存在（$($record.pluginRoot)）—— 无法比对镜像 shim 是否最新"
+            }
+          } catch { Warn "mirror.json 解析失败: $($_.Exception.Message)" }
+        }
+      }
       else { Bad "缺少 MCP 行指向的 shim: $mirrored —— 重跑 setup --reuse" }
       # 镜像副本的 setup 用它自己所在的位置推 plugin root，所以 manifest 必须
       # 一起镜像。旧版镜像缺这个文件：auto-provision 会以 ENOENT 崩掉且不可见，

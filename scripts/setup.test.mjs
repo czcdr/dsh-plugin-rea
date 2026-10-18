@@ -1627,3 +1627,92 @@ test("a ComSpec that points at nothing falls back to the real shell", () => {
     f.clean();
   }
 });
+
+/* --------------------------------------------------- the mirrored launcher */
+
+// The row launches `<bundle>/bin/rea-shim.mjs`, a COPY. A market upgrade replaces
+// the package and runs no setup, so without this the copy keeps running the code
+// it was made from — every fix silently stops at the old mirror. These tests pin
+// the repair: the copy re-execs the plugin's launcher when they differ, once.
+
+function mirrorFixture() {
+  const root = mkdtempSync(path.join(tmpdir(), "rea-mirror-"));
+  const bundle = path.join(root, "bundle");
+  const checkout = path.join(root, "checkout");
+  mkdirSync(path.join(bundle, "bin"), { recursive: true });
+  mkdirSync(path.join(checkout, "bin"), { recursive: true });
+  copyFileSync(path.join(REPO_ROOT, "bin", "rea-shim.mjs"), path.join(bundle, "bin", "rea-shim.mjs"));
+  writeFileSync(path.join(bundle, "mirror.json"), JSON.stringify({ schema: 1, pluginRoot: checkout, mirroredAt: "2026-10-18T00:00:00Z" }));
+  return { root, bundle, checkout, clean() { rmSync(root, { recursive: true, force: true }); } };
+}
+
+function checkoutStub(checkout, marker) {
+  const file = path.join(checkout, "bin", "rea-shim.mjs");
+  writeFileSync(
+    file,
+    'import { writeFileSync } from "node:fs";\n' +
+      `writeFileSync(${JSON.stringify(marker)}, "checkout");\n` +
+      "process.exit(7);\n",
+  );
+  return file;
+}
+
+test("a mirrored launcher re-execs the plugin's launcher when they differ", () => {
+  const f = mirrorFixture();
+  const marker = path.join(f.root, "checkout-ran");
+  checkoutStub(f.checkout, marker);
+  try {
+    const run = runShimIsolated({ REA_BUNDLE_ROOT: f.bundle, REA_BUNDLE_AUTO_PROVISION: "0", REA_BUNDLE_LAUNCH: "bundle" }, ["mcp"]);
+    assert.equal(run.status, 7, `expected the checkout's status, got ${run.status}: ${run.stderr}`);
+    assert.equal(existsSync(marker), true, "the checkout launcher must have run");
+  } finally {
+    f.clean();
+  }
+});
+
+test("the re-exec happens once, and a pinned guard stops it", () => {
+  const f = mirrorFixture();
+  const marker = path.join(f.root, "checkout-ran");
+  checkoutStub(f.checkout, marker);
+  try {
+    const run = runShimIsolated(
+      { REA_BUNDLE_ROOT: f.bundle, REA_BUNDLE_AUTO_PROVISION: "0", REA_BUNDLE_LAUNCH: "bundle", REA_BUNDLE_SHIM_REEXEC: "1" },
+      ["mcp"],
+    );
+    // The guard is set, so the mirrored copy runs its own logic: bundle pinned and
+    // nothing provisioned means EX_CONFIG, and the checkout never starts.
+    assert.equal(run.status, 78, run.stderr);
+    assert.equal(existsSync(marker), false, "the guard must prevent a second hop");
+  } finally {
+    f.clean();
+  }
+});
+
+test("--shim-status reports a stale mirror instead of re-execing it", () => {
+  const f = mirrorFixture();
+  const marker = path.join(f.root, "checkout-ran");
+  checkoutStub(f.checkout, marker);
+  try {
+    const run = runShimIsolated({ REA_BUNDLE_ROOT: f.bundle, REA_BUNDLE_AUTO_PROVISION: "0", REA_BUNDLE_LAUNCH: "bundle" }, ["--shim-status"]);
+    const report = JSON.parse(run.stdout);
+    assert.equal(report.mirror.stale, true, JSON.stringify(report.mirror));
+    assert.match(report.mirror.reason, /different launcher/);
+    assert.equal(existsSync(marker), false, "status is a query; it must not start anything");
+  } finally {
+    f.clean();
+  }
+});
+
+test("an identical mirror is not stale and is not re-exec'd", () => {
+  const f = mirrorFixture();
+  const same = path.join(f.checkout, "bin", "rea-shim.mjs");
+  copyFileSync(path.join(f.bundle, "bin", "rea-shim.mjs"), same);
+  try {
+    const run = runShimIsolated({ REA_BUNDLE_ROOT: f.bundle, REA_BUNDLE_AUTO_PROVISION: "0", REA_BUNDLE_LAUNCH: "bundle" }, ["--shim-status"]);
+    const report = JSON.parse(run.stdout);
+    assert.equal(report.mirror.stale, false, JSON.stringify(report.mirror));
+    assert.equal(report.mirror.reason, "this copy matches the plugin");
+  } finally {
+    f.clean();
+  }
+});

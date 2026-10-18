@@ -8,6 +8,12 @@
 
 ### 修复
 
+- **镜像启动器不会自己更新**：行执行的是 `<DSH_HOME>/plugins/rea-bundle/bin/rea-shim.mjs` 这份**副本**，而市场升级
+  只换包、不跑 setup —— 副本会一直跑它被复制时的代码，于是新版本里的修复对老用户静默失效（旧副本照常工作，最难发现）。
+  现在镜像启动时会与 `mirror.json` 记录的插件目录比对哈希，不同就转发执行插件里的那一份（一跳，带
+  `REA_BUNDLE_SHIM_REEXEC` 守卫，且只从镜像指向插件，不会反向）。`--shim-status` 新增 `mirror.stale`，
+  `check-updates.ps1` 也会报「镜像落后，重跑 setup」；`mirror.json` 增加 `shimSha256` 与 `pluginVersion` 便于追溯。
+  **2.0.8 之前的版本自身无法完成这一步**（副本里没有这段代码），从那些版本升级仍需手动跑一次 setup。
 - **探针递归**：`probeRea` 派生候选时没带 `REA_BUNDLE_DELEGATED=1`，而防自委派的守卫只在**委派**前生效。若 PATH 上是「调用本 shim 的 wrapper」，
   探针 → wrapper → 新 shim → 再探针……实测并发 node 峰值 83+、杀掉后仍自我再生。现在探针环境同时带 `REA_BUNDLE_DELEGATED=1` 与
   `REA_BUNDLE_AUTO_PROVISION=0`：嵌套运行直接走 bundle 并返回，实测 0.2 秒、零额外进程。

@@ -1636,6 +1636,22 @@ function mirrorLauncher(context) {
  */
 function writeMirrorRecord(context, source) {
   const record = { schema: 1, pluginRoot: source, mirroredAt: new Date().toISOString() };
+  // Provenance for the self-healing check: the mirrored shim compares itself
+  // with `<pluginRoot>/bin/rea-shim.mjs` and re-execs that one when the plugin
+  // has moved on. These two fields are what `--shim-status` shows when the
+  // comparison cannot be made (missing checkout, unreadable file).
+  try {
+    record.shimSha256 = createHash("sha256")
+      .update(readFileSync(path.join(context.root, "bin", "rea-shim.mjs")))
+      .digest("hex");
+  } catch {
+    /* the copy is missing or unreadable; the shim reports the comparison itself */
+  }
+  try {
+    record.pluginVersion = JSON.parse(readFileSync(path.join(source, "package.json"), "utf8")).version ?? null;
+  } catch {
+    record.pluginVersion = null;
+  }
   try {
     mkdirSync(context.root, { recursive: true });
     writeFileSync(path.join(context.root, "mirror.json"), JSON.stringify(record, null, 2) + "\n");

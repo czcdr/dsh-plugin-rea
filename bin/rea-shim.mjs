@@ -15,6 +15,7 @@
  *                            and the message is the operator's remediation.
  */
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -803,6 +804,101 @@ function launchSystemRea(system, argv) {
 }
 
 /**
+ * The mirror problem.
+ *
+ * The published row launches `<bundle>/bin/rea-shim.mjs` — a COPY made by
+ * `setup.mjs`. Upgrading the plugin from the market replaces the package but runs
+ * no setup, so the copy keeps executing the code it was made from: every fix in
+ * a new plugin version reaches a user only if they happen to re-run setup. That
+ * is invisible (the old copy keeps working) and it is exactly the wrong
+ * direction for a safety fix.
+ *
+ * The repair has to live in the copy, because the copy is what runs. So the
+ * copy compares itself with the plugin's own `bin/rea-shim.mjs`, recorded in
+ * `mirror.json` by setup, and re-execs that file when the two differ. One hop,
+ * guarded by an environment flag, and only from mirror to checkout — the
+ * checkout copy has no `mirror.json` and would find itself anyway.
+ *
+ * A plugin version older than 2.0.8 cannot do this for its own upgrades: there
+ * is nothing in it to run. `--shim-status` reports `mirror.stale` so the
+ * condition is at least visible, and `check-updates.ps1` says to re-run setup.
+ */
+function sha256(file) {
+  return createHash("sha256").update(readFileSync(file)).digest("hex");
+}
+
+/** Where the installed plugin lives according to setup's record, or null. */
+function pluginCheckout(root) {
+  try {
+    const record = JSON.parse(readFileSync(path.join(root, "mirror.json"), "utf8"));
+    const dir = record?.pluginRoot;
+    if (typeof dir !== "string" || dir.trim() === "") return null;
+    const shim = path.join(dir, "bin", "rea-shim.mjs");
+    return isFileSync(shim) ? shim : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether this copy is behind the plugin it was mirrored from.
+ *
+ * `self` is this file, `source` the checkout's. A checkout copy (it ships
+ * `cordis.patch.yml`) is never stale against itself; a mirror with no record, or
+ * whose recorded checkout is gone, is not re-pointed anywhere.
+ */
+function describeMirror(root, { self = fileURLToPath(import.meta.url) } = {}) {
+  let record = null;
+  try {
+    record = JSON.parse(readFileSync(path.join(root, "mirror.json"), "utf8"));
+  } catch {
+    return null;
+  }
+  const source = pluginCheckout(root);
+  let stale = false;
+  let reason = "no usable plugin checkout in mirror.json";
+  if (source !== null) {
+    if (path.resolve(source) === path.resolve(self)) {
+      reason = "this copy is the plugin checkout";
+    } else {
+      try {
+        stale = sha256(source) !== sha256(self);
+        reason = stale ? "the plugin ships a different launcher than this mirrored copy" : "this copy matches the plugin";
+      } catch {
+        reason = "could not compare the two launchers";
+      }
+    }
+  }
+  return {
+    pluginRoot: typeof record?.pluginRoot === "string" ? record.pluginRoot : null,
+    mirroredAt: typeof record?.mirroredAt === "string" ? record.mirroredAt : null,
+    stale,
+    reason,
+  };
+}
+
+/** Run the checkout's launcher instead of this copy, once. */
+function reexecFromCheckout(source, argv) {
+  const child = spawn(process.execPath, [source, ...argv], {
+    stdio: "inherit",
+    env: { ...process.env, REA_BUNDLE_SHIM_REEXEC: "1" },
+    windowsHide: true,
+  });
+  child.on("error", () => {
+    // Falling back is better than failing: the copy still knows how to launch.
+    process.stderr.write(`rea-shim: could not run ${source}; continuing with the mirrored copy.\n`);
+  });
+  child.on("exit", (code, signal) => {
+    if (signal) {
+      const signals = { SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGKILL: 9, SIGTERM: 15 };
+      process.exit(128 + (signals[signal] ?? 0));
+    }
+    process.exit(code ?? 0);
+  });
+  return null;
+}
+
+/**
  * Usage text, also what a bare invocation prints.
  *
  * `package.json` exposes this file as the `rea-bundle-status` bin, and npm's bin
@@ -839,6 +935,15 @@ async function main() {
   }
 
   const root = bundleRoot();
+  // Self-healing before anything else: a mirrored copy that predates the plugin
+  // it was made from would otherwise keep running that older code forever, and a
+  // market upgrade never re-runs setup. One hop, guarded, and never for the
+  // status query — there the staleness is reported instead.
+  const mirror = describeMirror(root);
+  if (mirror !== null && mirror.stale && process.env.REA_BUNDLE_SHIM_REEXEC !== "1" && !argv.includes("--shim-status")) {
+    const source = pluginCheckout(root);
+    if (source !== null) return reexecFromCheckout(source, argv);
+  }
   const loaded = readBundleConfig(root);
   // Decide what to run before asking whether the bundle is provisioned: a
   // machine with its own working REA must not be sent into an ~800 MB
@@ -882,6 +987,10 @@ async function main() {
       },
     };
     if (launch.system?.rejected?.length) report.launch.rejected = launch.system.rejected;
+    // A mirrored copy that lags the plugin keeps working, which is exactly why
+    // nobody notices it: the row runs old code until the mirror is refreshed.
+    // Reported here so `--shim-status` answers "am I running what I installed?".
+    if (mirror !== null) report.mirror = mirror;
     if (duplicate) report.duplicateRegistration = duplicate;
     if (loaded.ok) {
       report.paths = loaded.config.paths ?? {};
