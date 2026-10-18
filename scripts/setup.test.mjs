@@ -1716,3 +1716,32 @@ test("an identical mirror is not stale and is not re-exec'd", () => {
     f.clean();
   }
 });
+
+test("a mirrored shim finds the real DSH home when the environment is scrubbed", () => {
+  // The harness strips DSH_* from an MCP child, so with a custom DSH_HOME the
+  // old code read ~/.dsh — the wrong file — and could never report upstream's
+  // duplicate `serverName: rea`. setup records the home; the shim must use it.
+  const f = mirrorFixture();
+  const home = path.join(f.root, "custom-home");
+  mkdirSync(home, { recursive: true });
+  writeFileSync(
+    path.join(home, "cordis.patch.yml"),
+    "- insert:\n    - id: rea-mcp\n      name: '@deepseek-ai/dsh-mcp-client'\n      config:\n        serverName: rea\n",
+  );
+  writeFileSync(
+    path.join(f.bundle, "mirror.json"),
+    JSON.stringify({ schema: 1, pluginRoot: f.checkout, mirroredAt: "2026-10-18T00:00:00Z", dshHome: home }),
+  );
+  try {
+    const run = runShimIsolated(
+      // DSH_HOME="" models the scrubbed environment: the variable exists, empty.
+      { REA_BUNDLE_ROOT: f.bundle, REA_BUNDLE_AUTO_PROVISION: "0", REA_BUNDLE_LAUNCH: "bundle", DSH_HOME: "" },
+      ["--shim-status"],
+    );
+    const report = JSON.parse(run.stdout);
+    assert.equal(report.duplicateRegistration?.id, "rea-mcp", run.stdout);
+    assert.equal(report.duplicateRegistration.patch, path.join(home, "cordis.patch.yml"));
+  } finally {
+    f.clean();
+  }
+});

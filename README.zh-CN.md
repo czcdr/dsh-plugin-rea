@@ -216,8 +216,8 @@ duplicate server name 报错并加载失败，最终留下哪一行取决于加�
 自己准备。本包是零依赖路线：首次运行自动取 Node、REA、JDK、Ghidra。两者的 patch 形态与
 `mcp__rea__*` 工具面相同。
 
-shim 在能看到该文件时会在启动时提示冲突 —— MCP 子进程里拿不到自定义 `DSH_HOME`，那种情况下它会
-退回 `~/.dsh`；`node bin/rea-shim.mjs --shim-status` 会把冲突列在 `duplicateRegistration` 下。
+shim 会在启动时提示冲突 —— `setup.mjs` 会把运行时的 DSH home 记进 `mirror.json`，镜像副本在 harness 抹掉
+`DSH_*` 之后就用这条记录去找那份文件；`node bin/rea-shim.mjs --shim-status` 会把冲突列在 `duplicateRegistration` 下。
 
 ## 验证
 

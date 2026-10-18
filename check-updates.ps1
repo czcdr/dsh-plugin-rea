@@ -106,8 +106,12 @@ $reaFromBundle = [bool]($bundleReaPackageDir -and $ReaPackageDir -eq $bundleReaP
 if (-not $ProfileDir) {
   if ($env:DSH_PROFILE_DIR) { $ProfileDir = $env:DSH_PROFILE_DIR }
   else {
-    $profiles = @(Get-ChildItem (Join-Path $env:USERPROFILE '.dsh\profiles') -Directory -ErrorAction SilentlyContinue)
-    $ProfileDir = if ($profiles.Count -gt 0) { $profiles[0].FullName } else { Join-Path $env:USERPROFILE '.dsh\profiles\desktop' }
+    # Same home rule the bundle uses everywhere else: DSH_HOME, then ~/.dsh.
+    # Hardcoding $env:USERPROFILE here was a second algorithm in the same script,
+    # so on a custom DSH_HOME the profile section reported "no profile found"
+    # while the rest of the run had already resolved that home correctly.
+    $profiles = @(Get-ChildItem (Join-Path $homeEarly 'profiles') -Directory -ErrorAction SilentlyContinue)
+    $ProfileDir = if ($profiles.Count -gt 0) { $profiles[0].FullName } else { Join-Path $homeEarly 'profiles\desktop' }
   }
 }
 

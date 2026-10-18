@@ -1652,6 +1652,15 @@ function writeMirrorRecord(context, source) {
   } catch {
     record.pluginVersion = null;
   }
+  // The MCP child the harness starts has every DSH_* variable stripped, so the
+  // mirrored shim cannot re-derive a CUSTOM home from its environment — it would
+  // read `~/.dsh` and miss a duplicate `serverName: rea` living in the real one.
+  // Record the home setup ran under; the shim prefers the environment, then this.
+  try {
+    record.dshHome = dshHome();
+  } catch {
+    record.dshHome = null;
+  }
   try {
     mkdirSync(context.root, { recursive: true });
     writeFileSync(path.join(context.root, "mirror.json"), JSON.stringify(record, null, 2) + "\n");

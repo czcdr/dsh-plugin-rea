@@ -230,9 +230,9 @@ Which one? Upstream's is the configuration-only route: it expects Node on REA's 
 zero-dependency route: it fetches Node, REA, JDK and Ghidra on first run. The patch shape and the
 `mcp__rea__*` surface are the same either way.
 
-The shim reports the conflict on startup when it can see that file — a custom `DSH_HOME` is hidden
-from an MCP child, so it falls back to `~/.dsh` there — and `node bin/rea-shim.mjs --shim-status`
-lists it under `duplicateRegistration`.
+The shim reports the conflict on startup — `setup.mjs` records the DSH home it ran under in
+`mirror.json`, and the mirrored copy reads that when the harness has stripped `DSH_*` from its
+environment; `node bin/rea-shim.mjs --shim-status` lists it under `duplicateRegistration`.
 
 ## Verify
 

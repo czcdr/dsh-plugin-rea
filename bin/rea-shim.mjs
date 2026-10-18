@@ -34,6 +34,36 @@ function dshHome() {
 }
 
 /**
+ * The DSH home recorded by setup, or null.
+ *
+ * Only the mirrored copy needs this: the harness strips `DSH_*` from an MCP
+ * child, so with a custom home the environment cannot answer. Read once per
+ * process — there is one bundle root per process and this is a startup query.
+ */
+let recordedDshHomeCache = null;
+function recordedDshHome(root) {
+  if (recordedDshHomeCache !== null) return recordedDshHomeCache;
+  let value = null;
+  try {
+    const record = JSON.parse(readFileSync(path.join(root, "mirror.json"), "utf8"));
+    if (typeof record?.dshHome === "string" && record.dshHome.trim() !== "" && path.isAbsolute(record.dshHome)) {
+      value = path.resolve(record.dshHome);
+    }
+  } catch {
+    value = null;
+  }
+  recordedDshHomeCache = value;
+  return value;
+}
+
+/** The home to look in when the environment has been scrubbed. */
+function dshHomeFor(root) {
+  const fromEnv = process.env.DSH_HOME;
+  if (fromEnv && fromEnv.trim() !== "") return path.resolve(fromEnv);
+  return recordedDshHome(root) ?? path.join(homedir(), ".dsh");
+}
+
+/**
  * Where setup writes the machine-local truth.
  *
  * Two copies of this file exist and they need different answers, so the copy has
@@ -105,13 +135,16 @@ function provisioningScript(root) {
  *
  * The parse is deliberately small: the two files it cares about are block
  * mappings with one id/serverName per row, and anything it cannot attribute is
- * ignored 鈥?a missed hint is acceptable, a false alarm is not. The mirrored shim
- * cannot see a custom DSH_HOME (the harness strips DSH_* from an MCP child), so
- * this falls back to `~/.dsh` like the rest of the bundle; the row has the same
- * limitation.
+ * ignored — a missed hint is acceptable, a false alarm is not.
+ *
+ * Finding the file is the part that needed care: the harness strips every DSH_*
+ * variable from an MCP child, so a mirrored copy with a custom DSH_HOME used to
+ * read `~/.dsh` — the wrong file, and therefore a conflict it could never report.
+ * `setup.mjs` writes the home it ran under into `mirror.json`, and that record is
+ * what this uses when the environment has nothing to say.
  */
-function foreignReaRegistration() {
-  const patch = path.join(dshHome(), "cordis.patch.yml");
+function foreignReaRegistration(root) {
+  const patch = path.join(dshHomeFor(root), "cordis.patch.yml");
   let text;
   try {
     text = readFileSync(patch, "utf8");
@@ -958,7 +991,7 @@ async function main() {
   // Upstream can add a second row for the same serverName; the shim cannot stop
   // DSH from loading both rows, but saying so is better than doubled tools with
   // no stated cause. The status report carries the same fact for diagnostics.
-  const duplicate = foreignReaRegistration();
+  const duplicate = foreignReaRegistration(root);
   if (duplicate && !argv.includes("--shim-status")) {
     process.stderr.write(
       `\n  dsh-plugin-rea (bundle): duplicate REA registration.\n` +

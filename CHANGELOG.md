@@ -8,6 +8,10 @@
 
 ### 修复
 
+- **重复注册检测在自定义 `DSH_HOME` 下失效**：harness 会从 MCP 子进程里抹掉所有 `DSH_*`，镜像副本因此读
+  `~/.dsh` —— 那是错的文件，上游写进真实 home 的第二条 `serverName: rea` 永远报不出来。`setup.mjs` 现在把运行时
+  的 home 记进 `mirror.json` 的 `dshHome`，shim 优先读环境、其次读这条记录。`check-updates.ps1` 的 profile 段也
+  改用同一条 home 规则（此前硬编码 `$env:USERPROFILE`，自定义 home 时报「找不到 profile」）。
 - **镜像启动器不会自己更新**：行执行的是 `<DSH_HOME>/plugins/rea-bundle/bin/rea-shim.mjs` 这份**副本**，而市场升级
   只换包、不跑 setup —— 副本会一直跑它被复制时的代码，于是新版本里的修复对老用户静默失效（旧副本照常工作，最难发现）。
   现在镜像启动时会与 `mirror.json` 记录的插件目录比对哈希，不同就转发执行插件里的那一份（一跳，带
