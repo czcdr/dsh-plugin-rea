@@ -1564,3 +1564,66 @@ test("--shim-print-env reports the system launch instead of a child environment"
     f.clean();
   }
 });
+
+test("a candidate that wraps this shim is rejected instead of recursing", () => {
+  // The probe asks the candidate for `--version`; a wrapper answers by running
+  // this very shim, which would probe the wrapper again. The probe therefore runs
+  // with REA_BUNDLE_DELEGATED=1, so the nested run takes the bundle path and
+  // returns. Without that, one wrapper on PATH spawns a process chain that keeps
+  // respawning after the parent is killed.
+  const f = launchFixture();
+  mkdirSync(f.bin, { recursive: true });
+  const shim = path.join(REPO_ROOT, "bin", "rea-shim.mjs");
+  const wrapper = path.join(f.bin, process.platform === "win32" ? "rea.cmd" : "rea");
+  if (process.platform === "win32") {
+    writeFileSync(wrapper, `@echo off\r\n"${process.execPath}" "${shim}" %*\r\n`);
+  } else {
+    writeFileSync(wrapper, `#!/bin/sh\nexec "${process.execPath}" "${shim}" "$@"\n`);
+    chmodSync(wrapper, 0o755);
+  }
+  try {
+    const started = Date.now();
+    const run = runShimIsolated(
+      { PATH: f.emptyPath, REA_BUNDLE_SYSTEM_REA: wrapper, REA_BUNDLE_ROOT: f.bundleRoot, REA_BUNDLE_AUTO_PROVISION: "0", REA_BUNDLE_LAUNCH: "" },
+      ["--shim-status"],
+    );
+    const elapsed = Date.now() - started;
+    const report = JSON.parse(run.stdout);
+    assert.equal(report.launch.mode, "bundle");
+    assert.deepEqual(report.launch.rejected.map(r => r.reason), ["exit 78"]);
+    assert.ok(elapsed < 20000, `the probe must not recurse; it took ${elapsed} ms`);
+  } finally {
+    f.clean();
+  }
+});
+
+test("a ComSpec that points at nothing falls back to the real shell", () => {
+  // Trusting ComSpec blindly would judge every .cmd REA "spawn-failed" — i.e.
+  // report the machine as having no REA because its shell pointer is broken.
+  const f = launchFixture();
+  mkdirSync(f.bin, { recursive: true });
+  const rea = writeFakeRea(f.bin, { version: "6.9.0" });
+  try {
+    const run = runShimIsolated(
+      {
+        PATH: f.emptyPath,
+        ComSpec: path.join(f.root, "no-such-cmd.exe"),
+        REA_BUNDLE_SYSTEM_REA: rea,
+        REA_BUNDLE_ROOT: f.bundleRoot,
+        REA_BUNDLE_AUTO_PROVISION: "0",
+        REA_BUNDLE_LAUNCH: "",
+      },
+      ["--shim-status"],
+    );
+    const report = JSON.parse(run.stdout);
+    if (process.platform === "win32") {
+      assert.equal(report.launch.mode, "system", JSON.stringify(report.launch));
+      assert.equal(report.launch.systemRea.version, "6.9.0");
+    } else {
+      // POSIX never consults ComSpec; the assertion above would be incidental.
+      assert.equal(report.launch.mode, "system");
+    }
+  } finally {
+    f.clean();
+  }
+});

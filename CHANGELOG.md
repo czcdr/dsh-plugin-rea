@@ -2,6 +2,31 @@
 
 本插件遵循语义化版本。版本号变化说明「配置组合」这层的变化，与 REA 自身的版本无关。
 
+## 2.0.8 — 2026-10-18
+
+**2.0.7 的启动检测在两种边界上会失控：一个包着本 shim 的 `rea` 会让探针递归成进程链；超时探针会漏掉一个孙进程。两条都已修，并补了复现测试。**
+
+### 修复
+
+- **探针递归**：`probeRea` 派生候选时没带 `REA_BUNDLE_DELEGATED=1`，而防自委派的守卫只在**委派**前生效。若 PATH 上是「调用本 shim 的 wrapper」，
+  探针 → wrapper → 新 shim → 再探针……实测并发 node 峰值 83+、杀掉后仍自我再生。现在探针环境同时带 `REA_BUNDLE_DELEGATED=1` 与
+  `REA_BUNDLE_AUTO_PROVISION=0`：嵌套运行直接走 bundle 并返回，实测 0.2 秒、零额外进程。
+- **超时探针泄漏孙进程**：`spawnSync` 的超时只杀它自己启动的 cmd.exe，而 `taskkill /T` 在 `spawnSync` 回收之后调用已找不到父进程 ——
+  每次超时留一个 REA/ping 在跑。探针改为异步 `spawn` + 自己的计时器：超时发生在父进程仍存活时，`taskkill /T /F` 能真正清掉整棵树。
+  实测 8.3 秒放弃、`rejected=["timeout"]`、无残留进程。
+- **Windows 信号处理器是死代码**：`child.kill("SIGTERM")` 在 Windows 上是 TerminateProcess，不可捕获；控制台的 Ctrl+C 又直达子进程。
+  该分支已删除，并如实写明限制：**在 Windows 上强制结束 shim 不会带走被委派的 REA**（Node 没有 job object 可用）。
+- **`comspec()` 不校验**：`ComSpec` 指向不存在的文件时，正常的 `.cmd` REA 被判 `spawn-failed`（`auto` 静默退回 bundle，`system` 直接 78）。
+  现在校验为常规文件，否则回落到 `%SystemRoot%\System32\cmd.exe`；实测 `ComSpec` 指向不存在路径仍能识别 6.9.0。
+- **文案**：显式路径是目录时报「does not exist」，改为「is not a file」。
+
+### 验证
+
+- 单测 **62 条**（新增 2 条：wrapper 递归必须被判定为 `exit 78` 且 20 秒内收敛；`ComSpec` 失效仍能识别 `.cmd` REA）：Windows 59 过 + 3 平台跳过。
+- `verify-branch.ps1` 全绿；`audit-manifest` clean；`host-compat` 10 covered / 5 correctly outside。
+- 手工复现三例：wrapper 递归 0.2 秒收敛、0 残留进程；挂起候选 8.3 秒放弃且无 `PING` 残留；`ComSpec` 指向空路径仍识别系统 REA。
+
+
 ## 2.0.7 — 2026-10-18
 
 **机器上已有可用的 REA 时，2.x 直接按 1.x 的方式跑它（环境检测 + 委派），不再供给；同时把 2.0.6 的宿主声明收紧到真的能证明的范围。**

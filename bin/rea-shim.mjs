@@ -516,7 +516,11 @@ function cmdQuote(value) {
  */
 function comspec() {
   const fromEnv = process.env.ComSpec ?? process.env.COMSPEC;
-  if (typeof fromEnv === "string" && fromEnv.trim() !== "") return fromEnv;
+  // A ComSpec that names nothing is a real (if unusual) state, and trusting it
+  // would judge every `.cmd` REA "spawn-failed" — i.e. report the machine as
+  // having no REA because its shell pointer is broken. Fall back to the path
+  // Windows itself would use.
+  if (typeof fromEnv === "string" && fromEnv.trim() !== "" && isFileSync(fromEnv)) return fromEnv;
   const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT ?? "C:\\Windows";
   return path.join(systemRoot, "System32", "cmd.exe");
 }
@@ -527,50 +531,77 @@ function comspec() {
  * A file existing on PATH is not the same as a working install: npx leftovers,
  * half-removed globals and a shim whose Node is gone all sit on PATH and all
  * fail at once. One bounded `--version` separates them, and a slow or hanging
- * answer counts as "not usable" 鈥?the fallback (the bundle) still works, while
+ * answer counts as "not usable" — the fallback (the bundle) still works, while
  * delegating to a broken binary would take the tools down with it.
+ *
+ * Two things here are not incidental:
+ *
+ *  * The probe runs with `REA_BUNDLE_DELEGATED=1`. A candidate that is itself a
+ *    wrapper around this shim would otherwise be probed by a nested shim that
+ *    probes the wrapper — measured: a process chain that keeps respawning
+ *    itself. The flag makes the nested run take the bundle path and return.
+ *  * It is asynchronous, not `spawnSync` with a timeout. `spawnSync` reaps the
+ *    child it started, and its timeout kills only that child: for a `.cmd` shim
+ *    that means cmd.exe dies while the REA inside it keeps running and holds
+ *    the pipes. Killing the TREE is only possible while the parent is alive,
+ *    which means owning the wait ourselves.
  */
 function probeRea(file, { platform = process.platform, timeout = PROBE_TIMEOUT_MS } = {}) {
-  // `existsSync` says nothing about the shape: a DIRECTORY named `rea.cmd` exists,
-  // fails to spawn, and would be reported as a broken install instead of as a
-  // name collision. Only a regular file is a candidate.
-  try {
-    if (!statSync(file).isFile()) return { ok: false, reason: "not a file" };
-  } catch {
-    return { ok: false, reason: "missing" };
-  }
-  const command = [file, "--version"];
-  // `cmd /d /s /c "<line>"`: Windows only. Two details are load-bearing.
-  // `/s` strips the first and last quote, so the whole line is quoted; and the
-  // arguments are passed VERBATIM, because Node otherwise backslash-escapes the
-  // quotes it sees and cmd.exe does not understand `\"` — every candidate then
-  // answers "exit 1", which reads as "no REA on this machine".
-  const result = platform === "win32" && /\.(cmd|bat)$/i.test(file)
-    ? spawnSync(comspec(), ["/d", "/s", "/c", `"${[cmdQuote(file), "--version"].join(" ")}"`], {
-        encoding: "utf8",
-        timeout,
-        windowsHide: true,
-        windowsVerbatimArguments: true,
-      })
-    : spawnSync(command[0], command.slice(1), {
-        encoding: "utf8",
-        timeout,
-        windowsHide: true,
-      });
-  if (result.error) {
-    // A timed-out probe leaves its grandchild running: cmd.exe is killed, the
-    // REA inside it is not, and it keeps the inherited pipes open. Clean the tree
-    // before answering, or a hung candidate leaves a process behind per start.
-    if (result.error.code === "ETIMEDOUT") killTree(result.pid, platform);
-    return { ok: false, reason: result.error.code === "ETIMEDOUT" ? "timeout" : "spawn-failed" };
-  }
-  if (result.status !== 0) return { ok: false, reason: `exit ${String(result.status)}` };
-  const text = `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
-  const version = /\b(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\b/.exec(text)?.[1] ?? null;
-  // A REA install prints its version. Anything else (a shim that swallowed the
-  // flag, an unrelated program that shares the name) is not a usable CLI.
-  if (version === null) return { ok: false, reason: "no version in --version output" };
-  return { ok: true, version };
+  return new Promise((resolve) => {
+    // `existsSync` says nothing about the shape: a DIRECTORY named `rea.cmd`
+    // exists, fails to spawn, and would be reported as a broken install instead
+    // of as a name collision. Only a regular file is a candidate.
+    if (!isFileSync(file)) {
+      resolve({ ok: false, reason: "not a file" });
+      return;
+    }
+    const useShell = platform === "win32" && /\.(cmd|bat)$/i.test(file);
+    // `REA_BUNDLE_AUTO_PROVISION=0` is part of the same guard: if the candidate
+    // turns out to be a wrapper around THIS shim, the nested run must not start
+    // an 800 MB provisioning job just because a probe asked it for a version.
+    const env = { ...process.env, REA_BUNDLE_DELEGATED: "1", REA_BUNDLE_AUTO_PROVISION: "0" };
+    // `cmd /d /s /c "<line>"`: Windows only. Two details are load-bearing.
+    // `/s` strips the first and last quote, so the whole line is quoted; and the
+    // arguments are passed VERBATIM, because Node otherwise backslash-escapes the
+    // quotes it sees and cmd.exe does not understand `\"` — every candidate then
+    // answers "exit 1", which reads as "no REA on this machine".
+    const child = useShell
+      ? spawn(comspec(), ["/d", "/s", "/c", `"${[cmdQuote(file), "--version"].join(" ")}"`], {
+          env,
+          stdio: ["ignore", "pipe", "pipe"],
+          windowsHide: true,
+          windowsVerbatimArguments: true,
+        })
+      : spawn(file, ["--version"], { env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    let output = "";
+    let settled = false;
+    let timer = null;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      if (timer !== null) clearTimeout(timer);
+      resolve(result);
+    };
+    timer = setTimeout(() => {
+      killTree(child.pid, platform);
+      finish({ ok: false, reason: "timeout" });
+    }, timeout);
+    child.stdout.on("data", (chunk) => { output += String(chunk); });
+    child.stderr.on("data", (chunk) => { output += String(chunk); });
+    child.on("error", () => finish({ ok: false, reason: "spawn-failed" }));
+    child.on("close", (code) => {
+      if (code !== 0) {
+        finish({ ok: false, reason: `exit ${String(code)}` });
+        return;
+      }
+      // A REA install prints its version. Anything else (a shim that swallowed
+      // the flag, an unrelated program that shares the name) is not a usable CLI.
+      const version = /\b(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\b/.exec(output.trim())?.[1] ?? null;
+      finish(version === null
+        ? { ok: false, reason: "no version in --version output" }
+        : { ok: true, version });
+    });
+  });
 }
 
 /**
@@ -580,7 +611,7 @@ function probeRea(file, { platform = process.platform, timeout = PROBE_TIMEOUT_M
  * provisioner installed is the `bundle` mode, and delegating to it would be a
  * loop through a path the bundle already covers.
  */
-function detectSystemRea({ env = process.env, platform = process.platform, root, pluginRoot = PLUGIN_ROOT } = {}) {
+async function detectSystemRea({ env = process.env, platform = process.platform, root, pluginRoot = PLUGIN_ROOT } = {}) {
   const rejected = [];
   let profiled = 0;
   const explicit = (env.REA_BUNDLE_SYSTEM_REA ?? "").trim();
@@ -609,7 +640,7 @@ function detectSystemRea({ env = process.env, platform = process.platform, root,
       continue;
     }
     profiled += 1;
-    const probe = probeRea(candidate, { platform });
+    const probe = await probeRea(candidate, { platform });
     if (probe.ok) return { found: true, file: candidate, version: probe.version };
     if (rejected.length < 8) rejected.push({ file: candidate, reason: probe.reason });
   }
@@ -624,7 +655,9 @@ function detectSystemRea({ env = process.env, platform = process.platform, root,
   if (explicitPath !== null && explicitRejection !== null) {
     reason = `REA_BUNDLE_SYSTEM_REA was rejected (${explicitRejection.reason}): ${explicitPath}`;
   } else if (explicitPath !== null && !isFileSync(explicitPath)) {
-    reason = `REA_BUNDLE_SYSTEM_REA does not exist: ${explicitPath}`;
+    reason = existsSync(explicitPath)
+      ? `REA_BUNDLE_SYSTEM_REA is not a file: ${explicitPath}`
+      : `REA_BUNDLE_SYSTEM_REA does not exist: ${explicitPath}`;
   } else {
     reason = profiled === 0 ? "no rea on PATH" : "no usable rea on PATH";
   }
@@ -660,7 +693,7 @@ function compareDotted(a, b) {
  * honoured literally 鈥?`system` fails loudly rather than provisioning 800 MB
  * behind an operator who asked for their own REA.
  */
-function resolveLaunch({ root, bundleVersion = null, bundleProvisioned = false, env = process.env, platform = process.platform } = {}) {
+async function resolveLaunch({ root, bundleVersion = null, bundleProvisioned = false, env = process.env, platform = process.platform } = {}) {
   const preference = launchPreference(env);
   if (preference.value === "bundle") {
     return { preference: preference.value, invalid: preference.invalid, mode: "bundle", reason: "pinned by REA_BUNDLE_LAUNCH=bundle" };
@@ -678,7 +711,7 @@ function resolveLaunch({ root, bundleVersion = null, bundleProvisioned = false, 
       reason: "REA_BUNDLE_DELEGATED=1: already running under a delegated system REA, refusing to delegate again",
     };
   }
-  const system = detectSystemRea({ env, platform, root });
+  const system = await detectSystemRea({ env, platform, root });
   if (system.found) {
     const order = bundleVersion === null ? null : compareDotted(system.version, bundleVersion);
     const pinned = preference.value === "system";
@@ -747,25 +780,14 @@ function launchSystemRea(system, argv) {
         windowsVerbatimArguments: true,
       })
     : spawn(system.file, args, { env, stdio: "inherit", windowsHide: true });
-  // Signal handling, per platform, because the two are not the same problem.
-  //
-  // POSIX: stdio is inherited and the child is in this process's group, so a
-  // terminal's Ctrl+C already reaches it. Forwarding again would deliver the
-  // signal twice.
-  //
-  // Windows: there is no process group to deliver to, and `child.kill("SIGINT")`
-  // is TerminateProcess on the cmd.exe WRAPPER — the REA inside it survives and
-  // keeps the inherited pipes open, which looks exactly like "the tools still
-  // work after I stopped the harness". `taskkill /T` is what actually ends the
-  // tree, so that is what a signal asks for here.
-  if (process.platform === "win32") {
-    for (const signal of ["SIGINT", "SIGTERM"]) {
-      process.on(signal, () => {
-        killTree(child.pid, "win32");
-        process.exit(signal === "SIGINT" ? 130 : 143);
-      });
-    }
-  }
+  // No signal forwarding on Windows, deliberately. `child.kill()` there is
+  // TerminateProcess on the cmd.exe WRAPPER — the REA inside it survives, still
+  // holding the inherited pipes — and a console Ctrl+C is delivered to the whole
+  // process group anyway, so the child already has it. A hard kill of this shim
+  // (what a supervisor or Task Manager does) runs no JavaScript at all, so the
+  // wrapper must not pretend otherwise: on Windows the delegated REA outlives a
+  // forcibly killed shim. On POSIX the child is in this process's group and gets
+  // the terminal's signal directly; `process.exit` below then ends the shim.
   child.on("error", (error) => {
     process.stderr.write(`rea-shim: could not start ${system.file}\n  ${String(error && error.message)}\n`);
     process.exit(EX_CONFIG);
@@ -808,7 +830,7 @@ function usage() {
   ].join("\n");
 }
 
-function main() {
+async function main() {
   const argv = process.argv.slice(2);
 
   if (argv.includes("--shim-help") || argv.length === 0) {
@@ -822,7 +844,7 @@ function main() {
   // machine with its own working REA must not be sent into an ~800 MB
   // provisioning run just because this bundle has no state yet.
   const bundleVersion = loaded.ok ? (loaded.config.versions?.reaAgents ?? null) : null;
-  const launch = resolveLaunch({ root, bundleVersion, bundleProvisioned: loaded.ok });
+  const launch = await resolveLaunch({ root, bundleVersion, bundleProvisioned: loaded.ok });
   if (launch.invalid !== null) {
     process.stderr.write(
       `rea-shim: REA_BUNDLE_LAUNCH="${launch.invalid}" is not one of ${LAUNCH_MODES.join("/")}; using auto.\n`,
@@ -972,5 +994,8 @@ function main() {
   return null;
 }
 
-const status = main();
+// The launch decision awaits a probe, so `main` is async; the status it returns
+// is this process's exit code, and a launch path resolves to null while the
+// child (already wired to `process.exit`) keeps the loop alive.
+const status = await main();
 if (typeof status === "number") process.exit(status);
