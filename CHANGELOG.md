@@ -2,6 +2,43 @@
 
 本插件遵循语义化版本。版本号变化说明「配置组合」这层的变化，与 REA 自身的版本无关。
 
+## 2.0.6 — 2026-10-18
+
+**声明宿主版本：`engines.dsh` 覆盖 `0.1.7-rc.2` … `0.2.1-rc.2` 全部发布版本，市场卡片因此显示「兼容」而不是「未声明」。**
+
+### 兼容声明
+
+- **`engines.dsh: ">=0.1.7-rc.2 <0.3.0"`**：市场侧的 `deriveHostCompatibility` 只认两类声明 —— `engines.dsh`
+  与指向 `@deepseek-ai/dsh*` 的 `peerDependencies`；两者都没有就是 `unknown`（卡片「兼容性未知」）。
+  这里只声明前者，刻意不声明 peer：`@deepseek-ai/dsh-mcp-client` 在 npm 上只有 `0.0.1-rc.1`，
+  而宿主随包内置的是 0.2.x，声明 peer 会让 pnpm 解析出一个与宿主不一致的版本，反而制造假冲突。
+- **范围来自核对，不是估计**：`scripts/host-compat.mjs` 内置 dsh 发布列表（0.1.7-rc.2 至 0.2.1-rc.2 共 10 个），
+  逐个验证是否被声明覆盖，并反向确认 `0.3.0` 与 `0.1.7-rc.1`、`0.1.7-alpha.2` 落在范围之外。
+- **跨版本比对过的东西**：`packages/mcp/mcp-client` 在 `dsh-v0.1.7-rc.2` 与 `dsh-v0.2.1-rc.2` 两个 tag 上，
+  配置面与发布的行一致（`serverName`/`transport`/`command`/`args`/`env`/`failOnStartupError` 均存在且同名），
+  且两个 tag 都有 `dsh.bundle.patch`。范围声明的是「核对过的宿主」，不是「应该能用」。
+
+### 上游（只更新仓库，暂不带入）
+
+- 上游已发布 **rea-agents 6.6.0**（GitHub release `rea-agents-6.6.0`，2026-10-18）；npm `latest` 仍是 **6.5.0**，
+  所以本包的钉（`manifest/bundle.manifest.json` 的 `pins.reaAgents` 与 `components.reaAgents.sources.npm.version`）
+  **保持 6.5.0 不动**。已核 6.6.0 的 `engines.node`（`^22.19.0 || ^24.11.0 || >=26.0.0`）与 `bin`
+  （`scripts/rea.mjs`）均未变化，`optionalDependencies.frida` 为 17.23.2。
+- 计划：**2026-10-19** 随下一版把钉升到 6.6.0 并复跑真机；届时工具数、探针正则与文档一并更新。
+
+### 修复 / 工程
+
+- 新增 `scripts/host-compat.mjs`（纯函数 + CLI）：semver 预发布排序、`>=floor <ceiling` 判定、发布列表覆盖检查。
+- `bundle:host-compat` npm script；`verify-branch.ps1` 新增 `engines.dsh` 存在性与覆盖率两项；
+  `validate.yml` 新增「Declared DSH range covers every released host」步骤，清单检查也要求 `engines.dsh`。
+
+### 验证
+
+- 单测 **46 条**（新增 4 条：声明可解析、10 个发布版本全覆盖且 3 个未核对版本被排除、反向对照能抓出
+  `>=0.2.0` 这种看似合理却漏掉整个 0.2.0-rc 线的写法、预发布排序符合 semver 而非字符串序）：Windows 43 过 + 3 平台跳过。
+- `node scripts/host-compat.mjs`：10 个发布版本 covered、3 个 correctly outside。
+- `verify-branch.ps1` 全绿；`audit-manifest.mjs` clean（两份 README 结构仍平行）。
+
 ## 2.0.5 — 2026-10-18
 
 **市场更新失败已定位并修复：清单里没有 `main`，市场因此在每次更新时判「新构建没有可加载入口」并回滚。**

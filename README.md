@@ -125,6 +125,23 @@ provisioning (the harness itself is unaffected: `failOnStartupError: false` is d
 `node scripts/setup.mjs` once; from then on the shim is in place, and every later missing state is picked up
 by the shim itself, which provisions in the background.
 
+### Which DSH versions
+
+`package.json` declares `engines.dsh: ">=0.1.7-rc.2 <0.3.0"`, and that declaration is the answer the plugin market
+reads: with it the card says **compatible**; without it the market can only say *unknown*. The range is not a guess —
+it is the dsh release list this plugin is checked against, and `node scripts/host-compat.mjs` fails the build when the
+two disagree:
+
+| Host | Covered |
+|---|---|
+| `0.1.7-rc.2` … `0.2.1-rc.2` — every release in between, alpha and rc | yes |
+| `0.3.0` and later | no — a new minor line is a host nobody updated this row for yet |
+
+What was actually compared across that range is the row provider: `packages/mcp/mcp-client` at `dsh-v0.1.7-rc.2` and at
+`dsh-v0.2.1-rc.2` exposes the same config surface the shipped row uses (`serverName`, `transport`, `command`, `args`,
+`env`, `failOnStartupError`), and `dsh.bundle.patch` exists at both tags. A host outside the range can still work; it is
+simply not claimed.
+
 ## Configure — nothing
 
 The shipped row carries **no machine path**:

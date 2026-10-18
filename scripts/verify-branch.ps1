@@ -12,7 +12,7 @@ function Check($name, [bool]$ok, $detail) {
 }
 
 Write-Host "`n=== 1. JS syntax ===" -ForegroundColor Cyan
-foreach ($f in @('index.mjs','bin\rea-shim.mjs','scripts\setup.mjs','scripts\audit-manifest.mjs','scripts\setup.test.mjs')) {
+foreach ($f in @('index.mjs','bin\rea-shim.mjs','scripts\setup.mjs','scripts\audit-manifest.mjs','scripts\setup.test.mjs','scripts\host-compat.mjs')) {
   $out = & node --check $f 2>&1
   Check $f ($LASTEXITCODE -eq 0) ($out -join ' ')
 }
@@ -83,7 +83,14 @@ foreach ($entry in @('index.mjs', 'bin/', 'scripts/', 'manifest/', 'cordis.patch
 # the pointer resolves keeps that from returning silently.
 Check 'package.json declares main' (-not [string]::IsNullOrWhiteSpace($pkg.main)) ''
 Check 'main resolves to a shipped file' ($pkg.main -and (Test-Path (Join-Path $root $pkg.main))) "main=$($pkg.main)"
-foreach ($script in @('bundle:setup', 'bundle:status', 'bundle:audit', 'bundle:test')) {
+# The market decides "compatible" vs "unknown" from engines.dsh, and hides the
+# plugin from hosts whose version does not match. An absent or unparseable
+# declaration therefore reads as "nothing to say" rather than as a defect, which
+# is why the coverage check runs here as well as in CI.
+Check 'package.json declares engines.dsh' (-not [string]::IsNullOrWhiteSpace($pkg.engines.dsh)) ''
+$compat = & node scripts\host-compat.mjs 2>&1
+Check 'engines.dsh covers every released DSH host' ($LASTEXITCODE -eq 0) (($compat | Select-Object -Last 2) -join ' ')
+foreach ($script in @('bundle:setup', 'bundle:status', 'bundle:audit', 'bundle:test', 'bundle:host-compat')) {
   Check "scripts.$script exists" ($pkg.scripts.PSObject.Properties.Name -contains $script) ''
 }
 

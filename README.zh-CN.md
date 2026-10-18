@@ -116,6 +116,21 @@ node scripts/setup.mjs --reuse      # 或先 --dry-run 看计划
 任何东西能去启动后台供给（harness 本身不受影响：`failOnStartupError: false` 是刻意的）。先手动跑一次
 `node scripts/setup.mjs`；此后 shim 就位，之后每一次「状态缺失」都由它自己发现并在后台补供给。
 
+### 支持哪些 DSH 版本
+
+`package.json` 里声明了 `engines.dsh: ">=0.1.7-rc.2 <0.3.0"`，这就是插件市场读的那句话：有它，卡片显示
+**兼容**；没有它，市场只能说*未声明*。这个范围不是猜的——它对应本插件实际核对过的 dsh 发布列表，
+`node scripts/host-compat.mjs` 会在两者不一致时让构建失败：
+
+| 宿主版本 | 是否覆盖 |
+|---|---|
+| `0.1.7-rc.2` … `0.2.1-rc.2`（中间的 alpha 与 rc 全部在内） | 是 |
+| `0.3.0` 及以后 | 否 —— 新的小版本线是还没为它核对过这一行的宿主 |
+
+真正被比对过的是「行提供方」：`packages/mcp/mcp-client` 在 `dsh-v0.1.7-rc.2` 与 `dsh-v0.2.1-rc.2` 两个 tag 上，
+暴露的配置面与发布的行完全一致（`serverName`、`transport`、`command`、`args`、`env`、`failOnStartupError`），
+并且两个 tag 都有 `dsh.bundle.patch`。范围之外的宿主可能照样能用，只是没有替它声明。
+
 ## 配置 —— 不需要
 
 发布的那一行**不含任何机器路径**：

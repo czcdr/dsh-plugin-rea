@@ -19,6 +19,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { HOST_RELEASES, OUTSIDE_HOSTS, checkHostCoverage, declaredHostRange, compareVersions, satisfiesDeclaredRange } from "./host-compat.mjs";
 
 /* ------------------------------------------------- probe token substitution */
 
@@ -1198,4 +1199,48 @@ test("the entry loads as a cordis plugin and does nothing", async () => {
   // registering the MCP client here would add a second `serverName: rea` entry,
   // which the harness refuses. Returning undefined is the whole contract.
   assert.equal(mod.apply(), undefined);
+});
+
+/* --------------------------------------------------------- declared DSH hosts */
+
+// The market reads `engines.dsh` to answer "is this plugin compatible with the
+// host I am running" — and hides the plugin from hosts that mismatch. Two silent
+// failures follow from a declaration nobody checks: a typo leaves the range
+// unparseable and the market falls back to "undeclared", while a drifted floor
+// drops hosts the README still promises. Both look exactly like a plugin that
+// simply has nothing to say, so the string is pinned against the release list.
+test("the manifest declares a DSH host range the market can read", () => {
+  const range = declaredHostRange(REPO_ROOT);
+  assert.equal(typeof range, "string", "engines.dsh must be declared; without it the market reports the plugin as unknown");
+  assert.throws(() => satisfiesDeclaredRange("0.2.0-rc.2", "not a range"), "the gate must reject an unparseable range");
+  assert.doesNotThrow(() => satisfiesDeclaredRange("0.2.0-rc.2", range));
+});
+
+test("every released DSH host is inside the declared range, and nothing untested is", () => {
+  const range = declaredHostRange(REPO_ROOT);
+  const { covered, uncovered, leaked } = checkHostCoverage(range);
+  assert.deepEqual(uncovered, [], `these releases fall outside ${range}`);
+  assert.deepEqual(leaked, [], `the declaration also admits ${leaked.join(", ")}, which nobody tested`);
+  assert.equal(covered.length, HOST_RELEASES.length, "every release in the list must be covered");
+});
+
+test("the host-range gate rejects a plausible but wrong declaration", () => {
+  // Negative control: a gate that always passes proves nothing. `>=0.2.0` is the
+  // shape someone writes after testing only on their own machine — and because a
+  // prerelease sorts BELOW its release, it drops the whole 0.2.0-rc line as well
+  // as 0.1.7. That is the trap this test exists for: the typo looks like it names
+  // the running host.
+  const drifted = checkHostCoverage(">=0.2.0 <0.3.0");
+  assert.deepEqual(drifted.uncovered, ["0.2.0-rc.2", "0.2.0-rc.1", "0.1.7-rc.2"], "a 0.2.0 floor must be seen dropping the 0.2.0 prereleases");
+  // And the ceiling is load bearing: the next minor line is a host nobody audited.
+  assert.equal(satisfiesDeclaredRange("0.3.0", ">=0.1.7-rc.2 <0.3.0"), false);
+});
+
+test("prerelease ordering matches semver, not string order", () => {
+  assert.equal(compareVersions("0.2.1-alpha.5", "0.2.1-rc.1"), -1);
+  assert.equal(compareVersions("0.2.1-rc.2", "0.2.1"), -1);
+  assert.equal(compareVersions("0.2.0-rc.2", "0.2.0-rc.1"), 1);
+  // String comparison would sort "alpha.10" before "alpha.5"; semver does not.
+  assert.equal(compareVersions("0.2.1-alpha.10", "0.2.1-alpha.5"), 1);
+  assert.equal(OUTSIDE_HOSTS.length > 0, true);
 });

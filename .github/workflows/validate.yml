@@ -35,8 +35,16 @@ jobs:
             // profile failed with "updated build has no loadable entry".
             if (typeof p.main !== 'string') fail('package.json must declare main');
             if (!require('fs').existsSync(p.main)) fail('main points at no shipped file: ' + p.main);
+            // engines.dsh is what the market reads to say "compatible" instead of
+            // "unknown"; without it the plugin is reported as undeclared.
+            if (!p.engines || typeof p.engines.dsh !== 'string') fail('package.json must declare engines.dsh');
             console.log('manifest ok');
           "
+
+      - name: Declared DSH range covers every released host
+        # A wrong range is silent on both sides: unparseable reads as "undeclared"
+        # and a drifted floor drops hosts the README still lists.
+        run: node scripts/host-compat.mjs
 
       - name: JSON files parse
         run: |
