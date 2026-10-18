@@ -322,6 +322,11 @@ node scripts/setup.mjs          # 或：powershell -File scripts\rea-bundle-boot
   插件，并转发执行插件里的那一份（一跳，带 `REA_BUNDLE_SHIM_REEXEC` 守卫），升级因此能生效。更早的版本里镜像会
   静默地停在旧代码；`--shim-status` 现在会报 `mirror.stale`，`check-updates.ps1` 也会提示重跑 setup。**从
   2.0.0–2.0.7 升级的话，升级后跑一次 `node scripts/setup.mjs`。**
+- **镜像的 `scripts/setup.mjs` 同样是副本。** 市场升级只换包、不换它，所以照着提示去跑
+  `<DSH_HOME>/plugins/rea-bundle/scripts/setup.mjs` 时，跑的是建 bundle 那一版的 setup，而不是你刚装的这一版。
+  从 **2.0.9** 起，shim 与 setup 都会剥掉 `mirror.json` / `bundle.json` 的 UTF-8 BOM（此前 setup 侧把带 BOM
+  的记录读成「没有记录」，会把上一版 manifest 再镜一遍）。**从插件目录**跑一次 `node scripts/setup.mjs`，
+  这份镜像副本也会一起刷新。
 - **从 `2.0.0-bundle.1` 升级**：那一版镜像了 shim 与 `setup.mjs`，却漏了 manifest，也没有留下插件 checkout
   的记录，所以它供给出来的 bundle **无法自愈** —— 后台供给会因缺 manifest 而崩溃且完全不可见，而它自己写下的
   lock 又会让重试被抑制六小时。请**从插件目录**重跑一次 `node scripts/setup.mjs`：它会重新镜像三个文件，

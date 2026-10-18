@@ -346,6 +346,12 @@ back on the next start.
   (one hop, guarded by `REA_BUNDLE_SHIM_REEXEC`), so upgrades carry. On an older version the mirror stays behind
   silently; `--shim-status` now reports `mirror.stale`, and `check-updates.ps1` says to re-run setup. If you are
   upgrading from 2.0.0–2.0.7, run `node scripts/setup.mjs` once after the upgrade.
+- **The mirrored `scripts/setup.mjs` is a copy too.** A market upgrade replaces the package but not that copy,
+  so a remediation command that points at `<DSH_HOME>/plugins/rea-bundle/scripts/setup.mjs` runs the setup from
+  when the bundle was created — not the one you just installed. From **2.0.9** both the shim and setup strip a
+  UTF-8 BOM from `mirror.json` / `bundle.json` (a BOM-ed record used to read as "no record" on the setup side,
+  which re-mirrored the previous manifest). Running `node scripts/setup.mjs` once **from the plugin directory**
+  refreshes that copy too.
 - **Upgrading from `2.0.0-bundle.1`**: that release mirrored the shim and `setup.mjs` but not the manifest,
   and recorded nothing about the plugin checkout, so a bundle it provisioned cannot repair itself — its
   background provisioning dies on the missing manifest, invisibly, and its own lock suppresses retries for
