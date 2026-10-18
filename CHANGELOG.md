@@ -20,13 +20,16 @@
 - **开发时可能测到「已安装插件」而不是自己的改动**：checkout 副本会顺着 bundle 的 `mirror.json` 转发到插件目录。
   现在 checkout（带 `cordis.patch.yml`）永不转发，只有镜像副本会；注释也改成与行为一致。
 - **带 BOM 的 `mirror.json` / `bundle.json` 被当成「没有记录」**：`JSON.parse` 拒绝前导 BOM，而每个调用方都把解析失败
-  读成「无记录」。Windows 编辑器保存的 JSON 就会带 BOM，表现是镜像自愈静默不生效、bundle 被当成未供给。现在统一
-  经 `readJson()` 去掉 `U+FEFF` 再解析。
+  读成「无记录」。Windows 编辑器保存的 JSON 就会带 BOM，表现是镜像自愈静默不生效、bundle 被当成未供给。`bin/rea-shim.mjs`
+  与 `scripts/setup.mjs` 现在都经各自的 `readJson()` 去掉 `U+FEFF` 再解析。**两个文件读的是同一份记录，所以缺一不可**：
+  此前只有 shim 剥了 BOM，带 BOM 的 `mirror.json` 在 setup 眼里仍是「没有 checkout」，镜像 layout 下的 setup 于是把上一版
+  manifest 又镜了一遍并从它供给；`bundle.json` 同理被读成未供给。`verify-branch.ps1` 与 CI 都加了守卫：这两个文件里
+  出现裸的 `JSON.parse(readFileSync(...))` 即失败。
 
 ### 文档 / CI
 
-- 两份 README 的钉版本示例改为**当前版本** `#v2.0.9`（此前停在 `#v2.0.0`，那是历史坑最多的一版）；README 的
-  「机器上已有 REA」一节补上 Windows 限制：**强制结束 shim 不会带走被委派的 REA**。
+- 两份 README 的钉版本示例改为**当前版本** `#v2.0.9`（2.0.8 那一轮已从 `#v2.0.0` 提到 `#v2.0.8`，版本号一动就得跟上，
+  否则读者拿到的 ref 不存在）；README 的「机器上已有 REA」一节补上 Windows 限制：**强制结束 shim 不会带走被委派的 REA**。
 - `docs/bundle-design.md`（随包发布）补上 2.0.7 的 launch mode 与 2.0.8 的镜像自愈，含 `mirror.json` 的
   `shimSha256` / `pluginVersion` / `dshHome` 三个字段与控制流图。
 - CI 新增两条：README 必须逐字引用 `engines.dsh`；README 的钉版本示例必须等于 `package.json` 的 version（`verify-branch.ps1`
@@ -35,9 +38,9 @@
 
 ### 验证
 
-- 单测 **69 条**（66 过 + 3 平台跳过；新增「checkout 副本不转发」「文件中途消失 → 回退」两条）；镜像转发测试改为真的
-  运行镜像副本。
-- `verify-branch.ps1` 41 项全绿；`audit-manifest` clean；`host-compat` 10 covered / 5 outside。
+- 单测 **71 条**（68 过 + 3 平台跳过；新增「checkout 副本不转发」「文件中途消失 → 回退」「带 BOM 的 `mirror.json`」
+  「带 BOM 的 `bundle.json`」四条）；镜像转发测试改为真的运行镜像副本。
+- `verify-branch.ps1` 44 项全绿；`audit-manifest` clean；`host-compat` 10 covered / 5 outside。
 
 ## 2.0.8 — 2026-10-18
 

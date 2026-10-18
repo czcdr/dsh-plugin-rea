@@ -955,6 +955,21 @@ function reuseExisting(name, root) {
 /* ------------------------------------------------------------------- manifest */
 
 /**
+ * JSON from disk, tolerating the UTF-8 BOM a Windows editor writes.
+ *
+ * `JSON.parse` rejects a leading BOM, and every caller in this file treats a
+ * parse failure as "no record". A BOM-ed mirror.json therefore meant "this is
+ * not a mirrored run", so setup went on to re-mirror the previous manifest;
+ * a BOM-ed bundle.json meant "nothing is provisioned". `bin/rea-shim.mjs`
+ * carries the same helper — the two must agree, or the same file means two
+ * different things depending on which one read it (a hand-edited record with
+ * PowerShell's BOM is exactly the case that produced this).
+ */
+function readJson(file) {
+  return JSON.parse(readFileSync(file, "utf8").replace(/^\uFEFF/, ""));
+}
+
+/**
  * Where this run's plugin files actually live.
  *
  * Two layouts exist. Normally setup runs from the plugin checkout and
@@ -973,7 +988,7 @@ function sourceRoot() {
   const self = path.resolve(PLUGIN_ROOT);
   if (!samePath(self, options.root)) return self;
   try {
-    const record = JSON.parse(readFileSync(path.join(options.root, "mirror.json"), "utf8"));
+    const record = readJson(path.join(options.root, "mirror.json"));
     const recorded = record?.pluginRoot;
     if (typeof recorded === "string" && recorded.trim() !== "") {
       const candidate = path.resolve(recorded);
@@ -987,7 +1002,7 @@ function sourceRoot() {
 
 function loadManifest() {
   const file = path.join(sourceRoot(), "manifest", "bundle.manifest.json");
-  const parsed = JSON.parse(readFileSync(file, "utf8"));
+  const parsed = readJson(file);
   return parsed;
 }
 
@@ -1002,7 +1017,7 @@ function loadManifest() {
 function readBundleJson(file) {
   if (!existsSync(file)) return null;
   try {
-    const parsed = JSON.parse(readFileSync(file, "utf8"));
+    const parsed = readJson(file);
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
   } catch (error) {
     log(`       ${path.basename(file)} is not readable JSON (${String(error && error.message)}); ignoring it for this run`);
@@ -1648,7 +1663,7 @@ function writeMirrorRecord(context, source) {
     /* the copy is missing or unreadable; the shim reports the comparison itself */
   }
   try {
-    record.pluginVersion = JSON.parse(readFileSync(path.join(source, "package.json"), "utf8")).version ?? null;
+    record.pluginVersion = readJson(path.join(source, "package.json")).version ?? null;
   } catch {
     record.pluginVersion = null;
   }

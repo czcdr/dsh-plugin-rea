@@ -71,6 +71,33 @@ jobs:
             console.log('readme range ok');
           "
 
+      - name: Both JSON readers tolerate a BOM
+        # verify-branch.ps1 runs the same check locally. bin/rea-shim.mjs and
+        # scripts/setup.mjs read the same mirror.json/bundle.json, so a strip on
+        # one side only makes the same file say "there is a checkout" to the shim
+        # and "there is none" to setup — which shipped once: setup re-mirrored the
+        # previous manifest. A bare JSON.parse(readFileSync(...)) is that bug.
+        run: |
+          node - <<'JS'
+          const { readFileSync } = require('node:fs');
+          const blind = [];
+          for (const file of ['bin/rea-shim.mjs', 'scripts/setup.mjs']) {
+            const text = readFileSync(file, 'utf8');
+            for (const m of text.matchAll(/JSON\.parse\(\s*readFileSync\(/g)) {
+              // readJson() itself is the strip; anything else must not parse a file raw.
+              if (!/replace\(/.test(text.slice(m.index, m.index + 200))) {
+                blind.push(file + ':' + text.slice(0, m.index).split('\n').length);
+              }
+            }
+            if (!text.includes('replace(/^\\uFEFF/')) blind.push(file + ': no U+FEFF strip');
+          }
+          if (blind.length) {
+            console.error('FAIL: BOM-blind JSON read at ' + blind.join(', '));
+            process.exit(1);
+          }
+          console.log('bom-blind reads: none');
+          JS
+
       - name: JSON files parse
         run: |
           node -e "

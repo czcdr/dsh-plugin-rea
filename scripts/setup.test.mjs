@@ -1810,3 +1810,82 @@ test("a mirrored shim finds the real DSH home when the environment is scrubbed",
     f.clean();
   }
 });
+
+/* ------------------------------------ records a Windows editor has BOM-ed */
+
+// `bin/rea-shim.mjs` strips the UTF-8 BOM that PowerShell and Notepad write;
+// setup.mjs kept parsing raw. Both programs read the same two records, so a BOM
+// used to mean two different things: the shim found the checkout, setup did not.
+// A mirrored setup then re-mirrored the previous manifest and provisioned from
+// it, and a BOM-ed bundle.json read as "nothing is provisioned". These tests pin
+// setup's side of the contract, both files.
+
+/** A checkout with a manifest whose node probe accepts any node, so `--only node` is deterministic. */
+function bomFixtureCheckout(root) {
+  const checkout = path.join(root, "checkout");
+  mkdirSync(path.join(checkout, "scripts"), { recursive: true });
+  mkdirSync(path.join(checkout, "manifest"), { recursive: true });
+  copyFileSync(SETUP_SOURCE, path.join(checkout, "scripts", "setup.mjs"));
+  const manifest = JSON.parse(readFileSync(MANIFEST_SOURCE, "utf8"));
+  manifest.components.node.probe.expect.regex = "^v";
+  writeFileSync(path.join(checkout, "manifest", "bundle.manifest.json"), JSON.stringify(manifest, null, 2));
+  writeFileSync(path.join(checkout, "package.json"), JSON.stringify({ name: "dsh-plugin-rea", version: "0.0.0-bom" }));
+  return checkout;
+}
+
+test("a BOM-ed mirror.json still points a mirrored setup at the real checkout", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "rea-bom-mirror-"));
+  try {
+    const checkout = bomFixtureCheckout(root);
+    const bundle = path.join(root, "bundle");
+    mkdirSync(path.join(bundle, "scripts"), { recursive: true });
+    copyFileSync(SETUP_SOURCE, path.join(bundle, "scripts", "setup.mjs"));
+    // Exactly what `Out-File` / `Set-Content` leaves behind, and what a human
+    // editing the record by hand produces on Windows.
+    writeFileSync(
+      path.join(bundle, "mirror.json"),
+      "\uFEFF" + JSON.stringify({ schema: 1, pluginRoot: checkout, mirroredAt: "2026-10-18T00:00:00Z" }),
+    );
+    // The bundle has no manifest of its own: only the record can supply one.
+    assert.equal(existsSync(path.join(bundle, "manifest", "bundle.manifest.json")), false);
+
+    const run = spawnSync(
+      process.execPath,
+      [path.join(bundle, "scripts", "setup.mjs"), "--dry-run", "--only", "node", "--root", bundle],
+      { encoding: "utf8", timeout: 120000 },
+    );
+    assert.equal(run.status, 0, run.stderr);
+    // loadManifest() runs before any component: reaching the plan proves the
+    // record was parsed. A BOM-blind parse fell through to the bundle and died
+    // on a missing manifest.
+    assert.match(run.stdout, /\[plan\] node/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a BOM-ed bundle.json is read instead of treated as unprovisioned", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "rea-bom-bundle-"));
+  try {
+    const checkout = bomFixtureCheckout(root);
+    const bundle = path.join(root, "bundle");
+    mkdirSync(bundle, { recursive: true });
+    const args = [path.join(checkout, "scripts", "setup.mjs"), "--dry-run", "--only", "node", "--root", bundle];
+
+    // Control: with no record at all the component is planned, so the assertion
+    // below cannot pass for a reason unrelated to reading the file.
+    const fresh = spawnSync(process.execPath, args, { encoding: "utf8", timeout: 120000 });
+    assert.equal(fresh.status, 0, fresh.stderr);
+    assert.match(fresh.stdout, /\[plan\] node/);
+
+    writeFileSync(
+      path.join(bundle, "bundle.json"),
+      "\uFEFF" + JSON.stringify({ schema: 1, components: { node: { path: process.execPath, version: "v-bom-test" } } }, null, 2),
+    );
+    const run = spawnSync(process.execPath, args, { encoding: "utf8", timeout: 120000 });
+    assert.equal(run.status, 0, run.stderr);
+    assert.match(run.stdout, /already provisioned \(v-bom-test\)/, run.stdout);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

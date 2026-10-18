@@ -17,6 +17,31 @@ foreach ($f in @('index.mjs','bin\rea-shim.mjs','scripts\setup.mjs','scripts\aud
   Check $f ($LASTEXITCODE -eq 0) ($out -join ' ')
 }
 
+Write-Host "`n=== 1b. both JSON readers tolerate a BOM ===" -ForegroundColor Cyan
+# bin/rea-shim.mjs and scripts/setup.mjs read the same mirror.json and bundle.json.
+# A BOM strip on one side only makes one file mean "there is a checkout" to the
+# shim and "there is none" to setup, and the mirrored setup then re-mirrors the
+# previous manifest. A bare JSON.parse(readFileSync(...)) is that divergence.
+$jsBom = Join-Path $env:TEMP 'rea-verify-bom.cjs'
+@'
+const fs = require("node:fs");
+const blind = [];
+for (const file of ["bin/rea-shim.mjs", "scripts/setup.mjs"]) {
+  const text = fs.readFileSync(file, "utf8");
+  for (const m of text.matchAll(/JSON\.parse\(\s*readFileSync\(/g)) {
+    // readJson() itself is the strip; anything else must not parse a file raw.
+    if (!/replace\(/.test(text.slice(m.index, m.index + 200))) {
+      blind.push(file + "@" + text.slice(0, m.index).split("\n").length);
+    }
+  }
+  if (!text.includes("replace(/^\\uFEFF/")) blind.push(file + ": no U+FEFF strip");
+}
+console.log("bom-blind reads: " + JSON.stringify(blind));
+if (blind.length) process.exit(1);
+'@ | Set-Content $jsBom -Encoding utf8
+& node $jsBom 2>&1 | ForEach-Object { Write-Host "        $_" -ForegroundColor Gray }
+Check 'no BOM-blind JSON read' ($LASTEXITCODE -eq 0) 'see above'
+
 Write-Host "`n=== 2. PowerShell parse + BOM ===" -ForegroundColor Cyan
 # This script checks itself too: it is edited as often as the others, and an editor
 # that drops the BOM would otherwise go unnoticed until someone adds CJK text here.
