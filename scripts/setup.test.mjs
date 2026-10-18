@@ -1734,6 +1734,36 @@ test("a checkout shim does not hop into the installed plugin", () => {
   }
 });
 
+test("a re-exec whose file vanishes mid-flight falls back to the mirrored copy", () => {
+  // The upgrade race the spawn handshake cannot see: the file existed when the
+  // mirror compared hashes, node started, and the file was replaced before node
+  // read it — node exits 1 with MODULE_NOT_FOUND. Passing that through turns a
+  // millisecond race into a dead row, so a non-zero exit with the source gone
+  // must fall back instead.
+  const f = mirrorFixture();
+  const marker = path.join(f.root, "checkout-ran");
+  const file = path.join(f.checkout, "bin", "rea-shim.mjs");
+  writeFileSync(
+    file,
+    'import { rmSync, writeFileSync } from "node:fs";\n' +
+      `writeFileSync(${JSON.stringify(marker)}, "checkout");\n` +
+      `rmSync(${JSON.stringify(file)});\n` +
+      "process.exit(3);\n",
+  );
+  try {
+    const run = runShimIsolated(
+      { REA_BUNDLE_ROOT: f.bundle, REA_BUNDLE_AUTO_PROVISION: "0", REA_BUNDLE_LAUNCH: "bundle" },
+      ["mcp"],
+      path.join(f.bundle, "bin", "rea-shim.mjs"),
+    );
+    assert.equal(existsSync(marker), true, "the checkout launcher did run");
+    assert.equal(run.status, 78, `expected the local copy's status, got ${run.status}: ${run.stderr}`);
+    assert.match(run.stderr, /running the mirrored copy instead/);
+  } finally {
+    f.clean();
+  }
+});
+
 test("an identical mirror is not stale and is not re-exec'd", () => {
   const f = mirrorFixture();
   const same = path.join(f.checkout, "bin", "rea-shim.mjs");

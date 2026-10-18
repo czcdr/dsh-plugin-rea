@@ -4,31 +4,40 @@
 
 ## 2.0.9 — 未发布（仓库已更新，未打 tag / 未发 npm）
 
-**2.0.8 的两处发布前问题（假回退、乱码）与若干文档缺口；不改行为，只让失败路径说真话。**
+**2.0.8 的两处发布前问题（假回退、乱码）与若干文档缺口；不改正常路径，只让失败路径说真话。**
 
 ### 修复
 
 - **`reexecFromCheckout` 的「回退」是假话**：spawn 失败时只打印「继续用镜像副本」，函数却返回了，`main()` 已经
-  return —— 没有 `exit` 事件、事件循环排空、进程以 **exit 0 静默退出**，行看起来启动成功却没有任何工具。现在它返回
-  Promise：真正启动成功才接管退出码，失败则 `false`，`main()` 继续用本地副本正常启动，并如实说明在回退。
+  return —— 没有 `exit` 事件、事件循环排空、进程以 **exit 0 静默退出**，行看起来启动成功却没有任何工具。现在这个
+  Promise **只在没接管时才 resolve**：子进程活着时本进程等待、由子进程的退出码决定；失败则 `main()` 继续用本地副本
+  启动，并如实说明在回退。
+- **回退覆盖了升级竞态的主形态**：`spawn` 的目标是 `process.execPath`，spawn 级失败几乎只剩资源耗尽；真正常见的是
+  「哈希比对通过 → node 启动 → 文件已被换掉」→ node 以 `MODULE_NOT_FOUND` 退 1。现在**退出码非 0 且源文件已不存在**
+  时同样回退到本地副本（窗口毫秒级，代价是一次 `stat`），不再把竞态变成一行死掉的 MCP。
 - **乱码 `鈥?` 混进用户可见输出**：2.0.7 在 GBK 编辑器里碰过 `bin/rea-shim.mjs`，16 处破折号被写成 `鈥?`，其中两条是
   stderr 消息（首次自动供给、上次供给失败）—— 每个用户都会看到。全部还原为 `— `（含被吃掉的空格）。
 - **开发时可能测到「已安装插件」而不是自己的改动**：checkout 副本会顺着 bundle 的 `mirror.json` 转发到插件目录。
   现在 checkout（带 `cordis.patch.yml`）永不转发，只有镜像副本会；注释也改成与行为一致。
+- **带 BOM 的 `mirror.json` / `bundle.json` 被当成「没有记录」**：`JSON.parse` 拒绝前导 BOM，而每个调用方都把解析失败
+  读成「无记录」。Windows 编辑器保存的 JSON 就会带 BOM，表现是镜像自愈静默不生效、bundle 被当成未供给。现在统一
+  经 `readJson()` 去掉 `U+FEFF` 再解析。
 
 ### 文档 / CI
 
-- 两份 README 的钉版本示例 `#v2.0.0` → `#v2.0.8`（原示例恰好是历史坑最多的那一版）；README 的「机器上已有 REA」一节
-  补上 Windows 限制：**强制结束 shim 不会带走被委派的 REA**。
+- 两份 README 的钉版本示例改为**当前版本** `#v2.0.9`（此前停在 `#v2.0.0`，那是历史坑最多的一版）；README 的
+  「机器上已有 REA」一节补上 Windows 限制：**强制结束 shim 不会带走被委派的 REA**。
 - `docs/bundle-design.md`（随包发布）补上 2.0.7 的 launch mode 与 2.0.8 的镜像自愈，含 `mirror.json` 的
   `shimSha256` / `pluginVersion` / `dshHome` 三个字段与控制流图。
-- CI 新增「README 必须逐字引用 package.json 的 `engines.dsh`」——这条原先只有本地 `verify-branch.ps1` 有，CI 里没有。
+- CI 新增两条：README 必须逐字引用 `engines.dsh`；README 的钉版本示例必须等于 `package.json` 的 version（`verify-branch.ps1`
+  同步加了第二条，避免同一个漂移第三次发生）。
 - `systemReaCandidates` 的去重键改用传入的 `platform` 参数（测试缝一致，生产无变化）。
 
 ### 验证
 
-- 单测 **68 条**（65 过 + 3 平台跳过；新增「checkout 副本不转发」一条）；镜像转发测试改为真的运行镜像副本。
-- `verify-branch.ps1` 39 项全绿；`audit-manifest` clean；`host-compat` 10 covered / 5 outside。
+- 单测 **69 条**（66 过 + 3 平台跳过；新增「checkout 副本不转发」「文件中途消失 → 回退」两条）；镜像转发测试改为真的
+  运行镜像副本。
+- `verify-branch.ps1` 41 项全绿；`audit-manifest` clean；`host-compat` 10 covered / 5 outside。
 
 ## 2.0.8 — 2026-10-18
 

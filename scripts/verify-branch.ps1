@@ -97,6 +97,11 @@ Check 'engines.dsh covers every released DSH host' ($LASTEXITCODE -eq 0) (($comp
 foreach ($doc in @('README.md', 'README.zh-CN.md')) {
   $text = Get-Content (Join-Path $root $doc) -Raw -Encoding UTF8
   Check "$doc quotes the declared engines.dsh" $text.Contains([string]$pkg.engines.dsh) "expected $($pkg.engines.dsh)"
+  # The pin example is copy-pasteable, so it must name a ref that will exist: the
+  # version this tree publishes. It has drifted twice (v2.0.0 long after 2.0.5,
+  # then v2.0.8 while the tree was 2.0.9), and both times every other signal was
+  # green because nothing compared the two.
+  Check "$doc pins the current version" $text.Contains("dsh-plugin-rea#v$($pkg.version)") "expected dsh-plugin-rea#v$($pkg.version)"
 }
 foreach ($script in @('bundle:setup', 'bundle:status', 'bundle:audit', 'bundle:test', 'bundle:host-compat')) {
   Check "scripts.$script exists" ($pkg.scripts.PSObject.Properties.Name -contains $script) ''

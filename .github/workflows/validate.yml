@@ -64,6 +64,9 @@ jobs:
             for (const doc of ['README.md', 'README.zh-CN.md']) {
               const text = readFileSync(doc, 'utf8');
               if (!text.includes(p.engines.dsh)) fail(doc + ' does not quote engines.dsh (' + p.engines.dsh + ')');
+              // The pin example is copy-pasteable: it must name the version this
+              // tree publishes, or the reader gets "could not find ref".
+              if (!text.includes('dsh-plugin-rea#v' + p.version)) fail(doc + ' does not pin dsh-plugin-rea#v' + p.version);
             }
             console.log('readme range ok');
           "

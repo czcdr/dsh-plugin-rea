@@ -26,6 +26,19 @@ const EX_CONFIG = 78;
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = path.resolve(HERE, "..");
 
+/**
+ * JSON from disk, tolerating the UTF-8 BOM a Windows editor writes.
+ *
+ * `JSON.parse` rejects a leading BOM, and every caller here reads a parse
+ * failure as "no record": a BOM would silently downgrade mirror.json to "no
+ * plugin checkout" and bundle.json to "not provisioned". Measured while testing
+ * this file — a hand-edited mirror.json written by Windows PowerShell behaved
+ * exactly that way.
+ */
+function readJson(file) {
+  return JSON.parse(readFileSync(file, "utf8").replace(/^\uFEFF/, ""));
+}
+
 /** DSH home, by the same rule setup.mjs and the published patch use. */
 function dshHome() {
   const fromEnv = process.env.DSH_HOME;
@@ -45,7 +58,7 @@ function recordedDshHome(root) {
   if (recordedDshHomeCache !== null) return recordedDshHomeCache;
   let value = null;
   try {
-    const record = JSON.parse(readFileSync(path.join(root, "mirror.json"), "utf8"));
+    const record = readJson(path.join(root, "mirror.json"));
     if (typeof record?.dshHome === "string" && record.dshHome.trim() !== "" && path.isAbsolute(record.dshHome)) {
       value = path.resolve(record.dshHome);
     }
@@ -115,7 +128,7 @@ function usableSetup(dir) {
  */
 function provisioningScript(root) {
   try {
-    const record = JSON.parse(readFileSync(path.join(root, "mirror.json"), "utf8"));
+    const record = readJson(path.join(root, "mirror.json"));
     const recorded = usableSetup(record && record.pluginRoot);
     if (recorded) return recorded;
   } catch {
@@ -333,7 +346,7 @@ function readBundleConfig(root) {
   if (!existsSync(file)) return { ok: false, code: "missing", file };
   let parsed;
   try {
-    parsed = JSON.parse(readFileSync(file, "utf8"));
+    parsed = readJson(file);
   } catch (error) {
     return { ok: false, code: "malformed", file, detail: String(error && error.message) };
   }
@@ -865,7 +878,7 @@ function sha256(file) {
 /** Where the installed plugin lives according to setup's record, or null. */
 function pluginCheckout(root) {
   try {
-    const record = JSON.parse(readFileSync(path.join(root, "mirror.json"), "utf8"));
+    const record = readJson(path.join(root, "mirror.json"));
     const dir = record?.pluginRoot;
     if (typeof dir !== "string" || dir.trim() === "") return null;
     const shim = path.join(dir, "bin", "rea-shim.mjs");
@@ -885,7 +898,7 @@ function pluginCheckout(root) {
 function describeMirror(root, { self = fileURLToPath(import.meta.url) } = {}) {
   let record = null;
   try {
-    record = JSON.parse(readFileSync(path.join(root, "mirror.json"), "utf8"));
+    record = readJson(path.join(root, "mirror.json"));
   } catch {
     return null;
   }
@@ -915,13 +928,19 @@ function describeMirror(root, { self = fileURLToPath(import.meta.url) } = {}) {
 /**
  * Run the checkout's launcher instead of this copy, once.
  *
- * Resolves `true` when the child actually started (its exit then becomes this
- * process's exit), and `false` when it did not — the caller MUST then continue
- * with its own launch path. The first version of this printed "continuing with
- * the mirrored copy" on `error` and returned: nothing continued, no `exit` event
- * followed a failed spawn, the loop drained, and the row saw exit 0 with no
- * tools and no message. A fallback that is announced but not performed is worse
- * than none, because it hides the failure it was written for.
+ * The promise resolves ONLY when the re-exec did not take over, and the caller
+ * must then continue with its own launch path. While the child is alive the
+ * promise stays pending and the child's own exit becomes this process's exit —
+ * settling it at the `spawn` event was wrong: the event fires before the child
+ * has done anything, so a later "it actually failed" could no longer be seen, and
+ * the two handlers disagreed about who owns the exit code. That mistake made the
+ * file-vanishes-mid-flight case exit 0 silently.
+ *
+ * The first version of this printed "continuing with the mirrored copy" on
+ * `error` and returned: nothing continued, no `exit` event followed a failed
+ * spawn, the loop drained, and the row saw exit 0 with no tools and no message.
+ * A fallback that is announced but not performed is worse than none, because it
+ * hides the failure it was written for.
  */
 function reexecFromCheckout(source, argv) {
   const child = spawn(process.execPath, [source, ...argv], {
@@ -933,7 +952,6 @@ function reexecFromCheckout(source, argv) {
     let started = false;
     child.once("spawn", () => {
       started = true;
-      resolve(true);
     });
     child.once("error", () => {
       if (started) return;
@@ -949,6 +967,18 @@ function reexecFromCheckout(source, argv) {
       if (signal) {
         const signals = { SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGKILL: 9, SIGTERM: 15 };
         process.exit(128 + (signals[signal] ?? 0));
+      }
+      // A non-zero exit is normally the child's own answer and must be passed
+      // through untouched. One case is not the child's answer: an upgrade in
+      // flight replaced the file BETWEEN the check and node reading it, so node
+      // starts fine and dies with MODULE_NOT_FOUND. Passing that on turns a
+      // millisecond race into a dead row; if the source is gone by now, fall back
+      // to this copy instead. The window is small, the cost of covering it is one
+      // stat, and the alternative is a row that reports failure for a file that
+      // still exists a directory up.
+      if ((code ?? 0) !== 0 && !isFileSync(source)) {
+        resolve(false);
+        return;
       }
       process.exit(code ?? 0);
     });
@@ -1006,11 +1036,14 @@ async function main() {
   if (!isCheckout && mirror !== null && mirror.stale && process.env.REA_BUNDLE_SHIM_REEXEC !== "1" && !argv.includes("--shim-status")) {
     const source = pluginCheckout(root);
     if (source !== null) {
-      const handed = await reexecFromCheckout(source, argv);
-      if (handed) return null;
-      // The child never started (a spawn failure, or it exited before the spawn
-      // event). Say so and run this copy for real — the point of the fallback.
-      process.stderr.write(`rea-shim: could not start ${source}; running the mirrored copy instead.\n`);
+      // It resolves only when the re-exec did not take over; while the child
+      // runs, this process is parked and the child's exit is the exit.
+      await reexecFromCheckout(source, argv);
+      // The re-exec did not take over: a spawn failure, a child that exited
+      // before its spawn event, or one that started and found its own file gone
+      // (see the exit handler). Say so and run this copy for real — the point of
+      // the fallback.
+      process.stderr.write(`rea-shim: could not run ${source}; running the mirrored copy instead.\n`);
     }
   }
   const loaded = readBundleConfig(root);
