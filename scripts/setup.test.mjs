@@ -18,7 +18,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 /* ------------------------------------------------- probe token substitution */
 
@@ -1167,4 +1167,35 @@ test("--json releases the lock on success and marks it failed on failure", () =>
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+/* --------------------------------------------------------- the package entry */
+
+// The market judges an update by asking whether the new build's package.json
+// points at an entry file that exists (`hasLoadableEntry` -> `entryArtifactExists`
+// in dshmarket). This package declared neither main nor exports, and the package
+// it mounts (`@deepseek-ai/dsh-mcp-client`) ships inside the harness build rather
+// than in node_modules, so every location that test probes came back empty:
+// updating a healthy 2.0.1 profile to 2.0.4 failed with "updated build has no
+// loadable entry", and the rollback was then reported unverifiable for the same
+// reason (measured 2026-10-18). These two tests are that regression.
+test("package.json declares an entry file that is actually shipped", () => {
+  const pkg = JSON.parse(readFileSync(path.join(REPO_ROOT, "package.json"), "utf8"));
+  assert.equal(typeof pkg.main, "string", "package.json must declare main; without it consumers probe index.js, which does not exist");
+  assert.equal(existsSync(path.join(REPO_ROOT, pkg.main)), true, `${pkg.main} is declared but missing`);
+  // `main` alone is not enough: npm pack ships only what files[] lists, and a
+  // tarball without the entry reproduces the very failure this fixes.
+  const shipped = String(pkg.main).replace(/^\.\//, "");
+  assert.equal(pkg.files.includes(shipped), true, `files[] must ship ${shipped}`);
+});
+
+test("the entry loads as a cordis plugin and does nothing", async () => {
+  const pkg = JSON.parse(readFileSync(path.join(REPO_ROOT, "package.json"), "utf8"));
+  const mod = await import(pathToFileURL(path.join(REPO_ROOT, pkg.main)).href);
+  assert.equal(mod.name, pkg.name, "the loader resolves the plugin by this name");
+  assert.equal(typeof mod.apply, "function", "a cordis plugin needs apply()");
+  // Loading and applying must not register a row, spawn anything or touch state:
+  // registering the MCP client here would add a second `serverName: rea` entry,
+  // which the harness refuses. Returning undefined is the whole contract.
+  assert.equal(mod.apply(), undefined);
 });

@@ -25,10 +25,16 @@ jobs:
             const fail = (m) => { console.error('FAIL: ' + m); process.exit(1) };
             if (!p.dsh || !p.dsh.bundle || !p.dsh.bundle.patch) fail('package.json is missing dsh.bundle.patch');
             if (p.private) fail('package.json must not be private to be publishable');
-            for (const f of ['cordis.patch.yml', 'README.md', 'LICENSE', 'check-updates.ps1']) {
+            for (const f of ['cordis.patch.yml', 'index.mjs', 'README.md', 'LICENSE', 'check-updates.ps1']) {
               if (!p.files.includes(f)) fail('files[] must ship ' + f);
             }
             if (!require('fs').existsSync(p.dsh.bundle.patch)) fail('dsh.bundle.patch target does not exist');
+            // The market's update path rolls a build back when package.json points
+            // at no existing entry (dshmarket's hasLoadableEntry); this package
+            // shipped no main at all until 2.0.5, so every update of a healthy
+            // profile failed with "updated build has no loadable entry".
+            if (typeof p.main !== 'string') fail('package.json must declare main');
+            if (!require('fs').existsSync(p.main)) fail('main points at no shipped file: ' + p.main);
             console.log('manifest ok');
           "
 
@@ -51,7 +57,7 @@ jobs:
             const meta = JSON.parse(execSync('npm pack --dry-run --json', { encoding: 'utf8' }))[0];
             const files = meta.files.map((f) => f.path);
             const need = [
-              'cordis.patch.yml', 'README.md', 'README.zh-CN.md', 'LICENSE', 'CHANGELOG.md', 'check-updates.ps1',
+              'cordis.patch.yml', 'index.mjs', 'README.md', 'README.zh-CN.md', 'LICENSE', 'CHANGELOG.md', 'check-updates.ps1',
               'screenshots.json', 'assets/screenshot-1.png', 'assets/screenshot-2.png',
             ];
             const missing = need.filter((f) => !files.includes(f));

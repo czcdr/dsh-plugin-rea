@@ -12,7 +12,7 @@ function Check($name, [bool]$ok, $detail) {
 }
 
 Write-Host "`n=== 1. JS syntax ===" -ForegroundColor Cyan
-foreach ($f in @('bin\rea-shim.mjs','scripts\setup.mjs','scripts\audit-manifest.mjs','scripts\setup.test.mjs')) {
+foreach ($f in @('index.mjs','bin\rea-shim.mjs','scripts\setup.mjs','scripts\audit-manifest.mjs','scripts\setup.test.mjs')) {
   $out = & node --check $f 2>&1
   Check $f ($LASTEXITCODE -eq 0) ($out -join ' ')
 }
@@ -73,9 +73,16 @@ Write-Host "`n=== 6. package payload lists what the bundle needs ===" -Foregroun
 # -Encoding UTF8 is required: the package description contains CJK text, and
 # PowerShell 5.1 reads a BOM-less file as ANSI, which breaks ConvertFrom-Json.
 $pkg = Get-Content (Join-Path $root 'package.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-foreach ($entry in @('bin/', 'scripts/', 'manifest/', 'cordis.patch.yml')) {
+foreach ($entry in @('index.mjs', 'bin/', 'scripts/', 'manifest/', 'cordis.patch.yml')) {
   Check "files[] includes $entry" (@($pkg.files) -contains $entry) ''
 }
+# The market's update path asks whether package.json's main/exports points at a
+# file that exists, and rolls the update back when it does not (dshmarket's
+# hasLoadableEntry). This package declared neither until 2.0.5, so every update of
+# a healthy profile failed with "updated build has no loadable entry". Asserting
+# the pointer resolves keeps that from returning silently.
+Check 'package.json declares main' (-not [string]::IsNullOrWhiteSpace($pkg.main)) ''
+Check 'main resolves to a shipped file' ($pkg.main -and (Test-Path (Join-Path $root $pkg.main))) "main=$($pkg.main)"
 foreach ($script in @('bundle:setup', 'bundle:status', 'bundle:audit', 'bundle:test')) {
   Check "scripts.$script exists" ($pkg.scripts.PSObject.Properties.Name -contains $script) ''
 }

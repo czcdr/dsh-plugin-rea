@@ -262,6 +262,27 @@ macOS/Linux.
 
 ## Updating — three independent things
 
+### Updating from the market
+
+Update it where you installed it. Updating **to 2.0.5 or later** is routine; updating an installed 2.0.1–2.0.4
+*through the in-app market* failed with this, three times on a healthy profile:
+
+> dsh-plugin-rea 更新后缺少入口文件（package.json 的 main/exports 指向的文件不存在），且未能验证恢复原版本文件
+
+That message is not about a broken tarball. On every update the market asks whether the new build's
+`package.json` points at an entry file that exists (`hasLoadableEntry` in `dshmarket`), and rolls the build back
+when the answer is false. A bundle may legitimately own no entry — but only if a package it *mounts* has one, and
+the package this bundle mounts (`@deepseek-ai/dsh-mcp-client`) ships inside the harness build rather than in
+`node_modules`, so every location that test probes comes back empty. The 1.x and 2.0.x manifests also declared
+no `main` at all, so the answer was false even though the profile was working; the rollback was then reported as
+unverifiable for the same reason. Nothing in the profile was actually damaged — the update simply did not apply.
+
+2.0.5 declares `main: ./index.mjs`. That file is a real, deliberately empty Cordis plugin: it registers nothing,
+spawns nothing, touches no state — the working row is still inserted by `cordis.patch.yml` — and it exists so the
+question "can this package load?" has an honest answer, and so `import 'dsh-plugin-rea'` resolves. On an older
+version, update to `>=2.0.5`; if the market refuses before that version exists, install `dsh-plugin-rea@2.0.5`
+(Desktop: through the plugin manager) instead of updating in place.
+
 ### Upgrading from 1.x
 
 Install 2.x, then run provisioning **once** before restarting dsh:

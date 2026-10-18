@@ -2,6 +2,36 @@
 
 本插件遵循语义化版本。版本号变化说明「配置组合」这层的变化，与 REA 自身的版本无关。
 
+## 2.0.5 — 2026-10-18
+
+**市场更新失败已定位并修复：清单里没有 `main`，市场因此在每次更新时判「新构建没有可加载入口」并回滚。**
+
+### 修复
+
+- **应用内市场更新到 2.0.4 失败**：`dshmarket` 的更新路径用 `hasLoadableEntry` 判断新构建能不能加载
+  （实现是 `entryArtifactExists`：读 `main`/`exports`，两者都没有就回落 `index.js`）。本包是纯 bundle
+  （只有 `dsh.bundle.patch`），从未声明 `main`；而它挂载的 `@deepseek-ai/dsh-mcp-client` 属于 harness 自身
+  构建、不在 `node_modules` 里，于是该检查要看的 profile / 包内 / workspace 三个位置全空。结果：2.0.1 → 2.0.4
+  的更新连续三次报「更新后缺少入口文件……且未能验证恢复原版本文件」，而回滚其实成功了 —— 旧版同样没有入口，
+  所以回滚后的复检依然为 false。现已声明 `main: ./index.mjs`，并让该文件进入 `files[]`。
+- **`index.mjs` 是真空插件，不是占位**：导出 `name` 与空 `apply()`，不注册行、不起进程、不写状态；真正起作用的
+  行仍由 `cordis.patch.yml` 插入。若 harness 某天真把它当插件加载，行为仍是「什么都不做」，因此不会造出第二条
+  `serverName: rea`。
+
+### 文档
+
+- 两份 README 新增「在市场里更新 / Updating from the market」小节：说明该报错来自市场侧的入口判定、与 tarball
+  完整性无关、profile 未受损，以及 2.0.5 起的做法。
+
+### 验证
+
+- 用 `dshmarket` 自身的 `hasLoadableEntry` 实测：把本包按 profile 布局模拟安装，修复前 `false`、修复后 `true`；
+  对仓库目录 `entryArtifactExists` 修复后为 `true`。
+- 单测 42 条（新增 2 条：清单声明的入口必须存在且被 `files[]` 收录；入口可 `import`、导出的 `name` 与包名一致、
+  `apply()` 返回 `undefined`）：Windows 39 过 + 3 平台跳过。
+- `verify-branch.ps1` 新增 `main` 存在性与 `files[]` 收录检查；`validate.yml` 的清单检查与 npm 载荷检查加了同一条守卫。
+- `npm pack --dry-run`：20 个文件，含 `index.mjs`。
+
 ## 2.0.4 — 2026-10-17
 
 **两处已核实的缺陷：只读 bundle 目录下 shim 启动即崩；与上游 `rea setup --client dsh` 的同名注册冲突现在会被明确提示。**
