@@ -10,6 +10,14 @@
 > kept on the [`v1` branch](https://github.com/czcdr/dsh-plugin-rea/tree/v1) and on npm as `dsh-plugin-rea@1.0.6`.
 > Full comparison: [Two lines: 1.x and 2.x](#two-lines-1x-and-2x) · upgrading: [Upgrading from 1.x](#upgrading-from-1x).
 
+> **You must run `node scripts/setup.mjs` yourself — once after installing, and once after every plugin
+> upgrade.** Nothing runs it for you: a market install or update replaces the package and stops there.
+> Since **2.0.8** a market upgrade keeps the *row* working (the mirrored launcher re-execs the new one), but it
+> does **not** move the bundle to the new pins — REA and the engines stay at the versions recorded by the last
+> setup run. Skip it on a first install and the row exits `MODULE_NOT_FOUND` with no tools and no message;
+> skip it after an upgrade and you keep running the old REA silently (`check-updates.ps1` reports the drift).
+> The full rule set is under [Updating](#updating--three-independent-things).
+
 Brings the upstream **[REA — Reverse Engineer Anything](https://github.com/morluto/rea)** MCP server into
 **DeepSeek Harness** (dsh), so its tools show up in a session as `mcp__rea__*`.
 
@@ -319,6 +327,9 @@ macOS/Linux.
 > installed *right now*. Installed 2.0.9? setup provisions 6.5.0 even after 2.0.10 exists. The package changes
 > only through the market (or `npm i -g dsh-plugin-rea@<version>` / a `file:` reinstall); running setup more
 > often never substitutes for that.
+>
+> **And nothing runs it for you.** A market install or update replaces the package and stops; the first
+> `setup.mjs` — and one after every upgrade — is yours to run, from the plugin directory.
 >
 > 1. **The row executes a copy of this plugin's launcher.** `<DSH_HOME>/plugins/rea-bundle/bin/rea-shim.mjs` is a
 >    mirror made by setup, and a market upgrade replaces the package without replacing it — so the mirror can keep

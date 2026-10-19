@@ -10,6 +10,12 @@
 > [`v1` 分支](https://github.com/czcdr/dsh-plugin-rea/tree/v1)，npm 上仍是 `dsh-plugin-rea@1.0.6`。
 > 完整对比：[两条线：1.x 与 2.x](#两条线1x-与-2x) · 升级：[从 1.x 升级](#从-1x-升级)。
 
+> **`node scripts/setup.mjs` 要你自己跑 —— 装完跑一次，之后每次升级插件版本再跑一次。** 没有东西会替你跑：
+> 市场里的安装/更新只替换包，然后到此为止。从 **2.0.8** 起，市场升级能保证**那一行**继续可用（镜像启动器会
+> 转发执行新的那份），但它**不会**把 bundle 换到新的钉子 —— REA 与引擎仍是上一次 setup 时记下的版本。
+> 首次安装不跑：行以 `MODULE_NOT_FOUND` 退出，工具消失且没有任何提示；升级后不跑：仍旧跑旧 REA 且没有症状
+>（`check-updates.ps1` 会报出这条漂移）。完整规则见[更新](#更新--三件互相独立的事)。
+
 把上游 **[REA — Reverse Engineer Anything](https://github.com/morluto/rea)** 的 MCP 服务接入
 **DeepSeek Harness**（dsh），让它的工具在会话里以 `mcp__rea__*` 出现。
 
@@ -296,6 +302,9 @@ shim** 的 MCP `initialize` 握手返回 `serverInfo {name: rea, version: 6.7.0}
 > `setup.mjs` 只对齐 **bundle**，不更新**插件包**：它读的是「当前已安装插件」的 manifest。装着 2.0.9 时跑 setup
 > 仍旧供给 6.5.0，哪怕 2.0.10 已经发布。插件包只能从市场（或 `npm i -g dsh-plugin-rea@<版本>` / `file:` 重装）换，
 > **多跑几次 setup 也替代不了那一步**。
+>
+> **而且没有人会替你跑它。** 市场里的安装/更新只替换包，然后到此为止；第一次的 `setup.mjs`，以及之后每次升级后的
+> 那一次，都要你自己从插件目录跑。
 >
 > 1. **行执行的是本插件启动器的「镜像副本」**：`<DSH_HOME>/plugins/rea-bundle/bin/rea-shim.mjs` 由 setup 复制，
 >    市场升级只换包、不换它，所以副本可能一直跑旧代码而**完全没有症状**。从 **2.0.8** 起，副本会与 `mirror.json`
