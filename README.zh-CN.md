@@ -203,6 +203,14 @@ node bin/rea-shim.mjs --shim-print-env   # MCP 子进程将看到的环境变量
 `cordis.patch.yml` 按 id 覆盖即可 —— 那个文件是机器本地的，永不发布。一个 profile 里只允许一行使用
 `serverName: rea`。
 
+覆盖是**整块替换** `config`（不做深合并）：只写 `config: {env: …}` 会把 `command`、`args`、`serverName`
+一起删掉，这一行就起不来了。要么写完整的 config，要么改用 `REA_BUNDLE_LAUNCH=system`（见上），它不需要改 patch。
+
+Ghidra 和 JDK **不是启动时从环境里读的**：`setup.mjs` 把它们的绝对路径记进 `bundle.json`，shim 再从那份
+记录导出 `GHIDRA_INSTALL_DIR` / `JAVA_HOME` —— 所以装在非标准路径也能用，不必动这一行。要采纳现成的安装，
+把 `GHIDRA_INSTALL_DIR` / `JAVA_HOME` 指向它并跑 `node scripts/setup.mjs --reuse`：manifest 里的探针会验证
+候选，不符合就回落到下载，**路径写错会在供给时就报出来**，而不是等到某次工具调用里才失效。
+
 ### 只保留一条 REA 注册
 
 上游 REA 6.5.0 起可以自己注册进 DSH：
@@ -282,6 +290,22 @@ shim** 的 MCP `initialize` 握手返回 `serverInfo {name: rea, version: 6.7.0}
   所以这条不是理论问题。
 
 ## 更新 —— 三件互相独立的事
+
+> **两条长期规则 —— 本版如此，以后每个 2.x 版本都如此。**
+>
+> `setup.mjs` 只对齐 **bundle**，不更新**插件包**：它读的是「当前已安装插件」的 manifest。装着 2.0.9 时跑 setup
+> 仍旧供给 6.5.0，哪怕 2.0.10 已经发布。插件包只能从市场（或 `npm i -g dsh-plugin-rea@<版本>` / `file:` 重装）换，
+> **多跑几次 setup 也替代不了那一步**。
+>
+> 1. **行执行的是本插件启动器的「镜像副本」**：`<DSH_HOME>/plugins/rea-bundle/bin/rea-shim.mjs` 由 setup 复制，
+>    市场升级只换包、不换它，所以副本可能一直跑旧代码而**完全没有症状**。从 **2.0.8** 起，副本会与 `mirror.json`
+>    记录的启动器比对，不同就一跳转发执行插件里的那份（带 `REA_BUNDLE_SHIM_REEXEC` 守卫）。**2.0.0–2.0.7 的镜像
+>    做不到**，所以从它们升级仍需跑一次 `node scripts/setup.mjs`。`--shim-status` 会报 `mirror.stale`，
+>    `check-updates.ps1` 会提示重跑。
+> 2. **镜像的 `scripts/setup.mjs` 同样是副本，而且它自己不会自愈**：从 bundle 根目录跑它，跑的是建 bundle 那一版
+>    的 setup，不是你刚装的这一版。要从**插件目录**跑一次来刷新这份副本。从 **2.0.9** 起，它会像 shim 一样剥掉
+>    `mirror.json` / `bundle.json` 的 UTF-8 BOM —— 带 BOM 的记录以前在 setup 眼里等于「没有记录」，会把上一版
+>    manifest 又镜一遍。
 
 ### 在市场里更新
 

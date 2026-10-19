@@ -2,9 +2,23 @@
 
 本插件遵循语义化版本。版本号变化说明「配置组合」这层的变化，与 REA 自身的版本无关。
 
-## 2.0.10 — 未发布（仓库已更新，未打 tag / 未发 npm）
+## 2.0.10 — 2026-10-19
 
 **上游 REA 钉子从 6.5.0 升到 6.7.0。包、CLI 与 MCP 契约都没变，工具数仍是 207 —— 这是上游的功能与修复升级，不是工具扩容。**
+
+### 修复
+
+- **`check-updates.ps1` 的版本对账是假绿**（本版最重要的「用户能看见」的修复）：此前对所有组件都用
+  「主版本前缀」比对，`"6.5.0".StartsWith("6.")` 为真 —— 插件已钉 6.7.0、bundle 里还是 6.5.0 时，这一行报
+  「与 pin 一致」。**这正好打掉 2.0.10 自己的升级场景**：用户跑完检查也看不到「该重跑 setup」，机器上再没有
+  第二个信号（shim 只比「系统 REA vs 已供给」，不比 pin）。apktool 同理（盘上 3.0.9 对 pin 3.0.3 也假绿）。
+  现在：带点的 pin 一律**精确比对**；只有 pin 本身只有主版本号（`jdk: 21`）才按 `21.` 前缀匹配。
+  `--reuse` 采纳的本机 Node 不再拿「下载版本」精确比对（那会误报），改为对 **engines** 对账：满足则单列一行、
+  不计入「全绿」，不满足则报动作。规则抽到 `scripts/pin-match.ps1`，`verify-branch.ps1` 直接 dot-source 同 7 组
+  用例做回归（含 6.5.0/6.7.0、3.0.9/3.0.3、`21.0.12.1+1`/`21`）。
+- `assets/make-screenshots.ps1` 里硬编码的 `6.5.0`：版本号改为从 `manifest` 的 pins 读取（工具数 207 仍是人工
+  核对常量，注释里写明升 pin 时要一起核）。`screenshot-1.png` 用同一脚本重绘，只有这两行文字变化；
+  `screenshot-2.png` 重绘后逐字节不变，未改动。
 
 ### 变更
 
@@ -22,11 +36,35 @@
 - 文档：两份 README 的 REA 版本与工具数、`docs/bundle-design.md` 的实测环境同步到 6.7.0；README 的钉版本示例
   跟到 `#v2.0.10`。
 
+### 升级
+
+> **两条长期规则 —— 本版如此，以后每个 2.x 版本都如此。**
+>
+> 1. 行执行的是 `<DSH_HOME>/plugins/rea-bundle/bin/rea-shim.mjs`，那是 setup 复制的**副本**：市场升级只换包、
+>    不换它，副本可能一直跑旧代码而**没有症状**。从 **2.0.8** 起副本会与 `mirror.json` 记录的启动器比对，不同就
+>    一跳转发执行插件里的那份（`REA_BUNDLE_SHIM_REEXEC` 守卫）；**2.0.0–2.0.7 做不到**，从它们升级仍需跑一次
+>    `node scripts/setup.mjs`。`--shim-status` 报 `mirror.stale`，`check-updates.ps1` 提示重跑。
+> 2. 镜像的 `scripts/setup.mjs` 也是副本、**不会自愈**：从 bundle 根目录跑的是建 bundle 那一版；要从**插件目录**
+>    跑一次刷新它。从 **2.0.9** 起它会像 shim 一样剥掉 `mirror.json` / `bundle.json` 的 UTF-8 BOM。
+
+- `setup.mjs` **只对齐 bundle，不更新插件包**：它读的是「当前已安装插件」的 manifest，所以装着 2.0.9 时跑 setup
+  仍旧供给 6.5.0，哪怕 2.0.10 已发布。插件包只能从市场（或 `npm i -g dsh-plugin-rea@<版本>` / `file:` 重装）换。
+- 已供给的机器**不会自动换到 6.7.0**：auto-provision 只在「未供给」时触发。重跑一次 `node scripts/setup.mjs`
+  （或只补 REA：`node scripts/setup.mjs --only reaAgents`），探针会拒收盘上的 6.5.0 并重装。
+  修好上面那条对账后，`npm run check-updates` 会直接报
+  `reaAgents 盘上为 6.5.0，manifest 已钉 6.7.0 —— 重跑 setup 对齐`。
+
 ### 验证
 
-- 单测 **71 条**（68 过 + 3 平台跳过）；`verify-branch.ps1` 44 项全绿；`audit-manifest` clean；
-  `host-compat` 10 covered / 5 outside。
-- 未发版：无 tag / 无 Release / npm 仍 **2.0.9**。
+- 单测 **71 条**（68 过 + 3 平台跳过）；`verify-branch.ps1` **53 项**全绿（新增 §5b 的 2 项结构检查 + 7 组
+  pin 用例）；`audit-manifest` clean；`host-compat` 10 covered / 5 outside。
+- 对账修复的实证（不是读代码推断）：临时 bundle 记 6.5.0、manifest 钉 6.7.0 时实跑 `check-updates.ps1`，输出
+  `reaAgents 盘上为 6.5.0，manifest 已钉 6.7.0 —— 重跑 setup 对齐`，且**不再**打印「所有组件与 pin 一致」；
+  `--reuse` 采纳的 Node 24.11.1 单列为「满足 engines」（不并入全绿），20.0.0 则报动作。
+- `npm pack` **22 文件**（新增 `scripts/pin-match.ps1`；`screenshot-1.png` 重绘后 68,067 B）；发行资产名仍是
+  版本无关的 `dsh-plugin-rea.tgz`。
+- 发布：tag `v2.0.10` → GitHub Release（资产 `dsh-plugin-rea.tgz`）→ npm `2.0.10`；插件市场按 npm 包名与
+  `releases/latest/download` 两条路径解析。
 
 ## 2.0.9 — 2026-10-18
 

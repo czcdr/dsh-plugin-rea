@@ -94,6 +94,31 @@ if (bad.length) {
 & node $jsProbe 2>&1 | ForEach-Object { Write-Host "        $_" -ForegroundColor Gray }
 Check 'evaluated literals contain no control characters' ($LASTEXITCODE -eq 0) 'see above'
 
+Write-Host "`n=== 5b. the pin comparison is not a major-prefix match ===" -ForegroundColor Cyan
+# 2.0.10 shipped a false green here: "6.5.0".StartsWith("6.") is true, so a bundle
+# still on 6.5.0 reported "consistent with pin 6.7.0" — and that line is the only
+# signal a user has that a pin bump requires re-running setup. The rule lives in
+# scripts/pin-match.ps1 so it can be checked without the registry/profile sections.
+$pinMatchFile = Join-Path $root 'scripts\pin-match.ps1'
+Check 'scripts/pin-match.ps1 exists' (Test-Path $pinMatchFile) ''
+Check 'check-updates.ps1 uses Test-PinMatch' ((Get-Content (Join-Path $root 'check-updates.ps1') -Raw -Encoding UTF8) -match 'Test-PinMatch') ''
+if (Test-Path $pinMatchFile) {
+  . $pinMatchFile
+  $pinCases = @(
+    @('6.5.0',       '6.7.0',   $false, 'older REA under a newer pin must not be a match'),
+    @('6.7.0',       '6.7.0',   $true,  'exact match'),
+    @('3.0.9',       '3.0.3',   $false, 'apktool above the pin must not be a match'),
+    @('21.0.12.1+1', '21',      $true,  'major-only jdk pin names the family'),
+    @('21',          '21',      $true,  'exact major-only pin'),
+    @('24.11.1',     '24.21.0', $false, 'a dotted node pin is one version'),
+    @('',            '6.7.0',   $false, 'no recorded version is never a match')
+  )
+  foreach ($c in $pinCases) {
+    $got = Test-PinMatch -Installed $c[0] -Pinned $c[1]
+    Check ("pin '{0}' vs '{1}' -> {2}" -f $c[0], $c[1], $c[2]) ($got -eq $c[2]) ("got ${got}: {0}" -f $c[3])
+  }
+}
+
 Write-Host "`n=== 6. package payload lists what the bundle needs ===" -ForegroundColor Cyan
 # -Encoding UTF8 is required: the package description contains CJK text, and
 # PowerShell 5.1 reads a BOM-less file as ANSI, which breaks ConvertFrom-Json.

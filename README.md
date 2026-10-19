@@ -216,6 +216,17 @@ To pin a different launch command on this machine (for example your own globally
 the row from the profile's own `cordis.patch.yml` — that file is machine-local and never published. Only one
 row may use `serverName: rea` in a profile.
 
+A patch replaces the row's `config` **wholesale** — it does not deep-merge — so a partial override such as
+`config: {env: {...}}` also deletes `command`, `args` and `serverName`, and the row stops starting. Supply the
+complete config, or use `REA_BUNDLE_LAUNCH=system` (above), which needs no patch at all.
+
+Ghidra and the JDK are not read from your environment at launch: `setup.mjs` records their absolute paths in
+`bundle.json` and the shim exports `GHIDRA_INSTALL_DIR` / `JAVA_HOME` from that record — which is why a
+non-standard install location works without touching the row. To adopt an existing install, point
+`GHIDRA_INSTALL_DIR` / `JAVA_HOME` at it and run `node scripts/setup.mjs --reuse`: the manifest's probe checks
+the candidate and falls back to a download when it does not match, so a wrong path is reported during setup
+instead of failing later inside a tool call.
+
 ### One REA registration only
 
 Upstream REA 6.5.0 can register itself with DSH:
@@ -301,6 +312,26 @@ macOS/Linux.
   everywhere by default.
 
 ## Updating — three independent things
+
+> **Two standing rules — for this release and for every later 2.x release.**
+>
+> `setup.mjs` reconciles the **bundle**, never the **plugin**: it reads the manifest of the plugin that is
+> installed *right now*. Installed 2.0.9? setup provisions 6.5.0 even after 2.0.10 exists. The package changes
+> only through the market (or `npm i -g dsh-plugin-rea@<version>` / a `file:` reinstall); running setup more
+> often never substitutes for that.
+>
+> 1. **The row executes a copy of this plugin's launcher.** `<DSH_HOME>/plugins/rea-bundle/bin/rea-shim.mjs` is a
+>    mirror made by setup, and a market upgrade replaces the package without replacing it — so the mirror can keep
+>    running old code with **no symptom at all**. Since **2.0.8** the mirror compares itself with the launcher
+>    recorded in `mirror.json` and re-execs the plugin's copy when the two differ (one hop, guarded by
+>    `REA_BUNDLE_SHIM_REEXEC`). A mirror **older than 2.0.8 cannot do this**, so upgrading from **2.0.0–2.0.7**
+>    still needs one `node scripts/setup.mjs`. `--shim-status` reports `mirror.stale`; `check-updates.ps1` says
+>    when to re-run.
+> 2. **The mirrored `scripts/setup.mjs` is a copy too, and it has no self-heal of its own.** Running setup from the
+>    bundle root therefore executes the version from when the bundle was created, not the one you just installed.
+>    Run it once **from the plugin directory** to refresh that copy. Since **2.0.9** the copy strips the UTF-8 BOM
+>    from `mirror.json` / `bundle.json` exactly as the shim does, so a BOM-ed record no longer reads as "no record"
+>    on the setup side (which used to re-mirror the previous manifest).
 
 ### Updating from the market
 

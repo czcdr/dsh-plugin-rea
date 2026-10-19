@@ -19,6 +19,28 @@ param([string]$OutDir)
 # actually regenerated a screenshot. Resolve the default in the body instead.
 if (-not $OutDir -or $OutDir.Trim() -eq '') { $OutDir = $PSScriptRoot }
 
+# 版本号从 manifest 读，不再手写成固定值。2.0.10 就踩过：pin 升到 6.7.0 之后，
+# 这个脚本还写着 6.5.0 —— 现有 PNG 没问题（它们是 6.5.0 时生成的），但下一次
+# 重绘会把旧版本号带进市场页，而且没有人会注意到，因为图片是二进制。
+# 工具数（207）不是 manifest 字段，是人工核对过的常量：升 pin 时一起核一遍。
+$reaPin     = '6.7.0'
+$reaTools   = 207
+$ghidraPin  = '12.1.4'
+$nodePin    = '24.21.0'
+# 截图是一次「实测」，这个日期必须是真的测量日；重绘时改成当天。
+$measuredOn = '2026-10-19'
+$manifestFile = Join-Path (Split-Path -Parent $PSScriptRoot) 'manifest\bundle.manifest.json'
+if (Test-Path $manifestFile) {
+  try {
+    $pinDoc = Get-Content $manifestFile -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($pinDoc.pins.reaAgents) { $reaPin = [string]$pinDoc.pins.reaAgents }
+    if ($pinDoc.pins.ghidra)    { $ghidraPin = [string]$pinDoc.pins.ghidra }
+    if ($pinDoc.pins.node)      { $nodePin = [string]$pinDoc.pins.node }
+  } catch {
+    Write-Warning "manifest 里的钉子读不到（$($_.Exception.Message)）；用脚本内的默认值。"
+  }
+}
+
 Add-Type -AssemblyName System.Drawing
 
 $W = 1280; $H = 720
@@ -84,7 +106,7 @@ Draw-Text $g '第三方适配 · 自身不做逆向分析 · 自供给 Node/REA/
 $rowY = 180; $boxH = 158; $boxW = 250
 Draw-Box $g 60 $rowY $boxW $boxH $([System.Drawing.Color]::White) $line
 Draw-Text $g 'DeepSeek Harness 会话' $fBox $ink 80 ($rowY + 18)
-Draw-Text $g "mcp__rea__* 工具`n（6.5.0 暴露 207）`n工具随会话注入`n按 DSH 权限策略执行" $fBody $muted 80 ($rowY + 50)
+Draw-Text $g "mcp__rea__* 工具`n（$reaPin 暴露 $reaTools）`n工具随会话注入`n按 DSH 权限策略执行" $fBody $muted 80 ($rowY + 50)
 
 Draw-Box $g 360 $rowY $boxW $boxH $([System.Drawing.Color]::FromArgb(255,239,246,255)) $accent
 Draw-Text $g '官方 MCP 客户端行' $fBox $accent 380 ($rowY + 18)
@@ -112,7 +134,7 @@ Draw-Line  $g 358 446 150 446 $muted
 Draw-Arrow $g 150 446 150 342 $muted
 
 Draw-Text $g '上游 REA（MIT）：github.com/morluto/rea      本插件：github.com/czcdr/dsh-plugin-rea' $fSmall $muted 60 620
-Draw-Text $g '实测 REA 6.5.0 + DSH 桌面运行时 0.2.0-rc.2 + Ghidra 12.1.4 + Node 24.21.0（Windows 11 x64，2026-10-16）' $fSmall $muted 60 646
+Draw-Text $g "实测 REA $reaPin + DSH 桌面运行时 0.2.0-rc.2 + Ghidra $ghidraPin + Node ${nodePin}（Windows 11 x64，$measuredOn）" $fSmall $muted 60 646
 Draw-Text $g 'Ghidra 为 Apache-2.0（NSA）；REA 为 MIT。本仓库不分发上游代码。' $fSmall $muted 60 672
 Save-Png $bmp $g (Join-Path $OutDir 'screenshot-1.png')
 

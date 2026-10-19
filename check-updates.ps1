@@ -37,6 +37,21 @@ function Get-NumericVersion([string]$v) {
   try { return [version]$core } catch { return $null }
 }
 
+# 版本比对规则放在独立文件里：这一行是用户唯一能看到的「pin 变了，该重跑 setup」
+# 信号，2.0.10 之前它假绿过（6.5.0 被判成与 pin 6.7.0 一致），所以需要一条不依赖
+# 网络、不依赖 profile 的回归测试 —— verify-branch.ps1 直接 dot-source 这个文件。
+$pinMatchFile = Join-Path $PSScriptRoot 'scripts\pin-match.ps1'
+if (Test-Path $pinMatchFile) {
+  . $pinMatchFile
+} else {
+  # 目录不完整（旧拷贝、手工搬走了一个文件）：退化为精确比对。
+  # 宁可多报一次「重跑 setup」，也不能再假绿。
+  function Test-PinMatch {
+    param([string]$Installed, [string]$Pinned)
+    return [string]::Equals(([string]$Installed).Trim(), ([string]$Pinned).Trim(), [System.StringComparison]::Ordinal)
+  }
+}
+
 # 判断 Node 版本是否满足 engines 字符串（支持 ^X.Y.Z / ~X.Y.Z / >=X.Y.Z，用 || 分隔）
 # 参数收 string 不收 [version]：类型约束在函数体之前生效，调用方一旦传入
 # 'abc' / '' / 'v24.21.0' 这类值就会抛 ParameterBindingArgumentTransformationException。
@@ -322,6 +337,8 @@ if (-not (Test-Path $manifestPath)) {
       $drift = 0
       $compared = 0
       $unrecorded = 0
+      # 采纳的本机运行时（reused）不按 pin 精确比对，但也不能算进「全绿」。
+      $adopted = 0
       foreach ($name in $manifest.pins.PSObject.Properties.Name) {
         if ($name -eq 'nodeEngines') { continue }
         $pinned = [string]$manifest.pins.$name
@@ -337,12 +354,37 @@ if (-not (Test-Path $manifestPath)) {
           continue
         }
         $compared++
-        # Node 的 pin 是引擎范围，不是版本号；其它组件比前缀即可
-        $same = $installed.Equals($pinned) -or $installed.StartsWith(($pinned -split '\.')[0] + '.')
-        if ($same) { Info "  $name = $installed（pin $pinned）" }
+        $component = $null
+        if ($state.components -and ($state.components.PSObject.Properties.Name -contains $name)) {
+          $component = $state.components.$name
+        }
+        # 采纳的本机 Node（setup --reuse）不是 bundle 安装的版本，拿它跟「下载版本」
+        # 精确比对必然误报；它要满足的是 engines。采纳时 setup 跑过同一份探针，这里
+        # 再用同一个 Test-NodeEngines 对一次账，而不是把它当成「与 pin 一致」。
+        if ($name -eq 'node' -and $component -and $component.reused -eq $true) {
+          $engines = [string]$manifest.pins.nodeEngines
+          $enginesOk = Test-NodeEngines $installed $engines
+          if ($enginesOk -eq $true) {
+            Info "  node = $installed（采纳本机运行时；pin $pinned 指下载版本，满足 engines）"
+            $adopted++
+          } elseif ($enginesOk -eq $false) {
+            Warn "node 盘上为 $installed（采纳的本机运行时），不满足 REA engines $engines —— 换一个 Node 或重跑 setup"
+            $drift++
+          } else {
+            Warn "node 盘上为 $installed，但 engines 无法解析（$engines）—— 未比对"
+            $unrecorded++
+          }
+          continue
+        }
+        # 2.0.10 修掉的假绿：此前对所有组件都比「主版本前缀」，
+        # "6.5.0".StartsWith("6.") 为真 → bundle 还在 6.5.0 时报「与 pin 6.7.0 一致」，
+        # 而这行正是 pin 升级后唯一面向用户的「该重跑 setup」信号。apktool 同理
+        # （3.0.9 对 pin 3.0.3 也假绿）。主版本前缀只对 pin 本身只有主版本号时成立（jdk 21）。
+        if (Test-PinMatch -Installed $installed -Pinned $pinned) { Info "  $name = $installed（pin $pinned）" }
         else { Warn "$name 盘上为 $installed，manifest 已钉 $pinned —— 重跑 setup 对齐"; $drift++ }
       }
-      if ($drift -eq 0 -and $unrecorded -eq 0) { Ok '所有组件与 manifest 的 pin 一致' }
+      if ($drift -eq 0 -and $unrecorded -eq 0 -and $adopted -eq 0) { Ok '所有组件与 manifest 的 pin 一致' }
+      elseif ($drift -eq 0 -and $unrecorded -eq 0) { Warn "共比对 $compared 项：其中 $adopted 项为采纳的本机运行时（按 engines 放行，见上），其余与 pin 一致" }
       elseif ($drift -eq 0) { Warn "已比对的 $compared 项与 pin 一致，但 $unrecorded 项没有记录版本（见上）—— 不是全绿" }
       if ($state.unverifiedChecksums -and @($state.unverifiedChecksums).Count -gt 0) {
         Warn ("TOFU（无厂商校验和，取首次实测值）: " + (@($state.unverifiedChecksums) -join ', '))
