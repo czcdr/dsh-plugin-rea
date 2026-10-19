@@ -94,7 +94,7 @@ profile 安装插件：
 ```
 dsh plugin --profile <profile> add dsh-plugin-rea
 # 或钉住这个版本，而不是跟着 npm latest 走：
-dsh plugin --profile <profile> add github:czcdr/dsh-plugin-rea#v2.0.9
+dsh plugin --profile <profile> add github:czcdr/dsh-plugin-rea#v2.0.10
 ```
 
 > **Electron 宿主（DeepSeek Harness 桌面版）的 profile 由应用独占。** 那种机器上 `dsh plugin --profile desktop …`
@@ -139,7 +139,7 @@ node scripts/setup.mjs --reuse      # 或先 --dry-run 看计划
 | 机器上的情况 | 这一行跑什么 |
 |---|---|
 | `rea` 在 PATH 上，且不比供给的版本旧 | 你自己那份（`rea mcp`），用你的 Node 和你的 PATH |
-| `rea` 在 PATH 上，但比供给的版本旧 | 供给出来的 bundle —— 旧的全局 CLI 会把工具数往回退（6.4.0 是 170 个，6.5.0 是 207 个） |
+| `rea` 在 PATH 上，但比供给的版本旧 | 供给出来的 bundle —— 旧的全局 CLI 会把工具数往回退（6.4.0 是 170 个，6.7.0 是 207 个） |
 | PATH 上没有 `rea` | 供给出来的 bundle，首次使用时自行供给 |
 
 - `REA_BUNDLE_LAUNCH=auto|system|bundle` 覆盖这个判断（默认 `auto`）；`REA_BUNDLE_SYSTEM_REA=<path>` 用来点名一个
@@ -233,11 +233,11 @@ shim 启动**。
 
 ## 实测环境
 
-作者机器，2026-10-13 / 14 / 16：
+作者机器，2026-10-13 / 14 / 16 / 19：
 
 | 组件 | 版本 |
 |---|---|
-| REA（`rea-agents`） | **6.5.0**（207 个工具） |
+| REA（`rea-agents`） | **6.7.0**（207 个工具） |
 | DeepSeek Harness | desktop runtime **0.2.0-rc.2**，内含 dsh CLI 0.1.7-rc.2 |
 | `@deepseek-ai/dsh-mcp-client`（行 provider） | 随 harness 打包 |
 | Ghidra | 12.1.4 |
@@ -246,7 +246,7 @@ shim 启动**。
 | 宿主 | Windows 11 x64（build 26200） |
 
 实测跑过：一次干净的 `setup.mjs --reuse` 走到 `setup complete`；一次**不经 PATH 上的 `rea`、完全经由
-shim** 的 MCP `initialize` 握手返回 `serverInfo {name: rea, version: 6.5.0}`；以及**真实桌面宿主下的完整链路** ——
+shim** 的 MCP `initialize` 握手返回 `serverInfo {name: rea, version: 6.7.0}`；以及**真实桌面宿主下的完整链路** ——
 宿主自己的 Electron 二进制启动 `<DSH_HOME>/plugins/rea-bundle/bin/rea-shim.mjs mcp`，shim 拉起 **bundle 内置**
 的 REA，随后一次真实工具调用报出 `path_source: environment`，而那个路径只有该机的 `bundle.json` 知道。
 
@@ -255,7 +255,7 @@ shim** 的 MCP `initialize` 握手返回 `serverInfo {name: rea, version: 6.5.0}
 
 ## 边界与注意事项
 
-- REA 在 6.5.0 有 207 个工具，每个会话的工具列表都会变长。
+- REA 在 6.7.0 有 207 个工具，每个会话的工具列表都会变长。
 - 校验和对得起良心：厂商发布了的就固定并验证；没发布的（jadx-headless-mcp、apktool 包装脚本、
   Android platform-tools、滚动的 `latest` 地址）则**实测一次并记录**，之后若漂移是**报告**而不是默默接受。
   `bundle.json` 的 `unverifiedChecksums` 会列出处于该状态的组件。

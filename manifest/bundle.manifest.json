@@ -19,7 +19,7 @@
   "manifestVersion": 1,
   "generatedFor": "dsh-plugin-rea one-plugin bundle",
   "pins": {
-    "reaAgents": "6.5.0",
+    "reaAgents": "6.7.0",
     "ghidra": "12.1.4",
     "jdk": "21",
     "apktool": "3.0.3",
@@ -377,14 +377,14 @@
       "unpack": { "moveTo": "rea-agents" },
       "probe": {
         "argv": ["{node}", "{vendor}/node_modules/rea-agents/scripts/rea.mjs", "--version"],
-        "expect": { "regex": "^6\\.5\\.0(\\s|$)" }
+        "expect": { "regex": "^6\\.7\\.0(\\s|$)" }
       },
       "sources": {
         "npm": {
-          "version": "6.5.0",
+          "version": "6.7.0",
           "registry": "https://registry.npmjs.org/rea-agents",
-          "integrity": "npm's own dist.integrity is the authoritative check for this tarball: the registry tarball ships NO node_modules (verified: 1650 entries in 6.5.0, 0 under node_modules), so setup resolves the dependency closure with `npm install --ignore-scripts` instead of unpacking a tarball.",
-          "note": "`just unpacking the published tarball cannot work` is a verified fact, not a caution: the CLI would fail with ERR_MODULE_NOT_FOUND on zod. 6.5.0 is the same engines/bin contract as 6.4.0 (^22.19.0 || ^24.11.0 || >=26.0.0, scripts/rea.mjs) and adds 37 MCP tools (170 -> 207 by rea doctor --json on 2026-10-16; the upstream contract files count 206) plus an optional frida dependency; --ignore-scripts means its install script never runs."
+          "integrity": "npm's own dist.integrity is the authoritative check for this tarball: the registry tarball ships NO node_modules (verified: 1775 entries in 6.7.0, 0 under node_modules), so setup resolves the dependency closure with `npm install --ignore-scripts` instead of unpacking a tarball.",
+          "note": "`just unpacking the published tarball cannot work` is a verified fact, not a caution: the CLI would fail with ERR_MODULE_NOT_FOUND on zod. 6.7.0 keeps the 6.5.0 engines/bin contract (^22.19.0 || ^24.11.0 || >=26.0.0, scripts/rea.mjs) and the same optional frida dependency (17.23.2). It is still 207 MCP tools: the count did not move from 6.5.0 (rea doctor --json and an MCP tools/list over stdio, both measured 2026-10-19), so this pin is an upstream feature and fix upgrade, not a tool expansion. npm never published 6.6.0 — that tag exists on GitHub only, and 6.7.0 is npm latest."
         }
       }
     }

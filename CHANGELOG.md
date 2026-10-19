@@ -2,6 +2,32 @@
 
 本插件遵循语义化版本。版本号变化说明「配置组合」这层的变化，与 REA 自身的版本无关。
 
+## 2.0.10 — 未发布（仓库已更新，未打 tag / 未发 npm）
+
+**上游 REA 钉子从 6.5.0 升到 6.7.0。包、CLI 与 MCP 契约都没变，工具数仍是 207 —— 这是上游的功能与修复升级，不是工具扩容。**
+
+### 变更
+
+- `pins.reaAgents` 与 `components.reaAgents.sources.npm.version` → **6.7.0**（npm `latest`；6.6.0 只有 GitHub tag，
+  npm 从未发布）。探针正则改为 `^6\.7\.0(\s|$)`，audit 的「不能把下一版当成这一版放行」检查继续覆盖。
+- 契约复核（实测，不是推断）：`engines.node` 仍 `^22.19.0 || ^24.11.0 || >=26.0.0`；`bin` 仍 `scripts/rea.mjs`；
+  `optionalDependencies.frida` 仍 17.23.2；tarball 仍不带 `node_modules`（6.7.0：1775 条、0 条 `node_modules`），
+  所以供给路径仍是 `npm install --ignore-scripts`，不改回解包。
+- 真机复核：`rea --version` = 6.7.0；MCP `initialize` 返回 `serverInfo {name: rea, version: 6.7.0}`
+  （protocol `2024-11-05`）；`tools/list` = **207**，与 `rea doctor --json` 的 `catalog.counts.mcp_tools` 一致。
+- 上游 6.6.0 + 6.7.0 的变化（与插件代码无关，记录以便对照）：Kuna 作为调用方自备的静态分析 provider、
+  JavaScript facts 视图、APK 多 locale 表、Windows ARM PE（ARMNT/Thumb-2、ARM64）与显式 raw m68k、JADX 操作超时，
+  以及 6.7.0 的客户端配置「重复成员」语义修复。**`rea doctor` 因此多一项 `kuna-installation`**，与 Hopper / IDA
+  同属「本机自备」类检查，供给不碰，`healthy=false` 依旧不算失败。
+- 文档：两份 README 的 REA 版本与工具数、`docs/bundle-design.md` 的实测环境同步到 6.7.0；README 的钉版本示例
+  跟到 `#v2.0.10`。
+
+### 验证
+
+- 单测 **71 条**（68 过 + 3 平台跳过）；`verify-branch.ps1` 44 项全绿；`audit-manifest` clean；
+  `host-compat` 10 covered / 5 outside。
+- 未发版：无 tag / 无 Release / npm 仍 **2.0.9**。
+
 ## 2.0.9 — 2026-10-18
 
 **2.0.8 的两处发布前问题（假回退、乱码）与若干文档缺口；不改正常路径，只让失败路径说真话。**

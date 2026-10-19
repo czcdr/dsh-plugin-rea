@@ -100,7 +100,7 @@ releases, checksum-verified). Then install the plugin for your profile:
 ```
 dsh plugin --profile <profile> add dsh-plugin-rea
 # or pin this release instead of tracking npm latest:
-dsh plugin --profile <profile> add github:czcdr/dsh-plugin-rea#v2.0.9
+dsh plugin --profile <profile> add github:czcdr/dsh-plugin-rea#v2.0.10
 ```
 
 > **On an Electron host (the DeepSeek Harness desktop app) the profile is owned by the application.**
@@ -150,7 +150,7 @@ runs **that**, exactly as the 1.x line did, and nothing is provisioned:
 | What the machine has | What the row runs |
 |---|---|
 | `rea` on PATH, at least as new as the provisioned build | your REA (`rea mcp`), with your Node and your PATH |
-| `rea` on PATH but older than the provisioned build | the provisioned bundle — a stale global CLI would take the tool count backwards (6.4.0 ships 170 tools, 6.5.0 ships 207) |
+| `rea` on PATH but older than the provisioned build | the provisioned bundle — a stale global CLI would take the tool count backwards (6.4.0 ships 170 tools, 6.7.0 ships 207) |
 | no `rea` on PATH | the provisioned bundle, provisioning itself on first use |
 
 - `REA_BUNDLE_LAUNCH=auto|system|bundle` overrides the decision (`auto` is the default); `REA_BUNDLE_SYSTEM_REA=<path>`
@@ -248,11 +248,11 @@ exact shim launch the MCP row will use.
 
 ## Verified against
 
-Author's machine, 2026-10-13 / 14 / 16:
+Author's machine, 2026-10-13 / 14 / 16 / 19:
 
 | Component | Version |
 |---|---|
-| REA (`rea-agents`) | **6.5.0** (207 tools) |
+| REA (`rea-agents`) | **6.7.0** (207 tools) |
 | DeepSeek Harness | desktop runtime **0.2.0-rc.2**, with its bundled dsh CLI 0.1.7-rc.2 |
 | `@deepseek-ai/dsh-mcp-client` (row provider) | bundled by the harness |
 | Ghidra | 12.1.4 |
@@ -261,7 +261,7 @@ Author's machine, 2026-10-13 / 14 / 16:
 | Host | Windows 11 x64 (build 26200) |
 
 Exercised live: a clean `setup.mjs --reuse` run reached `setup complete`; an MCP `initialize` handshake
-**through the shim with no `rea` on PATH** answered `serverInfo {name: rea, version: 6.5.0}`; and the whole
+**through the shim with no `rea` on PATH** answered `serverInfo {name: rea, version: 6.7.0}`; and the whole
 chain ran under the real desktop host — its own Electron binary launched
 `<DSH_HOME>/plugins/rea-bundle/bin/rea-shim.mjs mcp`, the shim started the **vendored** REA, and a live tool
 call reported `path_source: environment` for a path only that machine's `bundle.json` knows.
@@ -272,7 +272,7 @@ macOS/Linux.
 
 ## Scope and caveats
 
-- REA exposes 207 tools at 6.5.0, so every session's tool list grows.
+- REA exposes 207 tools at 6.7.0, so every session's tool list grows.
 - Provisioning is honest about checksums: where a vendor publishes one it is pinned and verified; where none
   exists (jadx-headless-mcp, the apktool wrapper, Android platform-tools, the rolling "latest" URLs) the
   hash is **measured once and recorded**, and later drift is reported rather than silently accepted.

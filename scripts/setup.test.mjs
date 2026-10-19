@@ -488,7 +488,10 @@ function testComponent(url, payload, extra = {}) {
 }
 
 /** A stub vendored CLI, so the probe/shim stages have something to run. */
-function addReaStub(bundleRoot, version = "6.5.0") {
+// The version follows the manifest pin: a stub that hard-codes it starts failing
+// every time the pin moves, for a reason that has nothing to do with the test.
+const REA_PIN = JSON.parse(readFileSync(MANIFEST_SOURCE, "utf8")).pins.reaAgents;
+function addReaStub(bundleRoot, version = REA_PIN) {
   const dir = path.join(bundleRoot, "vendor", "node_modules", "rea-agents", "scripts");
   mkdirSync(dir, { recursive: true });
   const identity = JSON.stringify({ cli_package_version: version, catalog: { counts: { mcp_tools: 206 } } });
