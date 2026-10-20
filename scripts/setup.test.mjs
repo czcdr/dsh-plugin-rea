@@ -957,6 +957,25 @@ test("a second REA registration is reported instead of silently duplicated", () 
       env: { ...process.env, DSH_HOME: home, REA_BUNDLE_ROOT: bundle, REA_BUNDLE_LAUNCH: "bundle" },
     });
     assert.equal(JSON.parse(status.stdout).duplicateRegistration.id, "rea-mcp");
+
+    // The row upstream writes by hand often carries a trailing comment, and YAML
+    // says `rea # note` is still the value `rea`. Missing that made the diagnosis
+    // silent for exactly the file an operator had just edited.
+    const commented = path.join(root, "commented-home");
+    mkdirSync(commented, { recursive: true });
+    writeFileSync(
+      path.join(commented, "cordis.patch.yml"),
+      ["- insert:", "    - id: rea-mcp  # written by upstream", "      name: '@deepseek-ai/dsh-mcp-client'", "      config:", "        serverName: 'rea' # same server", ""].join("\n"),
+    );
+    const commentedStatus = spawnSync(process.execPath, [path.join(bundle, "bin", "rea-shim.mjs"), "--shim-status"], {
+      encoding: "utf8",
+      env: { ...process.env, DSH_HOME: commented, REA_BUNDLE_ROOT: bundle, REA_BUNDLE_LAUNCH: "bundle" },
+    });
+    assert.equal(
+      JSON.parse(commentedStatus.stdout).duplicateRegistration.id,
+      "rea-mcp",
+      "a trailing comment must not hide the duplicate row",
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -1888,6 +1907,60 @@ test("a BOM-ed bundle.json is read instead of treated as unprovisioned", () => {
     const run = spawnSync(process.execPath, args, { encoding: "utf8", timeout: 120000 });
     assert.equal(run.status, 0, run.stderr);
     assert.match(run.stdout, /already provisioned \(v-bom-test\)/, run.stdout);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+/* ------------------------------------------ records written by `Out-File` (UTF-16) */
+
+// Windows PowerShell 5.1 writes UTF-16 LE for `> file` and `Out-File`, which is
+// how a hand-edited record usually gets produced. Before this, every such record
+// read as "no record" in BOTH programs — the same silent downgrade the UTF-8 BOM
+// fix addressed, one encoding further out.
+
+function utf16le(text) {
+  return Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(text, "utf16le")]);
+}
+
+test("a UTF-16 bundle.json is read by setup instead of treated as unprovisioned", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "rea-utf16-bundle-"));
+  try {
+    const checkout = bomFixtureCheckout(root);
+    const bundle = path.join(root, "bundle");
+    mkdirSync(bundle, { recursive: true });
+    const args = [path.join(checkout, "scripts", "setup.mjs"), "--dry-run", "--only", "node", "--root", bundle];
+
+    // Control: with no record the component is planned, so the assertion below
+    // cannot pass for a reason unrelated to decoding the file.
+    const fresh = spawnSync(process.execPath, args, { encoding: "utf8", timeout: 120000 });
+    assert.equal(fresh.status, 0, fresh.stderr);
+    assert.match(fresh.stdout, /\[plan\] node/);
+
+    const json = JSON.stringify({ schema: 1, components: { node: { path: process.execPath, version: "v-utf16" } } }, null, 2);
+    writeFileSync(path.join(bundle, "bundle.json"), utf16le(json));
+    const run = spawnSync(process.execPath, args, { encoding: "utf8", timeout: 120000 });
+    assert.equal(run.status, 0, run.stderr);
+    assert.match(run.stdout, /already provisioned \(v-utf16\)/, run.stdout);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a UTF-16 bundle.json is read by the shim as provisioned", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "rea-utf16-shim-"));
+  try {
+    const bundle = makeBundleTree(root, { marker: path.join(root, "setup-ran"), lock: undefined });
+    addReaStub(bundle);
+    const reaEntry = path.join(bundle, "vendor", "node_modules", "rea-agents", "scripts", "rea.mjs");
+    const json = JSON.stringify({ schema: 1, paths: { node: process.execPath, reaEntry }, versions: { reaAgents: REA_PIN } }, null, 2);
+    writeFileSync(path.join(bundle, "bundle.json"), utf16le(json));
+
+    const run = runShim(bundle, ["--shim-status"], { REA_BUNDLE_AUTO_PROVISION: "0" });
+    const report = JSON.parse(run.stdout);
+    assert.equal(report.provisioned, true, run.stderr);
+    assert.equal(report.rea.ok, true, JSON.stringify(report.rea));
+    assert.equal(existsSync(path.join(root, "setup-ran")), false, "a readable record must not start a run");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

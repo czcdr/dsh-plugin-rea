@@ -100,7 +100,7 @@ profile 安装插件：
 ```
 dsh plugin --profile <profile> add dsh-plugin-rea
 # 或钉住这个版本，而不是跟着 npm latest 走：
-dsh plugin --profile <profile> add github:czcdr/dsh-plugin-rea#v2.0.10
+dsh plugin --profile <profile> add github:czcdr/dsh-plugin-rea#v2.0.11
 ```
 
 > **Electron 宿主（DeepSeek Harness 桌面版）的 profile 由应用独占。** 那种机器上 `dsh plugin --profile desktop …`
@@ -300,7 +300,7 @@ shim** 的 MCP `initialize` 握手返回 `serverInfo {name: rea, version: 6.7.0}
 > **两条长期规则 —— 本版如此，以后每个 2.x 版本都如此。**
 >
 > `setup.mjs` 只对齐 **bundle**，不更新**插件包**：它读的是「当前已安装插件」的 manifest。装着 2.0.9 时跑 setup
-> 仍旧供给 6.5.0，哪怕 2.0.10 已经发布。插件包只能从市场（或 `npm i -g dsh-plugin-rea@<版本>` / `file:` 重装）换，
+> 仍旧供给 6.5.0，哪怕已经有更新的一版发布。插件包只能从市场（或 `npm i -g dsh-plugin-rea@<版本>` / `file:` 重装）换，
 > **多跑几次 setup 也替代不了那一步**。
 >
 > **而且没有人会替你跑它。** 市场里的安装/更新只替换包，然后到此为止；第一次的 `setup.mjs`，以及之后每次升级后的

@@ -108,7 +108,7 @@ releases, checksum-verified). Then install the plugin for your profile:
 ```
 dsh plugin --profile <profile> add dsh-plugin-rea
 # or pin this release instead of tracking npm latest:
-dsh plugin --profile <profile> add github:czcdr/dsh-plugin-rea#v2.0.10
+dsh plugin --profile <profile> add github:czcdr/dsh-plugin-rea#v2.0.11
 ```
 
 > **On an Electron host (the DeepSeek Harness desktop app) the profile is owned by the application.**
@@ -324,7 +324,7 @@ macOS/Linux.
 > **Two standing rules — for this release and for every later 2.x release.**
 >
 > `setup.mjs` reconciles the **bundle**, never the **plugin**: it reads the manifest of the plugin that is
-> installed *right now*. Installed 2.0.9? setup provisions 6.5.0 even after 2.0.10 exists. The package changes
+> installed *right now*. Installed 2.0.9? setup provisions 6.5.0 even after a newer release exists. The package changes
 > only through the market (or `npm i -g dsh-plugin-rea@<version>` / a `file:` reinstall); running setup more
 > often never substitutes for that.
 >

@@ -966,7 +966,21 @@ function reuseExisting(name, root) {
  * PowerShell's BOM is exactly the case that produced this).
  */
 function readJson(file) {
-  return JSON.parse(readFileSync(file, "utf8").replace(/^\uFEFF/, ""));
+  const bytes = readFileSync(file);
+  // The same three shapes `bin/rea-shim.mjs` decodes: UTF-8 (with or without the
+  // BOM a Windows editor writes) and UTF-16 in either byte order. PowerShell 5.1
+  // writes UTF-16 by default, so a record produced that way used to read as "no
+  // record" on this side too. The two readers must agree, or one file means two
+  // different things depending on which program opened it.
+  if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) {
+    return JSON.parse(bytes.subarray(2).toString("utf16le"));
+  }
+  if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) {
+    const body = Buffer.from(bytes.subarray(2));
+    body.swap16();
+    return JSON.parse(body.toString("utf16le"));
+  }
+  return JSON.parse(bytes.toString("utf8").replace(/^\uFEFF/, ""));
 }
 
 /**

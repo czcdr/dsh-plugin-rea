@@ -16,7 +16,7 @@
  */
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -36,7 +36,21 @@ const PLUGIN_ROOT = path.resolve(HERE, "..");
  * exactly that way.
  */
 function readJson(file) {
-  return JSON.parse(readFileSync(file, "utf8").replace(/^\uFEFF/, ""));
+  const bytes = readFileSync(file);
+  // UTF-16 is not hypothetical: Windows PowerShell 5.1 writes it by default
+  // (`>` and `Out-File`), so a record a human produced that way used to read as
+  // "no record" — the same silent downgrade the UTF-8 BOM fix addressed. Both
+  // byte orders are handled; `scripts/setup.mjs` decodes exactly these shapes,
+  // because two readers that disagree make one file mean two different things.
+  if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) {
+    return JSON.parse(bytes.subarray(2).toString("utf16le"));
+  }
+  if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) {
+    const body = Buffer.from(bytes.subarray(2));
+    body.swap16();
+    return JSON.parse(body.toString("utf16le"));
+  }
+  return JSON.parse(bytes.toString("utf8").replace(/^\uFEFF/, ""));
 }
 
 /** DSH home, by the same rule setup.mjs and the published patch use. */
@@ -164,7 +178,17 @@ function foreignReaRegistration(root) {
   } catch {
     return null;
   }
-  const unquote = (value) => value.replace(/^(['"])(.*)\1$/, "$2").trim();
+  const unquote = (value) => {
+    const text = value.trim();
+    // A quoted scalar ends at its own closing quote; everything after it is YAML
+    // surface, not part of the value.
+    const quoted = /^(['"])(.*?)\1/.exec(text);
+    if (quoted) return quoted[2].trim();
+    // A trailing comment needs whitespace before `#` (YAML), so `rea#1` is the
+    // value while `rea # upstream` is not. Without this, the duplicate-row
+    // diagnosis missed the exact row upstream writes by hand.
+    return text.replace(/\s+#.*$/, "").trim();
+  };
   // A row starts at `- id:`; the block runs to the next row, so a serverName can
   // never be attributed to a row that does not contain it.
   for (const block of text.split(/\r?\n(?=\s*-\s+id:\s*)/)) {
@@ -280,26 +304,61 @@ function maybeAutoProvision(root) {
     /* a read-only bundle root must never break the harness */
     return { started: false, reason: "unwritable" };
   }
+  let child;
   try {
-    const child = spawn(process.execPath, [setupScript, "--root", root], {
+    child = spawn(process.execPath, [setupScript, "--root", root], {
       detached: true,
       stdio: "ignore",
       windowsHide: true,
     });
-    child.unref();
-    // Hand the lock to the detached downloader, so a later start that finds this
-    // row dead still sees the run that is actually doing the work as alive.
-    if (Number.isInteger(child.pid)) {
-      try {
-        writeFileSync(lock, JSON.stringify({ state: "running", pid: child.pid, at: Date.now(), supervisor: process.pid }));
-      } catch {
-        /* the lock is advisory: the row keeps working without it */
-      }
-    }
-    return { started: true, reason: "started", logPath };
   } catch {
+    // The lock created a few lines up is ours. Leaving it as `running` with this
+    // pid is a ghost a later start cannot tell from a real run — and if the pid is
+    // reused inside the freshness window, provisioning stops for six hours.
+    try {
+      rmSync(lock, { force: true });
+    } catch {
+      /* advisory */
+    }
     return { started: false, reason: "spawn-failed", logPath };
   }
+  // A detached child that fails asynchronously (ENOENT, EACCES, ENOMEM) emits
+  // 'error'; an EventEmitter with no listener throws, so the shim died with an
+  // uncaught exception while the lock still named a live pid. Record the failure
+  // instead: the next start then says "the last attempt failed" instead of
+  // waiting out the window as "in flight".
+  child.on("error", (error) => {
+    try {
+      writeFileSync(
+        lock,
+        JSON.stringify({
+          state: "failed",
+          pid: Number.isInteger(child.pid) ? child.pid : process.pid,
+          at: Date.now(),
+          exit: null,
+          error: String(error?.code ?? error),
+        }) + "\n",
+      );
+    } catch {
+      /* the lock is advisory: the row keeps working without it */
+    }
+    try {
+      appendFileSync(logPath, `rea-shim: provisioning could not be started: ${String(error?.message ?? error)}\n`);
+    } catch {
+      /* logging must never be fatal */
+    }
+  });
+  child.unref();
+  // Hand the lock to the detached downloader, so a later start that finds this
+  // row dead still sees the run that is actually doing the work as alive.
+  if (Number.isInteger(child.pid)) {
+    try {
+      writeFileSync(lock, JSON.stringify({ state: "running", pid: child.pid, at: Date.now(), supervisor: process.pid }));
+    } catch {
+      /* the lock is advisory: the row keeps working without it */
+    }
+  }
+  return { started: true, reason: "started", logPath };
 }
 
 function fail(message, detail) {
@@ -485,10 +544,18 @@ function systemReaNames(platform = process.platform) {
  */
 function systemReaCandidates({ env = process.env, platform = process.platform } = {}) {
   const candidates = [];
+  // The separator and the join follow the `platform` being RESOLVED, not the one
+  // this process happens to run on. The comment below always claimed the tests
+  // could exercise both shapes on one machine; with `path.delimiter` that was
+  // false — a POSIX host split a Windows PATH (`;`) on `:`, produced drive-letter
+  // fragments, and every candidate pointed at nothing. Production is unaffected
+  // (the two agree there), which is exactly why the seam had to be real.
+  const api = platform === "win32" ? path.win32 : path.posix;
+  const delimiter = platform === "win32" ? ";" : ":";
   const explicit = (env.REA_BUNDLE_SYSTEM_REA ?? "").trim();
-  if (explicit !== "") candidates.push(path.resolve(explicit));
+  if (explicit !== "") candidates.push(api.resolve(explicit));
   const searchPath = env.PATH ?? env.Path ?? "";
-  for (const raw of searchPath.split(path.delimiter)) {
+  for (const raw of searchPath.split(delimiter)) {
     // A quoted PATH entry (`PATH="C:\Program Files\v66";…`) is legal in Windows
     // environments and `path.join` would treat the quotes as part of the name, so
     // the install would be invisible. A relative entry is skipped rather than
@@ -496,8 +563,8 @@ function systemReaCandidates({ env = process.env, platform = process.platform } 
     // a candidate found that way would be launched by a path that means something
     // else to whoever reads the status report.
     const dir = raw.trim().replace(/^"(.*)"$/, "$1");
-    if (dir === "" || !path.isAbsolute(dir)) continue;
-    for (const name of systemReaNames(platform)) candidates.push(path.join(dir, name));
+    if (dir === "" || !api.isAbsolute(dir)) continue;
+    for (const name of systemReaNames(platform)) candidates.push(api.join(dir, name));
   }
   const seen = new Set();
   return candidates.filter((candidate) => {
@@ -635,8 +702,22 @@ function probeRea(file, { platform = process.platform, timeout = PROBE_TIMEOUT_M
       killTree(child.pid, platform);
       finish({ ok: false, reason: "timeout" });
     }, timeout);
-    child.stdout.on("data", (chunk) => { output += String(chunk); });
-    child.stderr.on("data", (chunk) => { output += String(chunk); });
+    // `--version` prints one line. A damaged or hostile candidate on PATH can
+    // print without end for the whole timeout, so the accumulator is capped and
+    // the tree is killed once it trips: an unbounded string here is a memory
+    // lever a stranger controls.
+    const OUTPUT_LIMIT = 64 * 1024;
+    const collect = (chunk) => {
+      if (settled || output.length >= OUTPUT_LIMIT) return;
+      output += String(chunk);
+      if (output.length > OUTPUT_LIMIT) {
+        output = output.slice(0, OUTPUT_LIMIT);
+        killTree(child.pid, platform);
+        finish({ ok: false, reason: "output exceeded 64 KiB" });
+      }
+    };
+    child.stdout.on("data", collect);
+    child.stderr.on("data", collect);
     child.on("error", () => finish({ ok: false, reason: "spawn-failed" }));
     child.on("close", (code) => {
       if (code !== 0) {

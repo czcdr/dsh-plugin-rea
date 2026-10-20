@@ -2,6 +2,52 @@
 
 本插件遵循语义化版本。版本号变化说明「配置组合」这层的变化，与 REA 自身的版本无关。
 
+## 2.0.11 — 未发布（仓库已更新，未打 tag / 未发 npm）
+
+**shim 层五个缺陷修复。不动供给流程、工具注册与 REA 钉子；改的是「找系统 REA、后台供给失败、读记录」这三条边缘路径。**
+
+### 修复
+
+- **`systemReaCandidates` 的平台分隔符取错了对象**：`path.delimiter` 与 `path.join` 跟随的是「当前进程」的平台，
+  而函数入参是 `platform`。注释一直声称测试能在同一台机器上模拟两种形态 —— 实际做不到：POSIX 上模拟 `win32` 会把
+  `;` 分隔的 PATH 按 `:` 切开，候选全部指向不存在的碎片。现在分隔符与 `resolve` / `isAbsolute` / `join` 一律跟随
+  `platform`（生产环境两者相同，因此这只是测试缝的问题，但缝必须是真缝）。
+- **后台供给的 spawn 失败会留下幽灵锁，异步 `error` 还会打死 shim**：`spawn` 同步抛错时锁停在
+  `state:"running"` + 本进程 pid；更常见的是异步 `error`（ENOENT/EACCES/ENOMEM）—— `ChildProcess` 没挂监听器，
+  EventEmitter 直接抛未捕获异常，shim 无声退出，锁仍指向一个「活着的」pid。PID 被系统复用后，下一次启动会被判成
+  `in-flight`，自动供给停摆 6 小时且没有任何日志。现在：同步失败删锁；异步失败把锁改写成 `state:"failed"` 并往
+  `logs/setup.log` 记一行原因。
+- **`probeRea` 对 `--version` 的输出没有上限**：PATH 上一个损坏或恶意的候选可以一直输出到超时，等于把内存交给
+  陌生人。现在 64 KiB 封顶，超限立刻 `killTree` 并按「不可用」处理（回落到 bundle，行为与其它拒绝一致）。
+- **`readJson` 只认 UTF-8 BOM，不认 UTF-16**：Windows PowerShell 5.1 的 `>` / `Out-File` 默认写 UTF-16 LE，读出来
+  是错位乱码 → 被当成「没有记录」，于是带记录的本机会被重新供给。`bin/rea-shim.mjs` 与 `scripts/setup.mjs` 现在
+  都按字节判 BOM，支持 UTF-16 LE/BE 与 UTF-8（含 BOM）。**两个读取器必须同时改** —— 只改一边，同一个文件在两个
+  程序眼里又是两个意思（2.0.9 的教训）。
+- **`foreignReaRegistration` 不剥行尾注释**：`serverName: rea # upstream` 会被解析成 `rea # upstream` ≠ `rea`，
+  重复注册漏报 —— 而这正是人手编辑那个文件时最常见的形态。现在按 YAML 规则取值：引号内原样，引号外 ` #` 之后是
+  注释（`rea#1` 仍然是值）。
+
+### 升级
+
+> **两条长期规则 —— 本版如此，以后每个 2.x 版本都如此。**
+>
+> `setup.mjs` **不会替你跑**：市场里的安装/更新只替换包，然后到此为止；装完一次、之后每次升级插件版本一次，
+> 都要你自己从插件目录跑 `node scripts/setup.mjs`。跳过它不会报错 —— 首次安装是「工具消失且无提示」，升级后是
+> 「继续跑旧 REA 且无提示」（`check-updates.ps1` 会报出漂移）。
+>
+> 1. 行执行的是 `<DSH_HOME>/plugins/rea-bundle/bin/rea-shim.mjs`，那是 setup 复制的**副本**：市场升级只换包、
+>    不换它，副本可能一直跑旧代码而**没有症状**。从 **2.0.8** 起副本会与 `mirror.json` 记录的启动器比对，不同就
+>    一跳转发执行插件里的那份（`REA_BUNDLE_SHIM_REEXEC` 守卫）；**2.0.0–2.0.7 做不到**，从它们升级仍需跑一次
+>    `node scripts/setup.mjs`。`--shim-status` 报 `mirror.stale`，`check-updates.ps1` 提示重跑。
+> 2. 镜像的 `scripts/setup.mjs` 也是副本、**不会自愈**：从 bundle 根目录跑的是建 bundle 那一版；要从**插件目录**
+>    跑一次刷新它。从 **2.0.9** 起它会像 shim 一样剥掉 `mirror.json` / `bundle.json` 的 UTF-8 BOM。
+
+### 验证
+
+- 单测 **73 条**（新增「UTF-16 的 `bundle.json` 被 setup 读到」「UTF-16 的 `bundle.json` 被 shim 读到」两条；
+  重复注册用例扩成「带行尾注释」）。
+- 未发版：无 tag / 无 Release / npm 仍 **2.0.10**。
+
 ## 2.0.10 — 2026-10-19
 
 **上游 REA 钉子从 6.5.0 升到 6.7.0。包、CLI 与 MCP 契约都没变，工具数仍是 207 —— 这是上游的功能与修复升级，不是工具扩容。**
