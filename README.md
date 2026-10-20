@@ -18,6 +18,12 @@
 > skip it after an upgrade and you keep running the old REA silently (`check-updates.ps1` reports the drift).
 > The full rule set is under [Updating](#updating--three-independent-things).
 
+> **A first install and every plugin upgrade also show a one-time guide in the Web GUI.** It says whether the
+> runtime is missing or behind this package's pin, shows the exact `node "<install path>/scripts/setup.mjs"`
+> command for that install, and remembers the dismissal per plugin version. It is a notice only: it never runs
+> setup for you and never edits the bundle. Run it once, restart dsh, and the guide stays away until the next
+> plugin version.
+
 Brings the upstream **[REA — Reverse Engineer Anything](https://github.com/morluto/rea)** MCP server into
 **DeepSeek Harness** (dsh), so its tools show up in a session as `mcp__rea__*`.
 

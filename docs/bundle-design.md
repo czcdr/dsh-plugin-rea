@@ -61,6 +61,18 @@ Three responsibilities, kept strictly apart:
 The published plugin therefore stays portable, while the machine-specific truth
 lives in one small JSON file under the DSH home.
 
+A fourth, deliberately passive piece sits beside the three: the **guide**
+(`client.js` + `index.mjs` → `bin/rea-guide.mjs`). It exists because the setup
+step is mandatory but invisible — a market install or update replaces the
+package and stops there, and a skipped setup fails silently in both directions
+(no tools on a first install, the old REA after an upgrade). The patch mounts one
+extra row for the package entry, which serves a read-only
+`GET /dsh-plugin-rea/guide-state`; the client half renders that verdict once per
+plugin version and remembers the dismissal in `localStorage`. It is a notice:
+it never spawns setup, never downloads, and never writes `bundle.json`. The row
+is mounted only when the host has a `webServer`, so headless and ACP hosts load
+the plugin exactly as before.
+
 ```
 <dsh home>/plugins/rea-bundle/
   bundle.json          # machine-local truth: resolved paths + versions + hashes

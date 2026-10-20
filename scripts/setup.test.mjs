@@ -20,6 +20,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { HOST_RELEASES, OUTSIDE_HOSTS, checkHostCoverage, declaredHostRange, compareVersions, satisfiesDeclaredRange } from "./host-compat.mjs";
+import { computeGuideState, reaPinMatches } from "../bin/rea-guide.mjs";
 
 /* ------------------------------------------------- probe token substitution */
 
@@ -1961,6 +1962,89 @@ test("a UTF-16 bundle.json is read by the shim as provisioned", () => {
     assert.equal(report.provisioned, true, run.stderr);
     assert.equal(report.rea.ok, true, JSON.stringify(report.rea));
     assert.equal(existsSync(path.join(root, "setup-ran")), false, "a readable record must not start a run");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+/* ------------------------------------------------- one-shot setup guide */
+
+function guideBundle(root, record, encoding) {
+  const file = path.join(root, "bundle.json");
+  const text = JSON.stringify(record, null, 2);
+  writeFileSync(file, encoding === "utf16" ? utf16le(text) : text);
+  return file;
+}
+
+test("reaPinMatches pins a dotted version exactly and a bare major as a family", () => {
+  assert.equal(reaPinMatches("6.7.0", "6.7.0"), true);
+  assert.equal(reaPinMatches("6.5.0", "6.7.0"), false);
+  assert.equal(reaPinMatches("6.7.0-rc.1", "6.7.0"), false);
+  assert.equal(reaPinMatches("21.0.12.1+1", "21"), true);
+  assert.equal(reaPinMatches("20.0.1", "21"), false);
+  assert.equal(reaPinMatches("", "6.7.0"), false);
+  assert.equal(reaPinMatches("6.7.0", ""), false);
+});
+
+test("the guide calls a machine with no bundle.json a first install", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "rea-guide-missing-"));
+  try {
+    const state = computeGuideState({
+      pluginVersion: "2.0.11",
+      pinnedRea: "6.7.0",
+      bundlePath: path.join(root, "bundle.json"),
+    });
+    assert.equal(state.state, "missing");
+    assert.equal(state.needsSetup, true);
+    assert.match(state.setupCommand, /scripts[/\\]setup\.mjs/);
+    assert.equal(state.pluginVersion, "2.0.11");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the guide calls a bundle at the old REA stale, and a matching pin settled", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "rea-guide-stale-"));
+  try {
+    const file = guideBundle(root, { versions: { reaAgents: "6.5.0" }, provisionedAt: "2026-10-19T12:52:17.332Z" });
+    const stale = computeGuideState({ pluginVersion: "2.0.11", pinnedRea: "6.7.0", bundlePath: file });
+    assert.equal(stale.state, "stale");
+    assert.equal(stale.needsSetup, true);
+    assert.equal(stale.installedRea, "6.5.0");
+
+    const settled = computeGuideState({ pluginVersion: "2.0.11", pinnedRea: "6.5.0", bundlePath: file });
+    assert.equal(settled.state, "ok");
+    assert.equal(settled.needsSetup, false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the guide reads a UTF-16 bundle.json instead of calling it unreadable", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "rea-guide-utf16-"));
+  try {
+    const file = guideBundle(root, { versions: { reaAgents: "6.5.0" } }, "utf16");
+    const state = computeGuideState({ pluginVersion: "2.0.11", pinnedRea: "6.5.0", bundlePath: file });
+    assert.equal(state.state, "ok");
+    assert.equal(state.installedRea, "6.5.0");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the guide asks for setup when the record cannot be parsed or names no REA", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "rea-guide-bad-"));
+  try {
+    const broken = path.join(root, "broken.json");
+    writeFileSync(broken, "{ not json");
+    const unreadable = computeGuideState({ pluginVersion: "2.0.11", pinnedRea: "6.7.0", bundlePath: broken });
+    assert.equal(unreadable.state, "unreadable");
+    assert.equal(unreadable.needsSetup, true);
+
+    const empty = guideBundle(root, { versions: {} });
+    const unknown = computeGuideState({ pluginVersion: "2.0.11", pinnedRea: "6.7.0", bundlePath: empty });
+    assert.equal(unknown.state, "unknown");
+    assert.equal(unknown.needsSetup, true);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

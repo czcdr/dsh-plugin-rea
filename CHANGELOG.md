@@ -2,9 +2,21 @@
 
 本插件遵循语义化版本。版本号变化说明「配置组合」这层的变化，与 REA 自身的版本无关。
 
-## 2.0.11 — 未发布（仓库已更新，未打 tag / 未发 npm）
+## 2.0.11 — 未发布（已合并 main，未打 tag / 未发 npm）
 
 **shim 层五个缺陷修复。不动供给流程、工具注册与 REA 钉子；改的是「找系统 REA、后台供给失败、读记录」这三条边缘路径。**
+
+### 新增
+
+- **首次安装与每次升级插件后，Web GUI 显示一次「还要跑一次 setup」提示**（`client.js` + `index.mjs`）：
+  - 触发不看「弹过没有」，而看**事实**：`GET /dsh-plugin-rea/guide-state` 把
+    `<DSH_HOME>/plugins/rea-bundle/bundle.json` 里记录的 REA 版本与本包 manifest 的钉子比对，
+    返回 `missing` / `stale` / `unknown` / `unreadable` / `ok` 之一（`bin/rea-guide.mjs` 里的纯函数，
+    带点的钉子精确比对、只有主版本号的按家族比对，与 `scripts/pin-match.ps1` 同一套规则）；
+  - 文案给出**这次安装**的完整命令（路径随市场解包位置变化），并写明「只对齐运行时、不更新插件包」；
+  - 点「稍后」或「我已运行」后按**插件版本**记入 localStorage：同一版本不再弹，升级换了版本后重新提示一次；
+  - 该 route 只在宿主有 `webServer` 时挂载（`ctx.inject(['webServer'])`），headless/ACP 主机行为不变；
+  - 它只是提示：不 spawn、不下载、不改 `bundle.json`，也不跑 setup。
 
 ### 修复
 
@@ -44,8 +56,11 @@
 
 ### 验证
 
-- 单测 **73 条**（新增「UTF-16 的 `bundle.json` 被 setup 读到」「UTF-16 的 `bundle.json` 被 shim 读到」两条；
-  重复注册用例扩成「带行尾注释」）。
+- 单测 **78 条**（新增「UTF-16 的 `bundle.json` 被 setup 读到」「UTF-16 的 `bundle.json` 被 shim 读到」两条；
+  重复注册用例扩成「带行尾注释」；「setup 指南」5 条：钉子精确/家族比对、无记录=首装、旧 REA=stale、UTF-16 记录、
+  坏记录/无 REA 字段都要求 setup）。
+- `verify-branch.ps1` 新增 §9：指南链路四端（`bin/rea-guide.mjs` 的 route、`index.mjs` 的挂载、`client.js` 的
+  fetch、`cordis.patch.yml` 的行）逐一比对，防止改名后指南静默不出现。
 - 未发版：无 tag / 无 Release / npm 仍 **2.0.10**。
 
 ## 2.0.10 — 2026-10-19

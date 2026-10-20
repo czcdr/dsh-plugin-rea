@@ -16,6 +16,10 @@
 > 首次安装不跑：行以 `MODULE_NOT_FOUND` 退出，工具消失且没有任何提示；升级后不跑：仍旧跑旧 REA 且没有症状
 >（`check-updates.ps1` 会报出这条漂移）。完整规则见[更新](#更新--三件互相独立的事)。
 
+> **首次安装与每次升级插件后，Web GUI 会显示一次操作指南。** 它会说明运行时是缺失、还是落后于本插件钉的版本，
+> 给出这次安装对应的完整 `node "<安装路径>/scripts/setup.mjs"` 命令，并按插件版本记住“已看过”。
+> 它只是提示：不会替你运行 setup，也不会改动 bundle。跑一次、重启 dsh，提示就会消失，直到下一个插件版本。
+
 把上游 **[REA — Reverse Engineer Anything](https://github.com/morluto/rea)** 的 MCP 服务接入
 **DeepSeek Harness**（dsh），让它的工具在会话里以 `mcp__rea__*` 出现。
 

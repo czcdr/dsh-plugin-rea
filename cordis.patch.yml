@@ -49,3 +49,11 @@
           # variable happening to survive the child-env scrub.
           ELECTRON_RUN_AS_NODE: '1'
         failOnStartupError: false
+
+    # The Web GUI's one-shot setup guide. This row loads only the package entry
+    # (index.mjs), which serves a read-only GET /dsh-plugin-rea/guide-state and
+    # mounts nothing when the host has no webServer. It does not launch REA, does
+    # not provision, and never runs setup for the user — the guide only reports
+    # that the recorded bundle does not match the pin this package ships.
+    - id: rea-guide
+      name: 'dsh-plugin-rea'

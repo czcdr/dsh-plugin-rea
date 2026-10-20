@@ -12,7 +12,7 @@ function Check($name, [bool]$ok, $detail) {
 }
 
 Write-Host "`n=== 1. JS syntax ===" -ForegroundColor Cyan
-foreach ($f in @('index.mjs','bin\rea-shim.mjs','scripts\setup.mjs','scripts\audit-manifest.mjs','scripts\setup.test.mjs','scripts\host-compat.mjs')) {
+foreach ($f in @('index.mjs','bin\rea-shim.mjs','bin\rea-guide.mjs','client.js','scripts\setup.mjs','scripts\audit-manifest.mjs','scripts\setup.test.mjs','scripts\host-compat.mjs')) {
   $out = & node --check $f 2>&1
   Check $f ($LASTEXITCODE -eq 0) ($out -join ' ')
 }
@@ -201,6 +201,33 @@ Check 'bootstrap plans no download when one is present' (@($bootOut | Select-Str
 for ($i = 0; $i -lt 5; $i++) {
   try { Remove-Item -Recurse -Force $bootRoot -ErrorAction Stop; break } catch { Start-Sleep -Milliseconds 300 }
 }
+
+Write-Host "`n=== 9. the one-shot setup guide is wired end to end ===" -ForegroundColor Cyan
+# The guide spans four files with no type system between them: the route in
+# bin/rea-guide.mjs, the mount in index.mjs, the fetch in client.js, and the row
+# in cordis.patch.yml. Two of those used to be free-form strings, so a rename in
+# one place produced a guide that silently never appeared (the client treats a
+# 404 as "this host has no route"). Compare them here instead.
+$clientText = if (Test-Path (Join-Path $root 'client.js')) { Get-Content (Join-Path $root 'client.js') -Raw -Encoding UTF8 } else { '' }
+Check 'client.js ships with the package' ($clientText -ne '') ''
+$routeMatch = Select-String -Path (Join-Path $root 'bin\rea-guide.mjs') -Pattern "export const GUIDE_ROUTE = '([^']+)'" | Select-Object -First 1
+$guideRoute = if ($routeMatch) { $routeMatch.Matches[0].Groups[1].Value } else { '' }
+Check 'bin/rea-guide.mjs declares the guide route' ($guideRoute -eq '/dsh-plugin-rea/guide-state') "got '$guideRoute'"
+Check 'client.js loads through the client module loader' ($clientText.Contains('window.__ModuleLoader__.load')) ''
+Check 'client.js registers the guide on shell.overlay' ($clientText.Contains('rea-setup-guide') -and $clientText.Contains('shell.overlay')) ''
+Check 'client.js reads the same route the host serves' ($clientText.Contains($guideRoute)) "expected '$guideRoute'"
+$indexText = Get-Content (Join-Path $root 'index.mjs') -Raw -Encoding UTF8
+Check 'index.mjs serves the guide route' ($indexText.Contains('GUIDE_ROUTE') -and $indexText.Contains('mountGuideRoute')) ''
+Check 'index.mjs mounts it only when a webServer exists' ($indexText.Contains("ctx.inject(['webServer']")) ''
+Check 'package.json declares dsh.client for the web surface' ($pkg.dsh.client.platform -eq 'web') ''
+Check 'package.json ships client.js' (@($pkg.files) -contains 'client.js') ''
+$patchText = Get-Content (Join-Path $root 'cordis.patch.yml') -Raw -Encoding UTF8
+Check 'cordis.patch.yml mounts the guide row' ($patchText.Contains('rea-guide') -and $patchText.Contains("name: 'dsh-plugin-rea'")) ''
+$guideRaw = & node bin\rea-guide.mjs --json 2>&1
+$guideParsed = $null
+try { $guideParsed = ($guideRaw -join "`n") | ConvertFrom-Json } catch { $guideParsed = $null }
+Check 'bin/rea-guide.mjs answers with JSON' ($null -ne $guideParsed -and $null -ne $guideParsed.needsSetup) (($guideRaw | Select-Object -Last 2) -join ' ')
+Check 'the guide command points at this package scripts' ($null -ne $guideParsed -and [string]$guideParsed.setupCommand -match 'scripts[\\/]setup\.mjs') ''
 
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'ALL CHECKS PASSED' -ForegroundColor Green }
