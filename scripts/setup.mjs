@@ -94,6 +94,7 @@ function parseArgs(argv) {
     json: false,
     only: null,
     offline: false,
+    skipSmoke: false,
     // Two different clocks, because one number cannot serve both: a route must
     // be declared dead quickly when the socket never opens, but a slow-but-alive
     // transfer must not be killed for taking long overall (measured here:
@@ -110,6 +111,7 @@ function parseArgs(argv) {
     else if (arg === "--dry-run") options.dryRun = true;
     else if (arg === "--json") options.json = true;
     else if (arg === "--offline") options.offline = true;
+    else if (arg === "--skip-smoke") options.skipSmoke = true;
     else if (arg === "--yes") continue;
     else if (arg === "--only") options.only = (argv[++i] ?? "").split(",").map((s) => s.trim()).filter(Boolean);
     else if (arg === "--help" || arg === "-h") options.help = true;
@@ -889,7 +891,44 @@ function reusableNodeChecked(candidate) {
   if (typeof regex === "string" && regex !== "" && !new RegExp(regex, "u").test(stdout)) {
     return { ok: false, detail: `it reports "${firstLine}", which REA's engines reject` };
   }
-  return { ok: true };
+  // Report the version the candidate actually printed, not the interpreter that
+  // happens to be running setup. They differ whenever the adopted Node is not
+  // the one executing this script — `REA_BUNDLE_NODE`, or a PATH whose first hit
+  // is a different install — and recording the running interpreter silently
+  // wrote a bundle.json that disagreed with the runtime the row launches.
+  return { ok: true, version: firstLine.replace(/^v/, "").trim() || null };
+}
+
+/**
+ * The version a reused JDK or Ghidra reports about itself.
+ *
+ * Both reuse branches used to return only `{path, how}`, so `bundle.json` fell
+ * back to `merged.<name>?.version ?? null` and recorded `""` for a JDK or Ghidra
+ * the machine had adopted — a record that names a runtime but cannot say which
+ * one. `check-updates.ps1` compares against exactly that field, so the drift it
+ * exists to report became invisible for precisely the components a reuse run
+ * touches. Both files are the vendor's own declaration, not a guess:
+ * `release` carries `JAVA_VERSION="…"`, `Ghidra/application.properties` carries
+ * `application.version=…`.
+ */
+function readJdkVersion(root) {
+  try {
+    const release = readFileSync(path.join(root, "release"), "utf8");
+    const match = /^JAVA_VERSION="?([^"\r\n]+)"?/m.exec(release);
+    return match ? match[1].trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+function readGhidraVersion(root) {
+  try {
+    const properties = readFileSync(path.join(root, "Ghidra", "application.properties"), "utf8");
+    const match = /^application\.version=(.+)$/m.exec(properties);
+    return match ? match[1].trim() : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Adopt an existing installation instead of downloading a duplicate. */
@@ -912,7 +951,7 @@ function reuseExisting(name, root) {
       if (seen.has(key)) continue;
       seen.add(key);
       const checked = reusableNodeChecked(candidate.path);
-      if (checked.ok) return candidate;
+      if (checked.ok) return { ...candidate, version: checked.version ?? null };
       step("node", "plan", `not reusing ${candidate.how} node ${candidate.path}: ${checked.detail}`);
     }
     return null;
@@ -920,14 +959,16 @@ function reuseExisting(name, root) {
   if (name === "jdk") {
     for (const [variable, how] of [["JAVA_HOME", "JAVA_HOME"]]) {
       const home = process.env[variable];
-      if (home && existsSync(path.join(home, "bin", `javac${EXE}`))) return { path: home, how };
+      if (home && existsSync(path.join(home, "bin", `javac${EXE}`))) {
+        return { path: path.normalize(home), how, version: readJdkVersion(home) };
+      }
     }
     return null;
   }
   if (name === "ghidra") {
     const install = process.env.GHIDRA_INSTALL_DIR;
     if (install && existsSync(path.join(install, "support", IS_WINDOWS ? "analyzeHeadless.bat" : "analyzeHeadless"))) {
-      return { path: install, how: "GHIDRA_INSTALL_DIR" };
+      return { path: path.normalize(install), how: "GHIDRA_INSTALL_DIR", version: readGhidraVersion(install) };
     }
     return null;
   }
@@ -1068,7 +1109,11 @@ async function provisionComponent(name, component, context) {
     }
     if (probe.ok) {
       step(name, "skip", `reusing existing ${name} from ${reused.how}: ${reused.path}`);
-      return { path: reused.path, reused: true };
+      // Carry the adopted installation's own version. Dropping it here made
+      // `bundle.json` record the manifest's pin instead of what was adopted — a
+      // record that names a path but describes a different build, which is the
+      // one thing `check-updates.ps1` exists to catch.
+      return { ...reused, reused: true };
     }
     step(name, "plan", `not reusing ${reused.how} ${name} at ${reused.path}: ${probe.detail}`);
   }
@@ -1550,8 +1595,18 @@ if (!options.dryRun) {
   // what matters is that the CLI runs, emits parseable JSON, and reports the
   // tool catalog. Unmet checks are reported, not treated as errors.
   const reaEntry = paths.reaEntry;
+  // The same two variables the mirrored shim exports. Without them REA falls
+  // back to probing the machine, so `doctor` here reported whichever Ghidra and
+  // JDK happened to be installed globally — on a machine with an older global
+  // Ghidra this run's own engine was never the thing being checked, and a broken
+  // vendor copy could still come back healthy.
+  const reaEnv = {
+    ...process.env,
+    ...(paths.ghidra ? { GHIDRA_INSTALL_DIR: paths.ghidra } : {}),
+    ...(paths.jdk ? { JAVA_HOME: paths.jdk } : {}),
+  };
   if (existsSync(reaEntry)) {
-    const doctor = spawnSync(nodePath, [reaEntry, "doctor", "--json"], { encoding: "utf8", timeout: 300000 });
+    const doctor = spawnSync(nodePath, [reaEntry, "doctor", "--json"], { encoding: "utf8", timeout: 300000, env: reaEnv });
     const stdout = doctor.stdout ?? "";
     let parsed = null;
     try {
@@ -1573,6 +1628,59 @@ if (!options.dryRun) {
     }
   } else {
     step("probe", "FAIL", "vendored REA CLI is missing; the MCP row will report unprovisioned");
+  }
+
+  // Ghidra smoke: prove the engine runs, not merely that its files exist.
+  //
+  // `doctor` validates paths, versions and which Java would be chosen; it never
+  // imports a binary. The first real import pays a one-time cost (measured here:
+  // ~35 s for a small PE, ~64 s for a 6 MB DLL) for the JVM start plus default
+  // auto-analysis. On a broken bridge or a mismatched native addon the operator
+  // met that only as an MCP tool timeout on the first real analysis — which reads
+  // exactly like "the runtime upgrade broke REA". Importing one small file here
+  // ends provisioning with a measured verdict instead of an inference, and makes
+  // the failure visible while the operator is still in the setup output.
+  //
+  // The input is the JDK's own launcher: it exists on every platform this bundle
+  // provisions, it is small enough to keep the step short, and it is never the
+  // user's file.
+  if (options.skipSmoke) {
+    step("smoke", "skip", "disabled by --skip-smoke");
+  } else if (!existsSync(reaEntry)) {
+    step("smoke", "skip", "no vendored REA CLI to drive");
+  } else if (!paths.ghidra || !paths.jdk) {
+    step("smoke", "skip", "this run resolved no ghidra + jdk pair");
+  } else {
+    const smokeInput = path.join(paths.jdk, "bin", `java${EXE}`);
+    if (!existsSync(smokeInput)) {
+      step("smoke", "skip", `no small input at ${smokeInput}`);
+    } else {
+      const startedAt = Date.now();
+      const smoke = spawnSync(nodePath, [reaEntry, "analyze", smokeInput, "--json"], {
+        encoding: "utf8",
+        timeout: 600000,
+        env: reaEnv,
+      });
+      const elapsed = Math.round((Date.now() - startedAt) / 1000);
+      let evidence = null;
+      try {
+        const text = String(smoke.stdout ?? "");
+        const open = text.indexOf("{");
+        const close = text.lastIndexOf("}");
+        evidence = open >= 0 && close > open ? JSON.parse(text.slice(open, close + 1)) : null;
+      } catch {
+        evidence = null;
+      }
+      if (smoke.status === 0 && evidence && typeof evidence.evidence_id === "string") {
+        step("smoke", "ok", `imported ${path.basename(smokeInput)} in ${elapsed}s via ghidra`);
+      } else {
+        step(
+          "smoke",
+          "FAIL",
+          `ghidra import failed (exit ${smoke.status}, ${elapsed}s): ${`${smoke.stdout ?? ""}${smoke.stderr ?? ""}`.trim().slice(0, 300)}`,
+        );
+      }
+    }
   }
 
   // The real end-to-end check: launch the exact shim the MCP row will use

@@ -204,6 +204,10 @@ Three details in that row are load-bearing, and all three were bugs first:
 - **The `!!js` scalar is quoted.** A bare scalar containing `? ` and `: ` is not one scalar: YAML reads it as an explicit key/value pair, so the loader receives a *mapping* where an expression belongs. Measured against the harness's own dialect (`JSON_SCHEMA` plus the `!!js` type from `app.asar`), the unquoted form made `args[0]` into `{"[object Object]": "..."}` — an object the row cannot launch with. Quoting removes the ambiguity, and the JS string literals inside then use single quotes.
 - **Forward slashes, never backslashes.** A single-quoted YAML scalar keeps `\` literal, and JavaScript then consumes it: `'\plugins'` is not a path but the BEL control character, `'\rea-bundle'` becomes a carriage return and `'\bin'` a backspace — the path is destroyed silently. Forward slashes work on Windows and on POSIX.
 - **The `DSH_HOME` fallback is `<home>/.dsh`, not `<home>`.** The shim, `setup.mjs` and `bootstrap.ps1` all resolve an unset `DSH_HOME` to `<home>/.dsh/...`; a fallback that stopped one level higher made the row point at a file provisioning never writes — invisible on any machine where `DSH_HOME` happens to be set.
+- **With `DSH_HOME`, `USERPROFILE` and `HOME` all empty, the expression resolves to `/.dsh/...`** — the one
+  combination the concatenation cannot improve on. That is a service or container account with no home
+  directory; the row then cannot start, and because `failOnStartupError: false` keeps that quiet, the only
+  symptom is "no `mcp__rea__*` tools". Set `DSH_HOME` explicitly on such an account.
 - **No `path`/`require` in a `!!js` expression**: `ctx` is the loader scope, so the DSH_HOME fallback is written as plain concatenation.
 
 `npm run bundle:audit` enforces the first three: it evaluates this exact expression with `DSH_HOME` unset, empty and set, and rejects a bare scalar that YAML would read as a mapping.
@@ -268,12 +272,20 @@ Ask for a `mcp__rea__*` call — `binary_session` reports the engine checks
 (`configuration` / `installation` / `headless` / `native_decompiler` / `java`), all of which should be
 `ok: true`. Then `open_binary` a PE, `binary_overview`, and `procedure_pseudo_code`.
 
-Provisioning itself ends with two probes: `rea doctor --json` (reported, with unmet checks named) and the
-exact shim launch the MCP row will use.
+Provisioning itself ends with three checks: `rea doctor --json` (reported, with unmet checks named), a
+**Ghidra smoke import** that runs `rea analyze` on the JDK's own `bin/java` and fails the run when it
+cannot import (`--skip-smoke` omits it), and the exact shim launch the MCP row will use. The smoke step
+exists because `doctor` validates paths, versions and which Java would be chosen — it never imports a
+binary, so a broken bridge or a mismatched native addon used to surface only as an MCP timeout.
+
+**The first analysis of each new target is slow.** Measured here: 36 s for a small PE, 64 s for a 6 MB
+DLL — every import starts a JVM and runs Ghidra's default auto-analysis. If the first
+`open_binary` → `list_segments` on a large file times out, that is this cost and not a broken engine:
+call it again and the open target answers immediately, because it keeps its ephemeral project.
 
 ## Verified against
 
-Author's machine, 2026-10-13 / 14 / 16 / 19:
+Author's machine, 2026-10-13 / 14 / 16 / 19 / 23:
 
 | Component | Version |
 |---|---|
@@ -281,8 +293,8 @@ Author's machine, 2026-10-13 / 14 / 16 / 19:
 | DeepSeek Harness | desktop runtime **0.2.0-rc.2**, with its bundled dsh CLI 0.1.7-rc.2 |
 | `@deepseek-ai/dsh-mcp-client` (row provider) | bundled by the harness |
 | Ghidra | 12.1.4 |
-| JDK | Temurin 21 (provisioned) / Microsoft OpenJDK 25.0.4 (adopted) |
-| Node.js | 24.21.0 (REA engines: `^22.19.0 \|\| ^24.11.0 \|\| >=26.0.0`) |
+| JDK | Temurin 21 (provisioned) / Amazon Corretto 25.0.5 (adopted by the host) |
+| Node.js | **24.22.1** adopted (REA engines: `^22.19.0 \|\| ^24.11.0 \|\| >=26.0.0`; ABI 137) |
 | Host | Windows 11 x64 (build 26200) |
 
 Exercised live: a clean `setup.mjs --reuse` run reached `setup complete`; an MCP `initialize` handshake
@@ -294,6 +306,13 @@ call reported `path_source: environment` for a path only that machine's `bundle.
 Not exercised end to end here, and therefore not claimed: the ~775 MB JDK + Ghidra download branch (planned
 by `--dry-run`, but this machine adopted its existing installs with `--reuse`), and first runs on
 macOS/Linux.
+
+On 2026-10-23 the same chain was re-verified after the host Node moved to **24.22.1**: the vendored
+`rea-windows-x64.node` and both `conpty` addons loaded under ABI 137; `binary_overview` on `conpty.node`
+reported 10 segments / 1178 procedures / 618 strings; `procedure_pseudo_code` returned real decompiled
+output; and `java -version` from the vendored JDK answered `21.0.12.1`. The one thing that did **not**
+work on the first try was the first `list_segments` — it timed out at 64 s of cold Ghidra analysis, which
+is what the smoke step and the note above are for.
 
 ## Scope and caveats
 
@@ -410,7 +429,10 @@ back on the next start.
 - **Upstream REA / Ghidra**: update the pins in the manifest, then re-run setup. REA version-gates Ghidra
   (12.1.x today), so update REA first.
 
-`check-updates.ps1` (Windows PowerShell) reports the state of all of these at once.
+`check-updates.ps1` (Windows PowerShell) reports the state of all of these at once. `npm run check-updates`
+forwards to it on Windows (PowerShell 5.1, then `pwsh`); on macOS/Linux it prints why the script cannot
+answer there and names the two portable commands instead — `node bin/rea-shim.mjs --shim-status` and
+`node scripts/setup.mjs --dry-run` — exiting non-zero rather than reporting a green it did not earn.
 
 ## Still prefer the configuration-only 1.x line?
 

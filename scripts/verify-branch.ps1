@@ -12,7 +12,7 @@ function Check($name, [bool]$ok, $detail) {
 }
 
 Write-Host "`n=== 1. JS syntax ===" -ForegroundColor Cyan
-foreach ($f in @('index.mjs','bin\rea-shim.mjs','bin\rea-guide.mjs','client.js','scripts\setup.mjs','scripts\audit-manifest.mjs','scripts\setup.test.mjs','scripts\host-compat.mjs')) {
+foreach ($f in @('index.mjs','bin\rea-shim.mjs','bin\rea-guide.mjs','client.js','scripts\setup.mjs','scripts\audit-manifest.mjs','scripts\setup.test.mjs','scripts\host-compat.mjs','scripts\check-updates.mjs')) {
   $out = & node --check $f 2>&1
   Check $f ($LASTEXITCODE -eq 0) ($out -join ' ')
 }
@@ -228,6 +228,21 @@ $guideParsed = $null
 try { $guideParsed = ($guideRaw -join "`n") | ConvertFrom-Json } catch { $guideParsed = $null }
 Check 'bin/rea-guide.mjs answers with JSON' ($null -ne $guideParsed -and $null -ne $guideParsed.needsSetup) (($guideRaw | Select-Object -Last 2) -join ' ')
 Check 'the guide command points at this package scripts' ($null -ne $guideParsed -and [string]$guideParsed.setupCommand -match 'scripts[\\/]setup\.mjs') ''
+
+Write-Host "`n=== 10. npm run check-updates is portable ===" -ForegroundColor Cyan
+# check-updates.ps1 is Windows-only on purpose (it reads %APPDATA% and prefers a
+# rea.cmd shim over the rea.ps1 one). The npm script used to BE the bare
+# `powershell -File` command, so on macOS/Linux `npm run check-updates` was an
+# exec error, and a pwsh there would have answered from paths that do not exist.
+# The wrapper is the contract: Windows forwards, everything else explains and
+# exits non-zero.
+$wrapper = Join-Path $root 'scripts\check-updates.mjs'
+Check 'scripts/check-updates.mjs exists' (Test-Path $wrapper) ''
+$checkScript = [string]$pkg.scripts.'check-updates'
+Check 'scripts.check-updates goes through the wrapper' ($checkScript -match 'check-updates\.mjs') $checkScript
+$wrapperText = if (Test-Path $wrapper) { Get-Content $wrapper -Raw -Encoding UTF8 } else { '' }
+Check 'the wrapper runs PowerShell on Windows only' ($wrapperText.Contains("platform === 'win32' ? ['powershell', 'pwsh'] : []")) ''
+Check 'the wrapper names both portable fallbacks' ($wrapperText.Contains('--shim-status') -and $wrapperText.Contains('--dry-run')) ''
 
 Write-Host ''
 if ($fail -eq 0) { Write-Host 'ALL CHECKS PASSED' -ForegroundColor Green }

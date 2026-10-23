@@ -21,6 +21,7 @@ import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { HOST_RELEASES, OUTSIDE_HOSTS, checkHostCoverage, declaredHostRange, compareVersions, satisfiesDeclaredRange } from "./host-compat.mjs";
 import { computeGuideState, reaPinMatches } from "../bin/rea-guide.mjs";
+import { powerShellCandidates, unsupportedMessage } from "./check-updates.mjs";
 
 /* ------------------------------------------------- probe token substitution */
 
@@ -432,6 +433,81 @@ test("an unavailable optional component is reported, not fatal", () => {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+/* ------------------------------ the Ghidra smoke is measured, and it can be off */
+
+// `doctor` validates paths, versions and which Java would be chosen; it never
+// imports a binary. The first real import pays a one-time ~35 s for the JVM start
+// plus default auto-analysis, and when the bridge or the native addon is broken
+// the operator met that only as an MCP tool timeout on the first real analysis —
+// which reads exactly like "the runtime upgrade broke REA". The smoke step turns
+// provisioning into a measured verdict. These tests keep it bounded in both
+// directions: it must not run when this run resolved no engine, --skip-smoke must
+// win, and an "ok" that only checked that files exist is the bug it replaced.
+function runSmokeSetup(root, extra = []) {
+  const stub = path.join(root, "vendor", "node_modules", "rea-agents", "scripts");
+  mkdirSync(stub, { recursive: true });
+  writeFileSync(
+    path.join(stub, "rea.mjs"),
+    'if (process.argv.includes("--version")) { console.log("6.5.0"); } else { console.log(JSON.stringify({ checks: [], identity: {} })); }\n',
+  );
+  return spawnSync(process.execPath, [SETUP_SOURCE, "--reuse", "--only", "node", "--root", root, ...extra], {
+    encoding: "utf8",
+    timeout: 180000,
+    env: { ...process.env, REA_BUNDLE_NODE: process.execPath },
+  });
+}
+
+test("the smoke step is skipped when this run resolved no engine", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "rea-smoke-skip-"));
+  try {
+    const run = runSmokeSetup(root);
+    assert.match(run.stdout, /\[skip\] smoke — this run resolved no ghidra \+ jdk pair/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("--skip-smoke turns the smoke step off outright", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "rea-smoke-off-"));
+  try {
+    const run = runSmokeSetup(root, ["--skip-smoke"]);
+    assert.match(run.stdout, /\[skip\] smoke — disabled by --skip-smoke/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the smoke step drives a real import and fails the run when it fails", () => {
+  // Contract assertions rather than a live Ghidra run: CI has no 570 MB engine.
+  // What must not regress is (a) the step really invokes REA's analyze on a file
+  // this run owns, and (b) a non-zero verdict is a FAIL, not a silent skip.
+  const source = readFileSync(SETUP_SOURCE, "utf8");
+  assert.match(source, /\[reaEntry, "analyze", smokeInput, "--json"\]/);
+  assert.match(source, /step\(\s*"smoke",\s*"FAIL",/);
+  assert.match(source, /path\.join\(paths\.jdk, "bin", `java\$\{EXE\}`\)/);
+  // The two variables the mirrored shim exports must reach the probe and the
+  // smoke alike; without them both fell back to probing the machine.
+  assert.match(source, /GHIDRA_INSTALL_DIR: paths\.ghidra/);
+  assert.match(source, /JAVA_HOME: paths\.jdk/);
+});
+
+test("a reused component carries its own version into the record", () => {
+  // Both reuse branches returned only `{path, how}`, so bundle.json recorded the
+  // interpreter running setup for Node and the manifest's pin for a JDK/Ghidra —
+  // a record that names a runtime but describes a different build, which is the
+  // one thing `check-updates.ps1` exists to catch. A live fixture cannot cover
+  // this: adoption runs the component's own probe, so a stub tree would have to
+  // be a working compiler or analysis engine. Contract assertions instead.
+  const source = readFileSync(SETUP_SOURCE, "utf8");
+  // The adopted record is spread, not rebuilt from its path alone.
+  assert.match(source, /return \{ \.\.\.reused, reused: true \};/);
+  // ...and each installation is asked what it is, from its own declaration.
+  assert.match(source, /version: readJdkVersion\(home\)/);
+  assert.match(source, /version: readGhidraVersion\(install\)/);
+  assert.match(source, /function readJdkVersion\(root\)/);
+  assert.match(source, /function readGhidraVersion\(root\)/);
 });
 
 /* =========================== this round's regressions =========================
@@ -2048,4 +2124,29 @@ test("the guide asks for setup when the record cannot be parsed or names no REA"
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+/* ------------------------------------------------- npm run check-updates */
+
+test("check-updates runs PowerShell on Windows, 5.1 first", () => {
+  assert.deepEqual(powerShellCandidates("win32"), ["powershell", "pwsh"]);
+});
+
+test("check-updates refuses to fake a POSIX run", () => {
+  // The .ps1 probes %APPDATA% and prefers rea.cmd; a pwsh on Linux would run
+  // those branches against paths that do not exist and print a confident wrong
+  // answer. No candidates is the point, not an oversight.
+  assert.deepEqual(powerShellCandidates("linux"), []);
+  assert.deepEqual(powerShellCandidates("darwin"), []);
+});
+
+test("check-updates names the portable commands it falls back to", () => {
+  const posix = unsupportedMessage("linux");
+  assert.match(posix, /Windows PowerShell tool/);
+  assert.match(posix, /this host is linux/);
+  assert.match(posix, /--shim-status/);
+  assert.match(posix, /setup\.mjs --dry-run/);
+
+  const win = unsupportedMessage("win32");
+  assert.match(win, /No PowerShell/);
 });

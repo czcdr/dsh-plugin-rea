@@ -188,6 +188,9 @@ node scripts/setup.mjs --reuse      # 或先 --dry-run 看计划
 - **`!!js` 标量必须加引号。** 裸标量里同时出现 `? ` 和 `: ` 时，它就不是一个标量了：YAML 会把它读成显式键值对，于是 loader 拿到的是一个 **mapping** 而不是表达式节点。用 harness 自己的方言实测（`JSON_SCHEMA` + `app.asar` 里的 `!!js` 类型），不加引号时 `args[0]` 变成 `{"[object Object]": "..."}` —— 一个行根本无法用来启动的对象。加引号消除歧义，内部的 JS 字符串改用单引号。
 - **必须用正斜杠，不能用反斜杠。** YAML 单引号标量会保留 `\` 字面量，接着 JavaScript 会把它吃掉：`'\plugins'` 不是路径而是 BEL 控制字符，`'\rea-bundle'` 变成回车、`'\bin'` 变成退格 —— 路径被静默摧毁。正斜杠在 Windows 与 POSIX 上都成立。
 - **`DSH_HOME` 的兜底是 `<home>/.dsh`，不是 `<home>`。** shim、`setup.mjs`、`bootstrap.ps1` 三者都把未设置的 `DSH_HOME` 解析到 `<home>/.dsh/...`；兜底少这一层，行就会指向供给永远不会写的位置 —— 而在 `DSH_HOME` 恰好被设置的机器上，这个错误完全不可见。
+- **`DSH_HOME`、`USERPROFILE`、`HOME` 三者都为空时，表达式会得到 `/.dsh/...`** —— 这是纯拼接唯一无法兜住
+  的组合，出现在没有主目录的服务账户/容器里。此时那一行起不来，而 `failOnStartupError: false` 会让它保持安静，
+  症状只有「没有 `mcp__rea__*` 工具」。这类账户请显式设置 `DSH_HOME`。
 - **`!!js` 表达式里没有 `path`/`require`**：`ctx` 是 loader 作用域，所以 DSH_HOME 的兜底写成纯字符串拼接。
 
 `npm run bundle:audit` 会把前三条钉住：它用「`DSH_HOME` 未设 / 为空 / 已设」三种情形求值这个表达式，并拒绝会被 YAML 读成 mapping 的裸标量。
@@ -246,12 +249,18 @@ shim 会在启动时提示冲突 —— `setup.mjs` 会把运行时的 DSH home 
 （`configuration` / `installation` / `headless` / `native_decompiler` / `java`），应当全为 `ok: true`。
 然后 `open_binary` 一个 PE、`binary_overview`、`procedure_pseudo_code`。
 
-供给本身结束时也会跑两道探针：`rea doctor --json`（如实报告，并点名未满足项），以及**与 MCP 行完全相同的
-shim 启动**。
+供给本身结束时跑三道检查：`rea doctor --json`（如实报告，并点名未满足项）、一次 **Ghidra 冒烟导入**
+（用 JDK 自带的 `bin/java` 跑 `rea analyze`，导不进就判本次供给失败；`--skip-smoke` 可关），以及
+**与 MCP 行完全相同的 shim 启动**。之所以要冒烟：`doctor` 只校验路径、版本与会用哪个 Java，**从不导入
+二进制**，桥接或 native addon 坏了，过去只能在第一次 MCP 调用超时时才撞见。
+
+**每个新目标的第一次分析都很慢。** 本机实测：小 PE 36 s，6 MB 的 DLL 64 s —— 每次导入都要起 JVM 并跑
+Ghidra 的默认自动分析。如果大文件的第一次 `open_binary` → `list_segments` 超时，那是这个成本、不是引擎坏了：
+再调一次，已打开的目标会立刻返回（它保留着自己的临时项目）。
 
 ## 实测环境
 
-作者机器，2026-10-13 / 14 / 16 / 19：
+作者机器，2026-10-13 / 14 / 16 / 19 / 23：
 
 | 组件 | 版本 |
 |---|---|
@@ -259,8 +268,8 @@ shim 启动**。
 | DeepSeek Harness | desktop runtime **0.2.0-rc.2**，内含 dsh CLI 0.1.7-rc.2 |
 | `@deepseek-ai/dsh-mcp-client`（行 provider） | 随 harness 打包 |
 | Ghidra | 12.1.4 |
-| JDK | Temurin 21（供给）/ Microsoft OpenJDK 25.0.4（复用） |
-| Node.js | 24.21.0（REA engines：`^22.19.0 \|\| ^24.11.0 \|\| >=26.0.0`） |
+| JDK | Temurin 21（供给）/ Amazon Corretto 25.0.5（宿主复用） |
+| Node.js | **24.22.1**（复用；REA engines：`^22.19.0 \|\| ^24.11.0 \|\| >=26.0.0`，ABI 137） |
 | 宿主 | Windows 11 x64（build 26200） |
 
 实测跑过：一次干净的 `setup.mjs --reuse` 走到 `setup complete`；一次**不经 PATH 上的 `rea`、完全经由
@@ -270,6 +279,11 @@ shim** 的 MCP `initialize` 握手返回 `serverInfo {name: rea, version: 6.7.0}
 
 本机**没有**端到端跑过、因此不做承诺的：约 775 MB 的 JDK + Ghidra 下载分支（`--dry-run` 有计划，本机用
 `--reuse` 复用了已有安装），以及 macOS/Linux 的首次运行。
+
+2026-10-23 宿主 Node 换到 **24.22.1** 后，同一条链路重验过：vendor 里的 `rea-windows-x64.node` 与两个
+`conpty` addon 在 ABI 137 下加载成功；`conpty.node` 的 `binary_overview` 报出 10 个段 / 1178 个函数 /
+618 个字符串；`procedure_pseudo_code` 返回了真实反编译结果；vendor 里的 JDK `java -version` 回 `21.0.12.1`。
+唯一**第一次没成**的是 `list_segments`：它撞上 Ghidra 冷分析的 64 s 而超时 —— 这正是上面冒烟步与那条说明的由来。
 
 ## 边界与注意事项
 
@@ -373,7 +387,10 @@ node scripts/setup.mjs          # 或：powershell -File scripts\rea-bundle-boot
 - **上游 REA / Ghidra**：改清单里的钉子再重跑 setup。REA 对 Ghidra 有版本闸门（目前 12.1.x），
   所以先更新 REA。
 
-`check-updates.ps1`（Windows PowerShell）会一次性报告以上各项的状态。
+`check-updates.ps1`（Windows PowerShell）会一次性报告以上各项的状态。`npm run check-updates` 在 Windows
+上转发给它（优先 PowerShell 5.1，其次 `pwsh`）；在 macOS/Linux 上它会说明这个脚本为何在那里给不出答案，
+并列出两条可移植命令 —— `node bin/rea-shim.mjs --shim-status` 与 `node scripts/setup.mjs --dry-run` ——
+且以非零码退出，不会报一个自己没查出来的「全绿」。
 
 ## 还想用纯配置的 1.x 线？
 

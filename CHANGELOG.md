@@ -17,6 +17,11 @@
   - 点「稍后」或「我已运行」后按**插件版本**记入 localStorage：同一版本不再弹，升级换了版本后重新提示一次；
   - 该 route 只在宿主有 `webServer` 时挂载（`ctx.inject(['webServer'])`），headless/ACP 主机行为不变；
   - 它只是提示：不 spawn、不下载、不改 `bundle.json`，也不跑 setup。
+- **`setup.mjs` 末尾新增 Ghidra 冒烟（`smoke` 步，`--skip-smoke` 可关）**：`rea doctor` 只校验路径、版本与
+  会用哪个 Java，**从不导入一个二进制**。首次真实导入要付一次性成本（本机实测：小 PE 约 36 s，6 MB DLL 约 64 s），
+  一旦桥接或 native addon 有问题，操作者只在**第一次 MCP 工具调用超时**时才撞见 —— 那读起来就是「升级把 REA 搞坏了」。
+  现在供给结束会用 JDK 自带的 `bin/java` 跑一次 `rea analyze --json`，把「能不能分析」变成有测量结果的结论；
+  失败即 `FAIL` 并计入退出码。`--skip-smoke` 跳过（CI 或低内存机器）。
 
 ### 修复
 
@@ -38,6 +43,23 @@
 - **`foreignReaRegistration` 不剥行尾注释**：`serverName: rea # upstream` 会被解析成 `rea # upstream` ≠ `rea`，
   重复注册漏报 —— 而这正是人手编辑那个文件时最常见的形态。现在按 YAML 规则取值：引号内原样，引号外 ` #` 之后是
   注释（`rea#1` 仍然是值）。
+- **`npm run check-updates` 在非 Windows 上是坏的**：这个 script 直接写死了
+  `powershell -NoProfile -File ./check-updates.ps1`，而脚本本身读 `%APPDATA%`、优先 `rea.cmd`
+  （并刻意避开 `rea.ps1` 垫片），所以在 macOS/Linux 上即使装了 `pwsh` 也只会从一个不存在的布局里
+  给出一个自信的错答案。现在改为 `node scripts/check-updates.mjs`：Windows 上转发给 `powershell`
+  （缺失时退 `pwsh`），其它平台说明原因、列出 `node bin/rea-shim.mjs --shim-status` 与
+  `node scripts/setup.mjs --dry-run`，并以**非零码**退出 —— 不把「不适用」伪装成「全绿」。
+- **供给期的 `rea doctor` 检查的不是本次供给的引擎**：那一步没传 `GHIDRA_INSTALL_DIR` / `JAVA_HOME`，
+  REA 于是回落到探测本机，于是报告里出现的是系统那份 Ghidra 与 JDK（本机实测：报的是 `D:\ghidra\...` + 系统
+  Java 25，而 vendor 里那份从未被检查）。现在 doctor 与冒烟共用与镜像 shim 完全相同的一组变量。
+- **复用 Node 时不记录候选的真实版本**：`reusableNodeChecked` 只回 `{ok}`，于是 `bundle.json` 的
+  `versions.node` 落到 `process.versions.node` —— 那是**跑 setup 的解释器**，不是被复用的那个。两者不同时
+  （`REA_BUNDLE_NODE`，或 PATH 首个 `node` 是另一个安装）记录与实际就静默不一致。现在探针把 `-v` 的第一行
+  带回，复用路径照实记录。
+- **manifest 把 Node 钉在 24.21.0（含已知漏洞）**：24.22.1 是 2026-10-21 的安全发布（Brotli 解码器越界写 RCE、
+  两处 TLS 主机名绕过、移除 eMudhra 中间 CA）。复用路径在装有新 Node 的机器上没问题，但**干净环境走下载路径
+  会装回带漏洞的 24.21.0**。六个平台的 `version` / `url` / `size` / `sha256` 全部升到 24.22.1
+  （校验和取自官方 `SHASUMS256.txt`；win32-x64 在本机下载、比对、解压并跑通 `node -v` / `npm -v` 后写入）。
 
 ### 升级
 
@@ -56,11 +78,13 @@
 
 ### 验证
 
-- 单测 **78 条**（新增「UTF-16 的 `bundle.json` 被 setup 读到」「UTF-16 的 `bundle.json` 被 shim 读到」两条；
-  重复注册用例扩成「带行尾注释」；「setup 指南」5 条：钉子精确/家族比对、无记录=首装、旧 REA=stale、UTF-16 记录、
-  坏记录/无 REA 字段都要求 setup）。
+- 单测 **84 条**（新增「冒烟在没有引擎时跳过」「`--skip-smoke` 直接关闭」「冒烟必须真调 `analyze` 且失败即
+  `FAIL`、探针与冒烟共用 vendor 变量」三条；此前 81 条：UTF-16 的 `bundle.json` 被 setup / shim 读到、「setup 指南」
+  5 条、「check-updates 包装器」3 条）。
+- `manifest` 审计：**24 条 fetch 全部 hash-pinned，0 TOFU**（Node 六平台换到 24.22.1 后重跑）。
 - `verify-branch.ps1` 新增 §9：指南链路四端（`bin/rea-guide.mjs` 的 route、`index.mjs` 的挂载、`client.js` 的
-  fetch、`cordis.patch.yml` 的行）逐一比对，防止改名后指南静默不出现。
+  fetch、`cordis.patch.yml` 的行）逐一比对，防止改名后指南静默不出现；§10：`npm run check-updates` 必须走
+  包装器，且包装器必须保留「Windows 才跑」与两条替代命令。
 - 未发版：无 tag / 无 Release / npm 仍 **2.0.10**。
 
 ## 2.0.10 — 2026-10-19

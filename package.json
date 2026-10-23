@@ -68,7 +68,7 @@
     }
   },
   "scripts": {
-    "check-updates": "powershell -NoProfile -File ./check-updates.ps1",
+    "check-updates": "node ./scripts/check-updates.mjs",
     "bundle:setup": "node ./scripts/setup.mjs",
     "bundle:status": "node ./bin/rea-shim.mjs --shim-status",
     "bundle:dry-run": "node ./scripts/setup.mjs --reuse --dry-run",
