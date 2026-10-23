@@ -176,7 +176,7 @@ node scripts/setup.mjs --reuse      # 或先 --dry-run 看计划
         transport: stdio
         command: !!js process.execPath
         args:
-          - !!js "(process.env.DSH_HOME && process.env.DSH_HOME.trim() !== '' ? process.env.DSH_HOME : (process.env.USERPROFILE || process.env.HOME || '') + '/.dsh') + '/plugins/rea-bundle/bin/rea-shim.mjs'"
+          - !!js "(process.env.DSH_HOME && process.env.DSH_HOME.trim() !== '' ? process.env.DSH_HOME : (process.env.USERPROFILE || ((process.env.HOMEDRIVE || '') + (process.env.HOMEPATH || '')) || process.env.HOME || '') + '/.dsh') + '/plugins/rea-bundle/bin/rea-shim.mjs'"
           - mcp
         env:
           ELECTRON_RUN_AS_NODE: '1'
@@ -188,9 +188,10 @@ node scripts/setup.mjs --reuse      # 或先 --dry-run 看计划
 - **`!!js` 标量必须加引号。** 裸标量里同时出现 `? ` 和 `: ` 时，它就不是一个标量了：YAML 会把它读成显式键值对，于是 loader 拿到的是一个 **mapping** 而不是表达式节点。用 harness 自己的方言实测（`JSON_SCHEMA` + `app.asar` 里的 `!!js` 类型），不加引号时 `args[0]` 变成 `{"[object Object]": "..."}` —— 一个行根本无法用来启动的对象。加引号消除歧义，内部的 JS 字符串改用单引号。
 - **必须用正斜杠，不能用反斜杠。** YAML 单引号标量会保留 `\` 字面量，接着 JavaScript 会把它吃掉：`'\plugins'` 不是路径而是 BEL 控制字符，`'\rea-bundle'` 变成回车、`'\bin'` 变成退格 —— 路径被静默摧毁。正斜杠在 Windows 与 POSIX 上都成立。
 - **`DSH_HOME` 的兜底是 `<home>/.dsh`，不是 `<home>`。** shim、`setup.mjs`、`bootstrap.ps1` 三者都把未设置的 `DSH_HOME` 解析到 `<home>/.dsh/...`；兜底少这一层，行就会指向供给永远不会写的位置 —— 而在 `DSH_HOME` 恰好被设置的机器上，这个错误完全不可见。
-- **`DSH_HOME`、`USERPROFILE`、`HOME` 三者都为空时，表达式会得到 `/.dsh/...`** —— 这是纯拼接唯一无法兜住
-  的组合，出现在没有主目录的服务账户/容器里。此时那一行起不来，而 `failOnStartupError: false` 会让它保持安静，
-  症状只有「没有 `mcp__rea__*` 工具」。这类账户请显式设置 `DSH_HOME`。
+- **主目录兜底与 `os.homedir()` 同序：`USERPROFILE` → `HOMEDRIVE`+`HOMEPATH` → `HOME`。** 中间那一对是
+  Windows 服务账户拿到的形态（没有 `USERPROFILE`）；跳过它，表达式会给这类账户算出 `/.dsh/...` —— 当前盘的根，
+  而它们恰好读不到那个路径。只有四者全空（连主目录都没有的容器账户）才会落到 `/.dsh/...`，而
+  `failOnStartupError: false` 会让它保持安静，症状只有「没有 `mcp__rea__*` 工具」。这类账户请显式设置 `DSH_HOME`。
 - **`!!js` 表达式里没有 `path`/`require`**：`ctx` 是 loader 作用域，所以 DSH_HOME 的兜底写成纯字符串拼接。
 
 `npm run bundle:audit` 会把前三条钉住：它用「`DSH_HOME` 未设 / 为空 / 已设」三种情形求值这个表达式，并拒绝会被 YAML 读成 mapping 的裸标量。

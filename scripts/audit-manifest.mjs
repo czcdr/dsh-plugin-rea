@@ -501,7 +501,11 @@ if (manifest) {
         ["the next patch", `${major}.${minor}.${patch + 1}`],
         ["the next minor", `${major}.${minor + 1}.0`],
       ]) {
-        if (Number.isFinite(next.split(".")[2]) && probe.test(next)) {
+        // `next` is a string and `Number.isFinite` does not coerce, so testing
+        // the bare split element was always false and this branch never ran —
+        // item 13 could not fail no matter what the probe accepted. Convert
+        // first; the guard exists only to skip a NaN major/minor/patch.
+        if (Number.isFinite(Number(next.split(".")[2])) && probe.test(next)) {
           add("error", "reaAgents.probe.expect.regex", `accepts ${next} (${label}), so a newer release passes as the pin`);
         }
       }

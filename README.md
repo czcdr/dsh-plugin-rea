@@ -192,7 +192,7 @@ The shipped row carries **no machine path**:
         transport: stdio
         command: !!js process.execPath
         args:
-          - !!js "(process.env.DSH_HOME && process.env.DSH_HOME.trim() !== '' ? process.env.DSH_HOME : (process.env.USERPROFILE || process.env.HOME || '') + '/.dsh') + '/plugins/rea-bundle/bin/rea-shim.mjs'"
+          - !!js "(process.env.DSH_HOME && process.env.DSH_HOME.trim() !== '' ? process.env.DSH_HOME : (process.env.USERPROFILE || ((process.env.HOMEDRIVE || '') + (process.env.HOMEPATH || '')) || process.env.HOME || '') + '/.dsh') + '/plugins/rea-bundle/bin/rea-shim.mjs'"
           - mcp
         env:
           ELECTRON_RUN_AS_NODE: '1'
@@ -204,10 +204,12 @@ Three details in that row are load-bearing, and all three were bugs first:
 - **The `!!js` scalar is quoted.** A bare scalar containing `? ` and `: ` is not one scalar: YAML reads it as an explicit key/value pair, so the loader receives a *mapping* where an expression belongs. Measured against the harness's own dialect (`JSON_SCHEMA` plus the `!!js` type from `app.asar`), the unquoted form made `args[0]` into `{"[object Object]": "..."}` — an object the row cannot launch with. Quoting removes the ambiguity, and the JS string literals inside then use single quotes.
 - **Forward slashes, never backslashes.** A single-quoted YAML scalar keeps `\` literal, and JavaScript then consumes it: `'\plugins'` is not a path but the BEL control character, `'\rea-bundle'` becomes a carriage return and `'\bin'` a backspace — the path is destroyed silently. Forward slashes work on Windows and on POSIX.
 - **The `DSH_HOME` fallback is `<home>/.dsh`, not `<home>`.** The shim, `setup.mjs` and `bootstrap.ps1` all resolve an unset `DSH_HOME` to `<home>/.dsh/...`; a fallback that stopped one level higher made the row point at a file provisioning never writes — invisible on any machine where `DSH_HOME` happens to be set.
-- **With `DSH_HOME`, `USERPROFILE` and `HOME` all empty, the expression resolves to `/.dsh/...`** — the one
-  combination the concatenation cannot improve on. That is a service or container account with no home
-  directory; the row then cannot start, and because `failOnStartupError: false` keeps that quiet, the only
-  symptom is "no `mcp__rea__*` tools". Set `DSH_HOME` explicitly on such an account.
+- **The home fallback mirrors `os.homedir()`: `USERPROFILE`, then `HOMEDRIVE`+`HOMEPATH`, then `HOME`.**
+  The middle pair is what a Windows service account gets instead of `USERPROFILE`; an expression that skipped
+  it produced `/.dsh/...` — the root of the current drive — for exactly the accounts that cannot read that
+  path. Only when all four are empty (a container account with no home at all) does the concatenation land on
+  `/.dsh/...`, and `failOnStartupError: false` keeps that quiet, so the only symptom is "no `mcp__rea__*`
+  tools". Set `DSH_HOME` explicitly on such an account.
 - **No `path`/`require` in a `!!js` expression**: `ctx` is the loader scope, so the DSH_HOME fallback is written as plain concatenation.
 
 `npm run bundle:audit` enforces the first three: it evaluates this exact expression with `DSH_HOME` unset, empty and set, and rejects a bare scalar that YAML would read as a mapping.

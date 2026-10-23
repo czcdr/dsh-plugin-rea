@@ -100,6 +100,17 @@ if (-not $script:NodeEngines) { throw "the manifest pins no nodeEngines, so Node
 # treats as the single source of truth. This used to be a second copy of the same
 # numbers in a comment, and two copies drift: the audit now asserts that the pin
 # keeps the shape this parser understands.
+function Compare-SchemaVersion([int[]]$Left, [int[]]$Right) {
+  # Negative when $Left is older, 0 when equal, positive when newer. All three
+  # components are compared: `^24.11.1` must reject 24.11.0, and comparing only
+  # major/minor accepted it — the same engines range then meant two different
+  # things here and in setup.mjs's regex probe.
+  for ($i = 0; $i -lt 3; $i++) {
+    if ($Left[$i] -ne $Right[$i]) { return $(if ($Left[$i] -gt $Right[$i]) { 1 } else { -1 }) }
+  }
+  return 0
+}
+
 function Test-EnginesMatch([string]$Clean, [string]$Range) {
   $versions = @()
   foreach ($part in $Clean.Split('.')) {
@@ -108,12 +119,16 @@ function Test-EnginesMatch([string]$Clean, [string]$Range) {
     $versions += $n
   }
   if ($versions.Count -lt 2) { return $false }
+  # A two-component version (`v24.11`) still has a patch of 0 for comparison.
+  while ($versions.Count -lt 3) { $versions += 0 }
   foreach ($clause in ($Range -split '\|\|')) {
     $c = $clause.Trim()
     if ($c -match '^\^(\d+)\.(\d+)\.(\d+)$') {
-      if ($versions[0] -eq [int]$Matches[1] -and $versions[1] -ge [int]$Matches[2]) { return $true }
+      $want = @([int]$Matches[1], [int]$Matches[2], [int]$Matches[3])
+      if ($versions[0] -eq $want[0] -and (Compare-SchemaVersion $versions $want) -ge 0) { return $true }
     } elseif ($c -match '^>=(\d+)\.(\d+)\.(\d+)$') {
-      if ($versions[0] -gt [int]$Matches[1] -or ($versions[0] -eq [int]$Matches[1] -and $versions[1] -ge [int]$Matches[2])) { return $true }
+      $want = @([int]$Matches[1], [int]$Matches[2], [int]$Matches[3])
+      if ((Compare-SchemaVersion $versions $want) -ge 0) { return $true }
     }
   }
   return $false

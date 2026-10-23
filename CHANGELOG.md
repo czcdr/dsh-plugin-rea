@@ -61,6 +61,39 @@
   会装回带漏洞的 24.21.0**。六个平台的 `version` / `url` / `size` / `sha256` 全部升到 24.22.1
   （校验和取自官方 `SHASUMS256.txt`；win32-x64 在本机下载、比对、解压并跑通 `node -v` / `npm -v` 后写入）。
 
+### 修复 · 审查轮
+
+- **`audit-manifest` 第 13 项是死代码**：`Number.isFinite(next.split(".")[2])` 测的是**字符串**，而
+  `Number.isFinite` 不做隐式转换 —— 该分支恒为假，「probe 是否误接受下一个 patch/minor」这项检查从未生效。
+  改为 `Number.isFinite(Number(...))`。实测把 probe 换成 `^6\.` 后，审计报出
+  「accepts 6.7.1 (the next patch)」「accepts 6.8.0 (the next minor)」，修复前一条都不报。
+- **零参数启动静默退出 0**：`main` 对空 argv 打印 usage 并以 0 退出，而 `launchSystemRea` 与 bundle 分支仍留着
+  `argv.length > 0 ? argv : ["mcp"]` 的兜底（永远不可达）。行一旦丢掉 `mcp`（profile 合并、手改 patch），
+  子进程以 0 退出、`failOnStartupError: false` 再把它压住，症状只有「没有任何 `mcp__rea__*` 工具」。
+  现在按**是否有终端**区分：有人看 → usage + 0；无人看（被 spawn）→ usage + stderr 说明 + **64**。
+  两处死兜底一并删除。
+- **解压前先删旧安装**：`provisionComponent` 在 `extract()` 之前无条件 `rmSync(target)`，与文件头
+  「Non-destructive」相悖 —— 提取器缺失（极简 Linux 无 unzip/python3/tar）或磁盘满时，一份可用的安装已经没了，
+  换不来任何东西。旧目录现在只在 rename 之前清除（`extract` 失败不再触碰它）。
+- **下载：有钉住校验和但清单未声明 `size` 时，完整 `.part` 无法救援**：救援分支的条件要求 `expected.size`，
+  于是 resume 发 `Range: bytes=<size>-`、服务器回 416，每次重跑都同样失败，只能手工清缓存。现在这种组合用
+  钉住的 sha256 判定：匹配即完成 rename，不匹配则清掉重下。（当前清单 24 条全有 size + sha，这是为将来留的路径。）
+- **`setup.lock` 不是互斥锁**：它只在运行**结束**时写或删，启动时从不获取 —— shim 的 detach 供给与手工
+  `node scripts/setup.mjs` 能同时写同一个 `.part` 与同一个 `<component>.staging`。现在启动即以 `O_EXCL`（`wx`）
+  抢锁；遇到**活**持有者则报出 pid 与日志路径、以 **75** 退出，死 pid 或 `failed` 锁被接管（崩溃后不需要手工 `rm`）。
+- **`check-updates.ps1` 把「文件不完整」误报成「版本不符」**：`application.properties` 缺
+  `application.version=` 行时 `$v` 为空，于是报「当前要求 Ghidra 12.1.x，当前为」——读者会去找新版本，
+  而真正该做的是重装该组件。现在分成两句。
+- **shim 的 PATH 去重不比对大小写**（Windows）：`C:\Program Files\nodejs` 与 `c:\program files\nodejs`
+  被当成两个目录，vendored Node 会被重复前置。现在 Windows 上先 `toLowerCase()` 再比。
+- **`cordis.patch.yml` 的主目录兜底缺 `HOMEDRIVE`+`HOMEPATH`**：服务账户没有 `USERPROFILE`，表达式于是产出
+  `/.dsh/...`（当前盘根），而 `setup.mjs` / shim 用的是 `os.homedir()`。现在三处同序：
+  `USERPROFILE` → `HOMEDRIVE`+`HOMEPATH` → `HOME`；两份 README 同步。
+- **`rea-bundle-bootstrap.ps1` 的 engines 判断只看 major/minor**：`^24.11.1` 会接受 24.11.0。改为三段比较。
+- **文件头关于 TOFU 的承诺与实现不符**：注释写「首次记录、之后强制」，但 `sha256: "unverified"` 的条目在缓存
+  命中时无条件放行（没有可比的钉住值）。注释改为实情：首次测得的摘要列进 `unverifiedChecksums`，之后缓存命中
+  不再复核，因为**没有**钉住值可比 —— 记录点名这个缺口，而不是假装那些字节经过验证。
+
 ### 升级
 
 > **两条长期规则 —— 本版如此，以后每个 2.x 版本都如此。**
@@ -78,9 +111,10 @@
 
 ### 验证
 
-- 单测 **84 条**（新增「冒烟在没有引擎时跳过」「`--skip-smoke` 直接关闭」「冒烟必须真调 `analyze` 且失败即
-  `FAIL`、探针与冒烟共用 vendor 变量」三条；此前 81 条：UTF-16 的 `bundle.json` 被 setup / shim 读到、「setup 指南」
-  5 条、「check-updates 包装器」3 条）。
+- 单测 **88 条**（本轮新增 3 条：「解压失败不销毁旧安装」「审计第 13 项不是死代码」「活锁挡住第二个 setup」；
+  上一轮加的是冒烟三条与「复用组件带上自己的版本」；此前 81 条为基础）。
+- 真实执行证据（不是读代码）：把 probe 改成 `^6\.` 后审计报出 `accepts 6.7.1` / `accepts 6.8.0`；
+  零参数在无终端下退出 **64**、`--shim-help` 仍退出 0 —— 由单测覆盖。
 - `manifest` 审计：**24 条 fetch 全部 hash-pinned，0 TOFU**（Node 六平台换到 24.22.1 后重跑）。
 - `verify-branch.ps1` 新增 §9：指南链路四端（`bin/rea-guide.mjs` 的 route、`index.mjs` 的挂载、`client.js` 的
   fetch、`cordis.patch.yml` 的行）逐一比对，防止改名后指南静默不出现；§10：`npm run check-updates` 必须走

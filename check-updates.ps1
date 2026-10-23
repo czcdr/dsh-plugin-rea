@@ -216,9 +216,17 @@ if ($gd -and (Test-Path $gd)) {
   Ok "GHIDRA_INSTALL_DIR = $gd"
   $props = Join-Path $gd 'Ghidra\application.properties'
   if (Test-Path $props) {
-    $v = (Select-String -Path $props -Pattern '^application\.version=' | Select-Object -First 1).Line -replace '^application\.version=', ''
-    Ok "已安装版本: $v"
-    if ($v -notmatch '^12\.1\.') { Bad "REA 当前要求 Ghidra 12.1.x，当前为 $v —— 先确认新版 REA 是否放开版本门槛" }
+    $line = (Select-String -Path $props -Pattern '^application\.version=' | Select-Object -First 1).Line
+    if (-not $line) {
+      # "not 12.1.x" for an unreadable version sent the reader looking for a
+      # newer Ghidra when the file is simply incomplete — a different problem
+      # with a different fix.
+      Bad 'Ghidra\application.properties 缺少 application.version 行 —— 文件不完整（重装该组件）'
+    } else {
+      $v = $line -replace '^application\.version=', ''
+      Ok "已安装版本: $v"
+      if ($v -notmatch '^12\.1\.') { Bad "REA 当前要求 Ghidra 12.1.x，当前为 $v —— 先确认新版 REA 是否放开版本门槛" }
+    }
   } else { Bad '缺少 Ghidra\application.properties —— 目录不完整' }
 } else {
   Warn "GHIDRA_INSTALL_DIR 未设置或目录不存在（当前值: $gd）"

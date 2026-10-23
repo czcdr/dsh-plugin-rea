@@ -7,8 +7,11 @@
  *  - Idempotent: every stage skips work whose result already verifies.
  *  - Resumable: archives are fetched to a cache and reused; a killed run
  *    continues instead of restarting.
- *  - Honest: a checksum the vendor does not publish is recorded on first fetch
- *    (TOFU) and enforced afterwards; it is never invented.
+ *  - Honest: a checksum the vendor does not publish is recorded from the fetch
+ *    that first measured it and listed under `unverifiedChecksums`; it is never
+ *    invented. A later cache hit is trusted without re-checking, because there is
+ *    no pinned value to check it against — the record names the gap instead of
+ *    pretending those bytes were verified.
  *  - Non-destructive: nothing outside the bundle root, the cache, and
  *    bundle.json is written. Existing REA/Ghidra/JDK installs are adopted with
  *    --reuse rather than duplicated.
@@ -430,6 +433,23 @@ async function download(url, destination, expected, label) {
       return { sha256: digest, size: have, tofu: !expected.sha256 || expected.sha256 === "unverified" };
     }
     log(`       ${label}: partial file is complete but the checksum does not match; starting over`);
+    rmSync(temporary, { force: true });
+    have = 0;
+  }
+  // A `.part` that already holds the whole body breaks the resume even when the
+  // manifest declares no size: the Range request asks for bytes past the end, a
+  // correct server answers 416, and every retry repeats it — the file can only be
+  // rescued by hand. A pinned checksum is evidence enough to finish the rename;
+  // without one there is nothing to compare and the 416 path stays.
+  if (have > 0 && !expected.size && expected.sha256 && expected.sha256 !== "unverified") {
+    const digest = sha256File(temporary);
+    if (digest === expected.sha256) {
+      log(`       ${label}: partial file matches the pinned checksum; verified and kept`);
+      rmSync(destination, { force: true });
+      renameSync(temporary, destination);
+      return { sha256: digest, size: have, tofu: false };
+    }
+    log(`       ${label}: partial file does not match the pinned checksum; starting over`);
     rmSync(temporary, { force: true });
     have = 0;
   }
@@ -1269,7 +1289,12 @@ async function provisionComponent(name, component, context) {
   }
 
   const target = path.join(vendor, component.unpack?.moveTo ?? name);
-  rmSync(target, { recursive: true, force: true });
+  // The old install is left in place until the new one is ready. Deleting it
+  // here — before anything is extracted — made provisioning destructive on the
+  // exact path it must not be: an extractor that is missing (a minimal Linux
+  // without unzip/python3/tar) or a full disk destroyed a working install and
+  // replaced it with nothing. The rename below is what replaces it, and it is
+  // the only place that has to clear the destination.
   const staging = target + ".staging";
   rmSync(staging, { recursive: true, force: true });
   const unpacked = extract(archivePath, staging, source.format, context);
@@ -1444,6 +1469,84 @@ const context = {
   resolved: {},
 };
 const results = {};
+
+/* ---------------------------------------------------------------- concurrency */
+
+/**
+ * True while a pid still exists.
+ *
+ * `process.kill(pid, 0)` performs the existence check without delivering a
+ * signal; EPERM means "it exists, but it is not ours", which still counts.
+ */
+function pidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
+}
+
+/**
+ * Claim the run lock, or report who holds it.
+ *
+ * `setup.lock` used to be written only at the END of a run, so it recorded an
+ * outcome and excluded nothing: the shim's detached provisioning and a hand-run
+ * `node scripts/setup.mjs` could write the same `.part` and the same
+ * `vendor/<component>.staging` at the same time, and whichever renamed last left
+ * a component whose size and digest belonged to neither run. The lock is now
+ * claimed before the first byte moves and created with O_EXCL (`wx`), so a second
+ * process loses the race instead of interleaving with the first.
+ *
+ * A lock naming a dead pid, or one a previous run left as `failed`, is taken
+ * over: a crash or a failed download must not require a manual `rm` before the
+ * next attempt can start.
+ */
+function acquireRunLock() {
+  const lockFile = path.join(options.root, "setup.lock");
+  const record = { state: "running", pid: process.pid, at: Date.now(), log: logFilePath() };
+  try {
+    mkdirSync(options.root, { recursive: true });
+  } catch (error) {
+    return { ok: false, holder: null, error };
+  }
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      writeFileSync(lockFile, JSON.stringify(record) + "\n", { flag: "wx" });
+      return { ok: true, lockFile };
+    } catch (error) {
+      if (error?.code !== "EEXIST") return { ok: false, holder: null, error };
+    }
+    const holder = readJson(lockFile);
+    if (holder && holder.state === "running" && holder.pid !== process.pid && pidAlive(holder.pid)) {
+      return { ok: false, holder };
+    }
+    // Missing, unreadable, failed, or owned by a pid that is gone: replace it.
+    try {
+      rmSync(lockFile, { force: true });
+    } catch {
+      /* the next write reports why */
+    }
+  }
+  return { ok: false, holder: readJson(lockFile) };
+}
+
+if (!options.dryRun && !options.help) {
+  const lock = acquireRunLock();
+  if (!lock.ok) {
+    const holder = lock.holder ?? {};
+    const who = typeof holder.pid === "number" ? `pid ${holder.pid}` : "another run";
+    const where = typeof holder.log === "string" ? holder.log : logFilePath();
+    process.stderr.write(
+      `setup: another provisioning run holds ${path.join(options.root, "setup.lock")} (${who}).\n` +
+        `  its log: ${where}\n` +
+        `  wait for it to finish, or delete that file if the process is gone.\n`,
+    );
+    if (lock.error) process.stderr.write(`  ${String(lock.error?.message ?? lock.error)}\n`);
+    process.exit(75);
+  }
+}
 
 /**
  * What a previous run recorded.

@@ -268,7 +268,7 @@ test("REA_BUNDLE_ROOT still overrides both layouts", () => {
   }
 });
 
-test("a bare invocation reports usage instead of starting anything", () => {
+test("a bare invocation refuses with a usage error when no terminal is watching", () => {
   const root = mkdtempSync(path.join(tmpdir(), "rea-shim-bare-"));
   try {
     const checkout = path.join(root, "checkout");
@@ -295,11 +295,27 @@ test("a bare invocation reports usage instead of starting anything", () => {
       env,
       timeout: 60000,
     });
-    assert.equal(run.status, 0, run.stderr);
+    // spawnSync gives the child pipes, not a terminal — which is exactly the
+    // harness case. The row is supposed to pass `mcp`; exiting 0 here left REA
+    // silently absent from the tool list under `failOnStartupError: false`, so
+    // the no-terminal path now reports itself on stderr and leaves EX_USAGE.
+    assert.equal(run.status, 64, run.stderr);
     assert.match(run.stdout, /--shim-status/);
+    assert.match(run.stderr, /must pass `mcp`/);
     // A lock would mean a provisioning run was started, which a stray
     // `rea-bundle-status` must never do.
     assert.equal(existsSync(path.join(home, "plugins", "rea-bundle", "setup.lock")), false);
+
+    // The explicit request still answers with usage and success, for the human
+    // who typed the launcher rather than a supervisor that lost the arguments.
+    const helped = spawnSync(process.execPath, [path.join(checkout, "bin", "rea-shim.mjs"), "--shim-help"], {
+      encoding: "utf8",
+      env,
+      timeout: 60000,
+    });
+    assert.equal(helped.status, 0, helped.stderr);
+    assert.match(helped.stdout, /--shim-status/);
+    assert.doesNotMatch(helped.stderr, /must pass `mcp`/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -508,6 +524,31 @@ test("a reused component carries its own version into the record", () => {
   assert.match(source, /version: readGhidraVersion\(install\)/);
   assert.match(source, /function readJdkVersion\(root\)/);
   assert.match(source, /function readGhidraVersion\(root\)/);
+});
+
+test("a failed extraction leaves the previous install in place", () => {
+  // Clearing the destination BEFORE extracting made provisioning destructive on
+  // the one path it must not be: a missing extractor (a minimal Linux without
+  // unzip/python3/tar) or a full disk destroyed a working install and put nothing
+  // in its place. The tree is now cleared only for the rename that replaces it.
+  const source = readFileSync(SETUP_SOURCE, "utf8");
+  const lines = source.split("\n");
+  const extractAt = lines.findIndex((line) => line.includes("extract(archivePath, staging"));
+  const clearAt = lines.findIndex((line) => line.includes("rmSync(target"));
+  assert.ok(extractAt >= 0, "the archive must be extracted into staging");
+  assert.ok(clearAt >= 0, "the destination must still be cleared before the rename");
+  assert.ok(clearAt > extractAt, "clearing the destination before extraction destroys a working install");
+});
+
+test("the manifest audit's probe-staleness check is not dead code", () => {
+  // `Number.isFinite(next.split(".")[2])` tested a STRING, and Number.isFinite
+  // never coerces: the branch was always false, so item 13 could not fail and a
+  // probe that accepted the next patch/minor passed the audit. Verified by
+  // running the audit against a manifest whose probe is `^6\.` — it now reports
+  // "accepts 6.7.1 (the next patch)".
+  const audit = readFileSync(path.join(REPO_ROOT, "scripts", "audit-manifest.mjs"), "utf8");
+  assert.match(audit, /Number\.isFinite\(Number\(next\.split\("\."\)\[2\]\)\)/);
+  assert.doesNotMatch(audit, /Number\.isFinite\(next\.split\("\."\)\[2\]\)/);
 });
 
 /* =========================== this round's regressions =========================
@@ -1253,7 +1294,10 @@ test("--json releases the lock on success and marks it failed on failure", () =>
     // The lock is what tells the shim a run is in flight. A successful --json run
     // used to leave it behind (the removal sat in the non---json branch), so a
     // fully provisioned machine advertised "provisioning started" for six hours.
-    writeFileSync(path.join(bundle, "setup.lock"), JSON.stringify({ state: "running", pid: process.pid, at: Date.now() }));
+    // The pid is dead on purpose: this fixture stands for a run that crashed and
+    // left its lock, and such a lock must be taken over rather than block the
+    // next attempt (the live-holder case is the test below).
+    writeFileSync(path.join(bundle, "setup.lock"), JSON.stringify({ state: "running", pid: 999999, at: Date.now() }));
     const ok = spawnSync(process.execPath, [component(true), "--json", "--offline", "--only", "androidPlatformTools", "--root", bundle], {
       encoding: "utf8",
       timeout: 120000,
@@ -1271,6 +1315,44 @@ test("--json releases the lock on success and marks it failed on failure", () =>
     const lock = JSON.parse(readFileSync(path.join(bundle, "setup.lock"), "utf8"));
     assert.equal(lock.state, "failed");
     assert.equal(lock.exit, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a run lock held by a live process stops a second setup", () => {
+  // The lock used to be written only when a run ENDED, so two runs — the shim's
+  // detached provisioning and a hand-run `node scripts/setup.mjs` — could write
+  // the same `.part` and the same staging directory, and whichever renamed last
+  // kept a component whose size and digest belonged to neither. Claimed with
+  // O_EXCL before the first byte moves, the second run must lose the race.
+  const root = mkdtempSync(path.join(tmpdir(), "rea-lock-live-"));
+  try {
+    const bundle = path.join(root, "bundle");
+    mkdirSync(bundle, { recursive: true });
+    addReaStub(bundle);
+    const setup = makePluginTree(path.join(root, "tree"), (manifest) => {
+      manifest.components.androidPlatformTools = testComponent("http://127.0.0.1:9/payload.bin", Buffer.from("adb"), {
+        optional: true,
+      });
+    });
+    // A live pid: this test process. 999999 would be a dead one.
+    writeFileSync(
+      path.join(bundle, "setup.lock"),
+      JSON.stringify({ state: "running", pid: process.pid, at: Date.now(), log: "C:\\logs\\setup.log" }),
+    );
+    const run = spawnSync(
+      process.execPath,
+      [setup, "--offline", "--only", "androidPlatformTools", "--root", bundle],
+      { encoding: "utf8", timeout: 120000 },
+    );
+    assert.equal(run.status, 75, `${run.stdout}\n${run.stderr}`);
+    assert.match(run.stderr, /another provisioning run holds/);
+    assert.match(run.stderr, new RegExp(`pid ${process.pid}`));
+    // The holder's lock is left untouched: this run never owned it.
+    const lock = JSON.parse(readFileSync(path.join(bundle, "setup.lock"), "utf8"));
+    assert.equal(lock.pid, process.pid);
+    assert.equal(lock.state, "running");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

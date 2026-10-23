@@ -23,6 +23,7 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 const EX_CONFIG = 78;
+const EX_USAGE = 64;
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = path.resolve(HERE, "..");
 
@@ -467,7 +468,17 @@ function childEnvironment(config) {
     const nodeDir = path.dirname(paths.node);
     const current = env.PATH ?? "";
     const parts = current.split(path.delimiter).filter((part) => part !== "");
-    if (!parts.some((part) => path.resolve(part) === path.resolve(nodeDir))) {
+    // Windows treats two spellings of one directory as equal, so a PATH already
+    // carrying `C:\Program Files\nodejs` must not gain a second copy because the
+    // vendored path is spelled `c:\program files\nodejs`. POSIX is case-sensitive
+    // and keeps the exact comparison.
+    const caseInsensitive = process.platform === "win32";
+    const sameDir = (left, right) => {
+      const a = path.resolve(left);
+      const b = path.resolve(right);
+      return caseInsensitive ? a.toLowerCase() === b.toLowerCase() : a === b;
+    };
+    if (!parts.some((part) => sameDir(part, nodeDir))) {
       env.PATH = [nodeDir, ...parts].join(path.delimiter);
     }
   }
@@ -891,7 +902,11 @@ async function resolveLaunch({ root, bundleVersion = null, bundleProvisioned = f
 
 /** Launch the system REA exactly the way the 1.x row did. */
 function launchSystemRea(system, argv) {
-  const args = argv.length > 0 ? argv : ["mcp"];
+  // No `["mcp"]` fallback: `main` already answers a zero-argument start, so this
+  // helper only ever sees the arguments the row passed. Keeping a fallback here
+  // made the two places disagree about what an empty argument list means, and the
+  // fallback was unreachable anyway.
+  const args = argv;
   const useShell = process.platform === "win32" && /\.(cmd|bat)$/i.test(system.file);
   // `REA_BUNDLE_DELEGATED` marks the child as "already the system REA". Without
   // it a wrapper on PATH that calls this shim would delegate to itself forever.
@@ -1097,8 +1112,20 @@ function usage() {
 async function main() {
   const argv = process.argv.slice(2);
 
+  // A person typing the launcher wants the usage text and a zero status. A
+  // harness that starts it with no arguments is a different event: the row is
+  // supposed to pass `mcp`, and with `failOnStartupError: false` an exit 0 here
+  // leaves REA silently absent from every session's tool list instead of failing
+  // where someone can see it. Nobody watching a terminal means nobody to answer
+  // a usage dump, so that case reports on stderr and leaves a non-zero status.
   if (argv.includes("--shim-help") || argv.length === 0) {
     process.stdout.write(usage());
+    if (argv.length === 0 && !process.stdout.isTTY && !process.stderr.isTTY) {
+      process.stderr.write(
+        "rea-shim: started with no arguments and no terminal; the mcp-rea row must pass `mcp`\n",
+      );
+      return EX_USAGE;
+    }
     return 0;
   }
 
@@ -1260,7 +1287,7 @@ async function main() {
   }
 
   // Pass through whatever the row supplied; 'mcp' in the normal case.
-  const childArgs = [rea.reaEntry, ...(argv.length > 0 ? argv : ["mcp"])];
+  const childArgs = [rea.reaEntry, ...argv];
   const child = spawn(rea.node, childArgs, {
     env,
     stdio: "inherit",
