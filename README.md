@@ -114,7 +114,7 @@ releases, checksum-verified). Then install the plugin for your profile:
 ```
 dsh plugin --profile <profile> add dsh-plugin-rea
 # or pin this release instead of tracking npm latest:
-dsh plugin --profile <profile> add github:czcdr/dsh-plugin-rea#v2.0.11
+dsh plugin --profile <profile> add github:czcdr/dsh-plugin-rea#v2.0.12
 ```
 
 > **On an Electron host (the DeepSeek Harness desktop app) the profile is owned by the application.**

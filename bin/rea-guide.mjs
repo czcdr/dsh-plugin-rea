@@ -69,9 +69,18 @@ export function defaultBundlePath(home = dshHome()) {
   return join(home, 'plugins', 'rea-bundle', 'bundle.json')
 }
 
-/** The exact command a user should run, quoted so a path with spaces survives. */
+/**
+ * The exact command a user should run, quoted so a path with spaces survives.
+ *
+ * `--reuse` is not cosmetic. The guide appears mostly after an upgrade, when the
+ * runtime is already on the machine: without the flag, setup re-fetches the
+ * ~570 MB JDK + Ghidra pair even though the machine can answer for both, which is
+ * both slow and the opposite of what "align the runtime" means. On a first
+ * install the flag costs nothing — every candidate is probed, and a machine with
+ * none downloads exactly as before.
+ */
 export function setupCommandFor(pluginRoot = PLUGIN_ROOT) {
-  return `node "${join(pluginRoot, 'scripts', 'setup.mjs')}"`
+  return `node "${join(pluginRoot, 'scripts', 'setup.mjs')}" --reuse`
 }
 
 /**

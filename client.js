@@ -54,6 +54,8 @@ window.__ModuleLoader__.load({
         done: "我已运行",
         later: "稍后",
         hint: "跑完重启 dsh。这一步只对齐运行时，不会更新插件包本身；升级后同样再跑一次。",
+        noteSmoke: "setup 结束时会用 JDK 自带的 java 跑一次真实分析来验证引擎 —— 那里 30–60 秒没有任何输出是正常的。",
+        noteLock: "若它报 “another provisioning run holds …”，说明后台已有一个 setup 在跑，等它结束再试即可。",
       },
       en: {
         badge: "ONE-TIME SETUP",
@@ -73,6 +75,8 @@ window.__ModuleLoader__.load({
         done: "I ran it",
         later: "Later",
         hint: "Restart dsh afterwards. This only aligns the runtime; it does not update the plugin package — run it again after the next upgrade.",
+        noteSmoke: "It finishes by importing a small file to prove the analysis engine works — 30–60 s with no output there is normal.",
+        noteLock: "If it reports “another provisioning run holds …”, a setup is already running in the background; wait for it.",
       },
     };
 
@@ -335,8 +339,21 @@ window.__ModuleLoader__.load({
 
           h(
             "p",
-            { style: { margin: "10px 0 16px", fontSize: 12.5, color: "var(--dsw-alias-label-secondary, #9a9a9a)" } },
+            { style: { margin: "10px 0 8px", fontSize: 12.5, color: "var(--dsw-alias-label-secondary, #9a9a9a)" } },
             t.hint,
+          ),
+          h(
+            "ul",
+            {
+              style: {
+                margin: "0 0 16px",
+                paddingLeft: 18,
+                fontSize: 12.5,
+                color: "var(--dsw-alias-label-secondary, #9a9a9a)",
+              },
+            },
+            h("li", null, t.noteSmoke),
+            h("li", null, t.noteLock),
           ),
 
           h(
