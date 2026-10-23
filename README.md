@@ -10,6 +10,15 @@
 > kept on the [`v1` branch](https://github.com/czcdr/dsh-plugin-rea/tree/v1) and on npm as `dsh-plugin-rea@1.0.6`.
 > Full comparison: [Two lines: 1.x and 2.x](#two-lines-1x-and-2x) · upgrading: [Upgrading from 1.x](#upgrading-from-1x).
 
+> **How new can it get? This is the ceiling — going further breaks tools.** REA 6.7.0 accepts Ghidra
+> **12.1.x** only (12.2 is `unsupported`, and the whole Ghidra decompile/analysis group disappears) and the
+> jadx bridge **0.7.1** only (0.8.0 fails on its first call with `Expected engine 0.7.1`, before any APK is
+> loaded). JDK **21.0.13** is out upstream, but Adoptium ships no Windows build, so there is nothing to point
+> at here — and it drops only three of the four eMudhra anchors. The trade-off is therefore "all tools green,
+> CVE still open": Ghidra 12.1.4's CVE-2026-100504 / 100505 / 100503 / 113604 stay in the chain — **do not
+> analyse untrusted samples with this environment** — and the JDK still trusts the eMudhra anchors. Evidence,
+> mitigations and revisit triggers: [docs/update-review-2026-10-24.md](docs/update-review-2026-10-24.md).
+
 > **You must run `node scripts/setup.mjs` yourself — once after installing, and once after every plugin
 > upgrade.** Nothing runs it for you: a market install or update replaces the package and stops there.
 > Since **2.0.8** a market upgrade keeps the *row* working (the mirrored launcher re-execs the new one), but it
