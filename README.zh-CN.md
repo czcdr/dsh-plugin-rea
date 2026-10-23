@@ -10,7 +10,7 @@
 > [`v1` 分支](https://github.com/czcdr/dsh-plugin-rea/tree/v1)，npm 上仍是 `dsh-plugin-rea@1.0.6`。
 > 完整对比：[两条线：1.x 与 2.x](#两条线1x-与-2x) · 升级：[从 1.x 升级](#从-1x-升级)。
 
-> **能升到多新？就到这儿 —— 再往上会掉工具。** REA 6.7.0 只认 Ghidra **12.1.x**（12.2 判 `unsupported`，
+> REA 6.7.0 只认 Ghidra **12.1.x**（12.2 判 `unsupported`，
 > Ghidra 系的反编译/分析工具整组消失）和 jadx 桥接 **0.7.1**（0.8.0 会在第一次调用就报
 > `Expected engine 0.7.1`，失败点在加载 APK 之前）。JDK **21.0.13** 上游已发，但 Adoptium 没给 Windows
 > 构建，本机无处可指，而且它只移除 4 个 eMudhra 锚里的 3 个。所以现在的取舍是「工具全绿、CVE 未清」：
