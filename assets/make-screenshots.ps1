@@ -24,11 +24,11 @@ if (-not $OutDir -or $OutDir.Trim() -eq '') { $OutDir = $PSScriptRoot }
 # 重绘会把旧版本号带进市场页，而且没有人会注意到，因为图片是二进制。
 # 工具数（207）不是 manifest 字段，是人工核对过的常量：升 pin 时一起核一遍。
 $reaPin     = '6.7.0'
-$reaTools   = 207
+$reaTools   = 229
 $ghidraPin  = '12.1.4'
 $nodePin    = '24.21.0'
 # 截图是一次「实测」，这个日期必须是真的测量日；重绘时改成当天。
-$measuredOn = '2026-10-19'
+$measuredOn = '2026-10-26'
 $manifestFile = Join-Path (Split-Path -Parent $PSScriptRoot) 'manifest\bundle.manifest.json'
 if (Test-Path $manifestFile) {
   try {
@@ -38,6 +38,19 @@ if (Test-Path $manifestFile) {
     if ($pinDoc.pins.node)      { $nodePin = [string]$pinDoc.pins.node }
   } catch {
     Write-Warning "manifest 里的钉子读不到（$($_.Exception.Message)）；用脚本内的默认值。"
+  }
+}
+# 实测版本未必等于钉：本机若开过 Ghidra 闸门覆盖（scripts/ghidra-gate-override.mjs），
+# 跑的是 REA 未验证的那一版。图上写实测的那个，并标出钉值 —— 否则图会谎报「跑过什么」。
+$ghidraMeasured = $ghidraPin
+$overrideRecord = $null
+if ($env:DSH_HOME) {
+  $overrideFile = Join-Path $env:DSH_HOME 'plugins\rea-bundle\ghidra-gate-override.json'
+  if (Test-Path $overrideFile) {
+    try {
+      $overrideRecord = Get-Content $overrideFile -Raw -Encoding UTF8 | ConvertFrom-Json
+      if ($overrideRecord.requestedVersion) { $ghidraMeasured = "$($overrideRecord.requestedVersion)（闸门覆盖，钉 $ghidraPin）" }
+    } catch { $overrideRecord = $null }
   }
 }
 
@@ -134,7 +147,7 @@ Draw-Line  $g 358 446 150 446 $muted
 Draw-Arrow $g 150 446 150 342 $muted
 
 Draw-Text $g '上游 REA（MIT）：github.com/morluto/rea      本插件：github.com/czcdr/dsh-plugin-rea' $fSmall $muted 60 620
-Draw-Text $g "实测 REA $reaPin + DSH 桌面运行时 0.2.0-rc.2 + Ghidra $ghidraPin + Node ${nodePin}（Windows 11 x64，$measuredOn）" $fSmall $muted 60 646
+Draw-Text $g "实测 REA $reaPin（$reaTools 个工具） + DSH 桌面运行时 0.2.0-rc.2 + Ghidra $ghidraMeasured + Node ${nodePin}（Windows 11 x64，$measuredOn）" $fSmall $muted 60 646
 Draw-Text $g 'Ghidra 为 Apache-2.0（NSA）；REA 为 MIT。本仓库不分发上游代码。' $fSmall $muted 60 672
 Save-Png $bmp $g (Join-Path $OutDir 'screenshot-1.png')
 
