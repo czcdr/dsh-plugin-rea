@@ -10,12 +10,14 @@
 > [`v1` 分支](https://github.com/czcdr/dsh-plugin-rea/tree/v1)，npm 上仍是 `dsh-plugin-rea@1.0.6`。
 > 完整对比：[两条线：1.x 与 2.x](#两条线1x-与-2x) · 升级：[从 1.x 升级](#从-1x-升级)。
 
-> REA 6.7.0 只认 Ghidra **12.1.x**（12.2 判 `unsupported`，
+> REA **6.8.0**（本包钉子）只认 Ghidra **12.1.x**（12.2 判 `unsupported`，
 > Ghidra 系的反编译/分析工具整组消失）和 jadx 桥接 **0.7.1**（0.8.0 会在第一次调用就报
-> `Expected engine 0.7.1`，失败点在加载 APK 之前）。JDK **21.0.13** 上游已发，但 Adoptium 没给 Windows
-> 构建，本机无处可指，而且它只移除 4 个 eMudhra 锚里的 3 个。所以现在的取舍是「工具全绿、CVE 未清」：
-> Ghidra 12.1.4 的 CVE-2026-100504 / 100505 / 100503 / 113604 仍在链上 —— **别拿这套环境分析来源不可信
-> 的样本**；JDK 也仍信任 eMudhra 锚。证据、缓解与重开条件：[docs/update-review-2026-10-24.md](docs/update-review-2026-10-24.md)。
+> `Expected engine 0.7.1`，失败点在加载 APK 之前）。这两道闸门 2026-10-26 对着 6.8.0 重新核过，**一道都没动**。
+> JDK **21.0.13** 上游已发，但 Adoptium 仍没给 Windows 构建，本机无处可指，而且它只移除 4 个 eMudhra 锚里的
+> 3 个。所以现在的取舍是「工具全绿、CVE 未清」：Ghidra 12.1.4 的 CVE-2026-100504 / 100505 / 100503 / 113604
+> 仍在链上 —— **别拿这套环境分析来源不可信的样本**；JDK 也仍信任 eMudhra 锚。证据、缓解与重开条件：
+> [docs/update-review-2026-10-24.md](docs/update-review-2026-10-24.md) 与
+> [docs/update-review-2026-10-26.md](docs/update-review-2026-10-26.md)。
 
 > **`node scripts/setup.mjs` 要你自己跑 —— 装完跑一次，之后每次升级插件版本再跑一次。** 没有东西会替你跑：
 > 市场里的安装/更新只替换包，然后到此为止。从 **2.0.8** 起，市场升级能保证**那一行**继续可用（镜像启动器会
@@ -111,7 +113,7 @@ profile 安装插件：
 ```
 dsh plugin --profile <profile> add dsh-plugin-rea
 # 或钉住这个版本，而不是跟着 npm latest 走：
-dsh plugin --profile <profile> add github:czcdr/dsh-plugin-rea#v2.0.12
+dsh plugin --profile <profile> add github:czcdr/dsh-plugin-rea#v2.0.13
 ```
 
 > **Electron 宿主（DeepSeek Harness 桌面版）的 profile 由应用独占。** 那种机器上 `dsh plugin --profile desktop …`
@@ -125,8 +127,9 @@ node scripts/setup.mjs --reuse      # 或先 --dry-run 看计划
 ```
 
 如果 Node 由你自备（而不是让 setup 去取），它必须满足 REA 的 engines：
-`^22.19.0 || ^24.11.0 || >=26.0.0`（用 `node -v` 核对）。版本偏低不会在安装时失败，而是到 MCP 行
-启动时才失败 —— 表现就是"没有反应"。
+`^22.23.4 || ^24.22.1 || >=26.12.1`（用 `node -v` 核对）。REA 在 6.8.0 抬了这条下限：钉住的 24.22.1
+现在是 24 线**最低**可接受版本，6.7.0 能吃下的 24.11–24.21 在这里会被拒。版本偏低不会在安装时失败，
+而是到 MCP 行启动时才失败 —— 表现就是"没有反应"。
 
 反过来**先装插件**也可以，但要分两步：发布的行指向 `<DSH_HOME>/plugins/rea-bundle/bin/rea-shim.mjs`，
 而那个文件**只有 setup 会创建**——所以在第一次供给之前，该行会以 `MODULE_NOT_FOUND` 退出，也就没有
@@ -156,7 +159,7 @@ node scripts/setup.mjs --reuse      # 或先 --dry-run 看计划
 | 机器上的情况 | 这一行跑什么 |
 |---|---|
 | `rea` 在 PATH 上，且不比供给的版本旧 | 你自己那份（`rea mcp`），用你的 Node 和你的 PATH |
-| `rea` 在 PATH 上，但比供给的版本旧 | 供给出来的 bundle —— 旧的全局 CLI 会把工具数往回退（6.4.0 是 170 个，6.7.0 是 207 个） |
+| `rea` 在 PATH 上，但比供给的版本旧 | 供给出来的 bundle —— 旧的全局 CLI 会把工具数往回退（6.4.0 是 170 个，6.7.0 是 207 个，6.8.0 是 229 个） |
 | PATH 上没有 `rea` | 供给出来的 bundle，首次使用时自行供给 |
 
 - `REA_BUNDLE_LAUNCH=auto|system|bundle` 覆盖这个判断（默认 `auto`）；`REA_BUNDLE_SYSTEM_REA=<path>` 用来点名一个
@@ -268,20 +271,20 @@ Ghidra 的默认自动分析。如果大文件的第一次 `open_binary` → `li
 
 ## 实测环境
 
-作者机器，2026-10-13 / 14 / 16 / 19 / 23：
+作者机器，2026-10-13 / 14 / 16 / 19 / 23 / 26：
 
 | 组件 | 版本 |
 |---|---|
-| REA（`rea-agents`） | **6.7.0**（207 个工具） |
+| REA（`rea-agents`） | **6.8.0**（229 个工具） |
 | DeepSeek Harness | desktop runtime **0.2.0-rc.2**，内含 dsh CLI 0.1.7-rc.2 |
 | `@deepseek-ai/dsh-mcp-client`（行 provider） | 随 harness 打包 |
 | Ghidra | 12.1.4 |
 | JDK | Temurin 21（供给）/ Amazon Corretto 25.0.5（宿主复用） |
-| Node.js | **24.22.1**（复用；REA engines：`^22.19.0 \|\| ^24.11.0 \|\| >=26.0.0`，ABI 137） |
+| Node.js | **24.22.1**（复用；REA engines：`^22.23.4 \|\| ^24.22.1 \|\| >=26.12.1`，ABI 137） |
 | 宿主 | Windows 11 x64（build 26200） |
 
 实测跑过：一次干净的 `setup.mjs --reuse` 走到 `setup complete`；一次**不经 PATH 上的 `rea`、完全经由
-shim** 的 MCP `initialize` 握手返回 `serverInfo {name: rea, version: 6.7.0}`；以及**真实桌面宿主下的完整链路** ——
+shim** 的 MCP `initialize` 握手返回 `serverInfo {name: rea, version: 6.8.0}`；以及**真实桌面宿主下的完整链路** ——
 宿主自己的 Electron 二进制启动 `<DSH_HOME>/plugins/rea-bundle/bin/rea-shim.mjs mcp`，shim 拉起 **bundle 内置**
 的 REA，随后一次真实工具调用报出 `path_source: environment`，而那个路径只有该机的 `bundle.json` 知道。
 
@@ -293,9 +296,15 @@ shim** 的 MCP `initialize` 握手返回 `serverInfo {name: rea, version: 6.7.0}
 618 个字符串；`procedure_pseudo_code` 返回了真实反编译结果；vendor 里的 JDK `java -version` 回 `21.0.12.1`。
 唯一**第一次没成**的是 `list_segments`：它撞上 Ghidra 冷分析的 64 s 而超时 —— 这正是上面冒烟步与那条说明的由来。
 
+2026-10-26 钉子换到 **REA 6.8.0** 后，同一条链路重验过：`setup.mjs --reuse` 报 `probe cli=6.8.0 tools=229`，
+末尾的 Ghidra 冒烟用 26 s 导入 `java.exe`；另起一次独立的 stdio MCP 握手回 `serverInfo {name: rea, version:
+6.8.0}`，协议 `2024-11-05`，**229 个工具 / 6 个 prompt**；apktool 仍答 `3.0.3`，`adb` 仍报 37.0.1 (1.0.41)，
+盘上的 jadx jar 仍是 `6e5eacf5…` —— 正是 6.8.0 要求的那个值。把 6.8.0 自己的发布策略加载执行，得到
+`12.1.4 → verified`、`12.1.5 → compatible`、`12.2 → unsupported`，所以 Ghidra 原地不动。
+
 ## 边界与注意事项
 
-- REA 在 6.7.0 有 207 个工具，每个会话的工具列表都会变长。
+- REA 在 6.8.0 有 229 个工具，每个会话的工具列表都会变长。
 - 校验和对得起良心：厂商发布了的就固定并验证；没发布的（jadx-headless-mcp、apktool 包装脚本、
   Android platform-tools、滚动的 `latest` 地址）则**实测一次并记录**，之后若漂移是**报告**而不是默默接受。
   `bundle.json` 的 `unverifiedChecksums` 会列出处于该状态的组件。

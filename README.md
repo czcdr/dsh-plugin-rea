@@ -10,14 +10,15 @@
 > kept on the [`v1` branch](https://github.com/czcdr/dsh-plugin-rea/tree/v1) and on npm as `dsh-plugin-rea@1.0.6`.
 > Full comparison: [Two lines: 1.x and 2.x](#two-lines-1x-and-2x) · upgrading: [Upgrading from 1.x](#upgrading-from-1x).
 
-> REA 6.7.0 accepts Ghidra **12.1.x** only (12.2 is `unsupported`, and the whole Ghidra decompile/analysis
-> group disappears) and the jadx bridge **0.7.1** only (0.8.0 fails on its first call with `Expected engine
-> 0.7.1`, before any APK is loaded). JDK **21.0.13** is out upstream, but Adoptium ships no Windows build, so
-> there is nothing to point
-> at here — and it drops only three of the four eMudhra anchors. The trade-off is therefore "all tools green,
-> CVE still open": Ghidra 12.1.4's CVE-2026-100504 / 100505 / 100503 / 113604 stay in the chain — **do not
-> analyse untrusted samples with this environment** — and the JDK still trusts the eMudhra anchors. Evidence,
-> mitigations and revisit triggers: [docs/update-review-2026-10-24.md](docs/update-review-2026-10-24.md).
+> REA **6.8.0** — this package's pin — still accepts Ghidra **12.1.x** only (12.2 is `unsupported`, and the whole
+> Ghidra decompile/analysis group disappears) and the jadx bridge **0.7.1** only (0.8.0 fails on its first call with
+> `Expected engine 0.7.1`, before any APK is loaded). Both gates were re-checked against 6.8.0 on 2026-10-26 and
+> neither one moved. JDK **21.0.13** is out upstream, but Adoptium publishes no Windows build of it, so there is
+> nothing to point at here — and it drops only three of the four eMudhra anchors. The trade-off is therefore "all
+> tools green, CVE still open": Ghidra 12.1.4's CVE-2026-100504 / 100505 / 100503 / 113604 stay in the chain — **do
+> not analyse untrusted samples with this environment** — and the JDK still trusts the eMudhra anchors. Evidence,
+> mitigations and revisit triggers: [docs/update-review-2026-10-24.md](docs/update-review-2026-10-24.md) and
+> [docs/update-review-2026-10-26.md](docs/update-review-2026-10-26.md).
 
 > **You must run `node scripts/setup.mjs` yourself — once after installing, and once after every plugin
 > upgrade.** Nothing runs it for you: a market install or update replaces the package and stops there.
@@ -123,7 +124,7 @@ releases, checksum-verified). Then install the plugin for your profile:
 ```
 dsh plugin --profile <profile> add dsh-plugin-rea
 # or pin this release instead of tracking npm latest:
-dsh plugin --profile <profile> add github:czcdr/dsh-plugin-rea#v2.0.12
+dsh plugin --profile <profile> add github:czcdr/dsh-plugin-rea#v2.0.13
 ```
 
 > **On an Electron host (the DeepSeek Harness desktop app) the profile is owned by the application.**
@@ -138,8 +139,9 @@ node scripts/setup.mjs --reuse      # or --dry-run to see the plan first
 ```
 
 Node, when you provide it instead of letting setup fetch one, must satisfy REA's engines —
-`^22.19.0 || ^24.11.0 || >=26.0.0` (check with `node -v`). A lower Node does not fail at install
-time; the MCP row fails later, which reads as silence.
+`^22.23.4 || ^24.22.1 || >=26.12.1` (check with `node -v`). REA raised those floors in 6.8.0: the pinned
+24.22.1 is now the *oldest* acceptable 24.x, so a 24.11–24.21 runtime that 6.7.0 accepted is rejected here.
+A lower Node does not fail at install time; the MCP row fails later, which reads as silence.
 
 Installing the plugin **first** also works, but it takes two steps. The row resolves to
 `<DSH_HOME>/plugins/rea-bundle/bin/rea-shim.mjs`, and that file is created by setup — so until the first
@@ -173,7 +175,7 @@ runs **that**, exactly as the 1.x line did, and nothing is provisioned:
 | What the machine has | What the row runs |
 |---|---|
 | `rea` on PATH, at least as new as the provisioned build | your REA (`rea mcp`), with your Node and your PATH |
-| `rea` on PATH but older than the provisioned build | the provisioned bundle — a stale global CLI would take the tool count backwards (6.4.0 ships 170 tools, 6.7.0 ships 207) |
+| `rea` on PATH but older than the provisioned build | the provisioned bundle — a stale global CLI would take the tool count backwards (6.4.0 ships 170 tools, 6.7.0 ships 207, 6.8.0 ships 229) |
 | no `rea` on PATH | the provisioned bundle, provisioning itself on first use |
 
 - `REA_BUNDLE_LAUNCH=auto|system|bundle` overrides the decision (`auto` is the default); `REA_BUNDLE_SYSTEM_REA=<path>`
@@ -296,20 +298,20 @@ call it again and the open target answers immediately, because it keeps its ephe
 
 ## Verified against
 
-Author's machine, 2026-10-13 / 14 / 16 / 19 / 23:
+Author's machine, 2026-10-13 / 14 / 16 / 19 / 23 / 26:
 
 | Component | Version |
 |---|---|
-| REA (`rea-agents`) | **6.7.0** (207 tools) |
+| REA (`rea-agents`) | **6.8.0** (229 tools) |
 | DeepSeek Harness | desktop runtime **0.2.0-rc.2**, with its bundled dsh CLI 0.1.7-rc.2 |
 | `@deepseek-ai/dsh-mcp-client` (row provider) | bundled by the harness |
 | Ghidra | 12.1.4 |
 | JDK | Temurin 21 (provisioned) / Amazon Corretto 25.0.5 (adopted by the host) |
-| Node.js | **24.22.1** adopted (REA engines: `^22.19.0 \|\| ^24.11.0 \|\| >=26.0.0`; ABI 137) |
+| Node.js | **24.22.1** adopted (REA engines: `^22.23.4 \|\| ^24.22.1 \|\| >=26.12.1`; ABI 137) |
 | Host | Windows 11 x64 (build 26200) |
 
 Exercised live: a clean `setup.mjs --reuse` run reached `setup complete`; an MCP `initialize` handshake
-**through the shim with no `rea` on PATH** answered `serverInfo {name: rea, version: 6.7.0}`; and the whole
+**through the shim with no `rea` on PATH** answered `serverInfo {name: rea, version: 6.8.0}`; and the whole
 chain ran under the real desktop host — its own Electron binary launched
 `<DSH_HOME>/plugins/rea-bundle/bin/rea-shim.mjs mcp`, the shim started the **vendored** REA, and a live tool
 call reported `path_source: environment` for a path only that machine's `bundle.json` knows.
@@ -325,9 +327,16 @@ output; and `java -version` from the vendored JDK answered `21.0.12.1`. The one 
 work on the first try was the first `list_segments` — it timed out at 64 s of cold Ghidra analysis, which
 is what the smoke step and the note above are for.
 
+On 2026-10-26 the pin moved to **REA 6.8.0** and the chain was re-verified on the same machine: `setup.mjs
+--reuse` reported `probe cli=6.8.0 tools=229` and its Ghidra smoke imported `java.exe` in 26 s; an independent
+MCP handshake over stdio answered `serverInfo {name: rea, version: 6.8.0}` with **229 tools / 6 prompts** on
+protocol `2024-11-05`; apktool still answers `3.0.3`, `adb` still reports 37.0.1 (1.0.41), and the jadx jar on
+disk still hashes to `6e5eacf5…` — the value REA 6.8.0 requires. Executing 6.8.0's own release policy gave
+`12.1.4 → verified`, `12.1.5 → compatible`, `12.2 → unsupported`, so Ghidra stays where it was.
+
 ## Scope and caveats
 
-- REA exposes 207 tools at 6.7.0, so every session's tool list grows.
+- REA exposes 229 tools at 6.8.0, so every session's tool list grows.
 - Provisioning is honest about checksums: where a vendor publishes one it is pinned and verified; where none
   exists (jadx-headless-mcp, the apktool wrapper, Android platform-tools, the rolling "latest" URLs) the
   hash is **measured once and recorded**, and later drift is reported rather than silently accepted.

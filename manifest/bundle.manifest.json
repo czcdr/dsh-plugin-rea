@@ -19,13 +19,13 @@
   "manifestVersion": 1,
   "generatedFor": "dsh-plugin-rea one-plugin bundle",
   "pins": {
-    "reaAgents": "6.7.0",
+    "reaAgents": "6.8.0",
     "ghidra": "12.1.4",
     "jdk": "21",
     "apktool": "3.0.3",
     "jadxHeadlessMcp": "0.7.1",
     "node": "24.22.1",
-    "nodeEngines": "^22.19.0 || ^24.11.0 || >=26.0.0"
+    "nodeEngines": "^22.23.4 || ^24.22.1 || >=26.12.1"
   },
   "components": {
     "node": {
@@ -37,8 +37,8 @@
       "binaries": ["bin/node", "node{exe}"],
       "probe": {
         "argv": ["{node}", "-v"],
-        "expect": { "regex": "^v(22\\.(1[9]|[2-9][0-9])|24\\.(1[1-9]|[2-9][0-9])|2[6-9]\\.|[3-9][0-9]\\.)" },
-        "why": "REA's engines are ^22.19.0 || ^24.11.0 || >=26.0.0. A loose '^v\\d+' accepted Node 20, which then fails at REA runtime; the reuse path must reject it here."
+        "expect": { "regex": "^v(22\\.23\\.(?:[4-9]|[1-9][0-9]+)|22\\.(?:2[4-9]|[3-9][0-9])\\.\\d+|24\\.22\\.(?:[1-9]|[1-9][0-9]+)|24\\.(?:2[3-9]|[3-9][0-9])\\.\\d+|26\\.12\\.(?:[1-9]|[1-9][0-9]+)|26\\.(?:1[3-9]|[2-9][0-9])\\.\\d+|2[7-9]\\.\\d+\\.\\d+|[3-9][0-9]\\.\\d+\\.\\d+)" },
+        "why": "REA 6.8.0 raised its engines to ^22.23.4 || ^24.22.1 || >=26.12.1, so the pinned Node 24.22.1 is now exactly the floor of the 24 line. A loose '^v\\d+' accepted Node 20, which then fails at REA runtime; the reuse path must reject it here. Enforced as one alternation because a probe has no version comparator: 22.23.4-22.23.x, 22.24+, 24.22.1-24.22.x, 24.23+, 26.12.1-26.12.x, 26.13+, 27+. 22.23.3, 24.22.0 and 26.12.0 are below the declared floor and must not pass."
       },
       "sources": {
         "win32-x64": {
@@ -49,7 +49,7 @@
           "sha256": "d2046d28c2c3dcd211ac5145c0bf30e2047ef9dfb306693c8c6e2eccd8b95fa5",
           "sha256Source": "https://nodejs.org/dist/v24.22.1/SHASUMS256.txt (line: node-v24.22.1-win-x64.zip)",
           "sha256VerifiedOn": "2026-10-23",
-          "note": "Checksum and unpack verified on this machine: the extracted node.exe runs standalone (v24.22.1), no installer and no registry writes. 24.22.1 is Node's 2026-10-21 security release (Brotli decoder out-of-bounds write RCE, two TLS hostname bypasses, eMudhra intermediate removal); 24.21.0 must not be redistributed."
+          "note": "Checksum and unpack verified on this machine: the extracted node.exe runs standalone (v24.22.1), no installer and no registry writes. 24.22.1 is Node's 2026-10-21 security release (Brotli decoder out-of-bounds write RCE, two TLS hostname bypasses, eMudhra intermediate removal); 24.21.0 must not be redistributed. REA 6.8.0 declares ^24.22.1 as the floor of the 24 line, so this version is now both the newest 24.x and the oldest acceptable one — a 24.21.x runtime must be rejected by the reuse path even though it was fine under 6.7.0."
         },
         "win32-arm64": {
           "version": "24.22.1",
@@ -377,14 +377,14 @@
       "unpack": { "moveTo": "rea-agents" },
       "probe": {
         "argv": ["{node}", "{vendor}/node_modules/rea-agents/scripts/rea.mjs", "--version"],
-        "expect": { "regex": "^6\\.7\\.0(\\s|$)" }
+        "expect": { "regex": "^6\\.8\\.0(\\s|$)" }
       },
       "sources": {
         "npm": {
-          "version": "6.7.0",
+          "version": "6.8.0",
           "registry": "https://registry.npmjs.org/rea-agents",
-          "integrity": "npm's own dist.integrity is the authoritative check for this tarball: the registry tarball ships NO node_modules (verified: 1775 entries in 6.7.0, 0 under node_modules), so setup resolves the dependency closure with `npm install --ignore-scripts` instead of unpacking a tarball.",
-          "note": "`just unpacking the published tarball cannot work` is a verified fact, not a caution: the CLI would fail with ERR_MODULE_NOT_FOUND on zod. 6.7.0 keeps the 6.5.0 engines/bin contract (^22.19.0 || ^24.11.0 || >=26.0.0, scripts/rea.mjs) and the same optional frida dependency (17.23.2). It is still 207 MCP tools: the count did not move from 6.5.0 (rea doctor --json and an MCP tools/list over stdio, both measured 2026-10-19), so this pin is an upstream feature and fix upgrade, not a tool expansion. npm never published 6.6.0 — that tag exists on GitHub only, and 6.7.0 is npm latest."
+          "integrity": "npm's own dist.integrity is the authoritative check for this tarball: the registry tarball ships NO node_modules (verified: 2398 entries in 6.8.0, 0 under node_modules), so setup resolves the dependency closure with `npm install --ignore-scripts` instead of unpacking a tarball.",
+          "note": "`just unpacking the published tarball cannot work` is a verified fact, not a caution: the CLI would fail with ERR_MODULE_NOT_FOUND on zod. 6.8.0 (published 2026-10-25, npm latest; 6.6.0 was never on npm) does raise the runtime floor: engines.node went from ^22.19.0 || ^24.11.0 || >=26.0.0 to ^22.23.4 || ^24.22.1 || >=26.12.1, which makes the pinned Node 24.22.1 exactly the floor of its line — hence pins.nodeEngines and the node probe had to move with it. bin is still scripts/rea.mjs, and the dependency closure gained exactly two packages (@bufbuild/protobuf 2.16.0, @msgpack/msgpack 3.1.3), so the same npm install path resolves it. This one IS a tool expansion: the shipped dist/mcp-catalog.json records identity.counts = 229 MCP tools / 175 CLI commands / 6 prompts (6.7.0 shipped no catalog and exposed 207), with new families for APK signatures, binary diagnostics, model artifacts (GGUF/safetensors) and CUDA/HIP code objects. The two version gates this bundle cares about did NOT move: SUPPORTED_GHIDRA_VERSION is still 12.1.4 (so Ghidra 12.2 is still unsupported) and JADX_RELEASE is still 0.7.1 with the same 6e5eacf5… sha256 (so jadx 0.8.0 is still rejected) — those pins stay put."
         }
       }
     }

@@ -2,6 +2,50 @@
 
 本插件遵循语义化版本。版本号变化说明「配置组合」这层的变化，与 REA 自身的版本无关。
 
+## 2.0.13 — 2026-10-26
+
+**上游 REA 从 6.7.0 升到 6.8.0。这一次上游**同时抬高了 Node 的 engines 下限**，所以不是只改一个版本号 ——
+钉子、`package.json` 的 engines、以及 node probe 的三处措辞必须一起动，否则「声明一套、执行另一套」。**
+
+### 变更
+
+- **`pins.reaAgents` → 6.8.0**（= `components.reaAgents.sources.npm.version`），probe 改为 `^6\.8\.0(\s|$)`。
+  6.8.0 是 npm `latest`（发布 2026-10-25T09:07Z）；tarball 2398 条 / 0 条 `node_modules`，仍走
+  `npm install --ignore-scripts` 解析闭包；闭包只多两个包（`@bufbuild/protobuf 2.16.0`、`@msgpack/msgpack 3.1.3`）。
+- **工具数 207 → 229（+22）**，另 175 条 CLI 命令、6 个 prompt。随包 `dist/mcp-catalog.json` 记录
+  `identity.counts` 与三个 digest（`tools_sha256 a98940ba…`），不再是「只能靠 doctor 现场数」。新增族：
+  APK 签名、binary diagnostics（PE 证书/导入/加载配置、ELF notes、内核模块、devicetree、Apple IPS、字节熵）、
+  模型文件（GGUF/safetensors）、CUDA/HIP 代码对象。**这是工具扩容，不是修 bug 版本。**
+- **engines 下限抬升**：`^22.19.0 || ^24.11.0 || >=26.0.0` → `^22.23.4 || ^24.22.1 || >=26.12.1`。同步改了
+  `package.json engines.node`、`manifest.pins.nodeEngines`、以及 node probe 正则 —— probe 没有比较器，只能写成
+  一条交替（22.23.4–22.23.x / 22.24+ / 24.22.1–24.22.x / 24.23+ / 26.12.1–26.12.x / 26.13+ / 27+），
+  并用 24 组版本正反验证（22.23.3、24.22.0、26.12.0 必须拒；20.x 与 25.x 仍拒）。
+  **后果**：6.7.0 时代合法的 Node 22.19–22.23.3、24.11–24.22.0 现在会被 reuse 路径拒掉 —— 钉住的 **24.22.1
+  正好是 24 线的下限**，既是最新也是最低可接受。
+- **其余钉子一个没动**：Ghidra 仍 12.1.4（6.8.0 的 `SUPPORTED_GHIDRA_VERSION` 未变，12.2 仍 `unsupported`）、
+  jadx 仍 0.7.1（6.8.0 的 `JADX_RELEASE.sha256` 与盘上 0.7.1 jar 逐字节相同）、JDK 21.0.12.1（Adoptium 21 线的
+  Windows 资产仍停在 21.0.12.1）、apktool 3.0.3、platform-tools 37.0.1、Node 24.22.1。
+
+### 验证
+
+- 单测 **88 条**（85 过 / 3 平台跳过 / 0 失败）；`audit-manifest` **24/24 hash-pinned clean**；
+  `verify-branch.ps1` **ALL CHECKS PASSED**；`host-compat` 10 covered / 5 outside。
+- 真机（Windows 11 x64）：`setup.mjs --reuse` → `probe cli=6.8.0 tools=229`，末尾 Ghidra 冒烟 26 s 导入
+  `java.exe`，shim 解析 6.8.0；另起一次独立 stdio MCP 握手 → `serverInfo {name: rea, version: 6.8.0}`、
+  **229 tools / 6 prompts**、protocol `2024-11-05`。
+- 把 6.8.0 自己的发布策略加载执行：`12.1.4 → verified`、`12.1.5 → compatible`、`12.2 → unsupported`；
+  `JADX_RELEASE` 仍是 0.7.1 / `6e5eacf5…`。apktool 3.0.3、`adb` 37.0.1 (1.0.41) 现场复核。
+- 文档：两份 README 的版本表/工具数/engines 句子、`docs/bundle-design.md` 的实测行、
+  新报告 [docs/update-review-2026-10-26.md](docs/update-review-2026-10-26.md)。
+
+### 升级 / 排障
+
+- 已供给的机器**不会自动换到 6.8.0**（auto-provision 只在「未供给」时触发）：重跑
+  `node scripts/setup.mjs --reuse`，再重启 dsh 让 MCP 行重连。
+- **`npm install` 报 `ECONNRESET` 时先查代理，不要怀疑哈希。** setup 的 npm 子进程不继承本脚本自己的代理路由；
+  直连 registry 的 tarball 会失败并以 `-4077` 收场，reify 回滚后 probe 仍报旧版本（读起来像「升级没生效」）。
+  设 `HTTPS_PROXY` / `HTTP_PROXY` 后重跑即可 —— 本轮就是这么过的。
+
 ## 2.0.12 — 2026-10-23
 
 **2.0.11 的引导卡片给了升级用户一条会让它重下约 570 MB 的命令。这一版只修那一处。**

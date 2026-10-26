@@ -31,11 +31,11 @@ Two upstream rules shape the runtime wiring:
 
 ## 2. Verified facts this design rests on
 
-Measured on Windows 11 x64, REA 6.7.0, Ghidra 12.1.4, Temurin JDK 25.0.4:
+Measured on Windows 11 x64, REA 6.8.0, Ghidra 12.1.4, Temurin JDK 25.0.4:
 
 | Fact | Evidence |
 | --- | --- |
-| A row can launch REA with **no PATH `rea`** | `node <pkg>/scripts/rea.mjs mcp` answered the MCP `initialize` handshake (`serverInfo.name = rea`, version 6.7.0) and `rea doctor --json` reported 207 tools. `healthy` is `false` on a bundle-only install: 6.7.0 also checks the host's own setup (Hopper, IDA registration, Kuna, `rea setup` skill/registrations), which provisioning deliberately never touches — the row does not require `healthy`, only a CLI that runs and a catalog it can read |
+| A row can launch REA with **no PATH `rea`** | `node <pkg>/scripts/rea.mjs mcp` answered the MCP `initialize` handshake (`serverInfo.name = rea`, version 6.8.0) and `rea doctor --json` reported 229 tools (measured again after the 6.8.0 pin; 6.7.0 reported 207). `healthy` is `false` on a bundle-only install: 6.8.0 also checks the host's own setup (Hopper, IDA registration, Kuna, `rea setup` skill/registrations), which provisioning deliberately never touches — the row does not require `healthy`, only a CLI that runs and a catalog it can read |
 | `!!js` expressions are supported in this profile layer | the existing profile patch already used one; the loader evaluates them |
 | A row-level `env:` block reaches the MCP child | `binary_session` reported `registrationEnvironment` = `GHIDRA_INSTALL_DIR`, `JAVA_HOME` |
 | No fixed home/layout is promised | the disk layout differs per install; nothing may assume one |
