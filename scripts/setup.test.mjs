@@ -348,10 +348,17 @@ test("--reuse still adopts a compatible node", (t) => {
   // where the host satisfies REA's engines: on a Node 20 runner it fails for a
   // reason that has nothing to do with the reuse check (the check is doing its
   // job), while CI's pinned Node 22 never notices.
-  const [major, minor] = process.versions.node.split(".").map(Number);
-  const compatible = (major === 22 && minor >= 19) || (major === 24 && minor >= 11) || major >= 26;
-  if (!compatible) {
-    t.skip(`host Node ${process.versions.node} is outside REA's engines; the candidate would be rejected on purpose`);
+  //
+  // 2.0.13 raised that floor to ^22.23.4 || ^24.22.1 || >=26.12.1 and this guard
+  // still carried the 6.7.0-era numbers (22.19 / 24.11 / 26.0): the GitHub Linux
+  // runner's Node 22.2x passed the guard, the real probe then rejected it, and the
+  // adoption assert failed on CI while every Windows job stayed green. Ask the
+  // manifest — the same expression the probe uses — instead of restating it here.
+  const probe = new RegExp(
+    JSON.parse(readFileSync(MANIFEST_SOURCE, "utf8")).components.node.probe.expect.regex,
+  );
+  if (!probe.test(`v${process.versions.node}`)) {
+    t.skip(`host Node ${process.versions.node} fails the manifest's node probe; the candidate would be rejected on purpose`);
     return;
   }
   const root = mkdtempSync(path.join(tmpdir(), "rea-node-ok-"));
