@@ -138,11 +138,30 @@ function main() {
       console.log("no override is recorded; nothing to restore");
       return;
     }
+    let restored = 0;
+    let stale = 0;
     for (const entry of active.files) {
-      replaceValue(path.join(vendor, entry.file), entry.patched, entry.original);
+      const file = path.join(vendor, entry.file);
+      if (!existsSync(file)) {
+        stale += 1;
+        continue;
+      }
+      const text = readFileSync(file, "utf8");
+      if (new RegExp(`${CONSTANT}\\s*=\\s*"${entry.patched.replace(/\./g, "\\.")}"`).test(text)) {
+        replaceValue(file, entry.patched, entry.original);
+        restored += 1;
+      } else if (new RegExp(`${CONSTANT}\\s*=\\s*"${entry.original.replace(/\./g, "\\.")}"`).test(text)) {
+        stale += 1;
+      } else {
+        throw new Error(`${entry.file} declares neither ${entry.patched} nor ${entry.original}; inspect it before restoring`);
+      }
     }
     unlinkSync(record);
-    console.log(`restored ${CONSTANT} = "${active.originalVersion}" in ${active.files.length} file(s); override record removed`);
+    console.log(
+      `restored ${CONSTANT} = "${active.originalVersion}" in ${restored} file(s)` +
+        (stale > 0 ? `; ${stale} file(s) had already been replaced by a re-provision` : "") +
+        "; override record removed",
+    );
     return;
   }
 
@@ -155,7 +174,22 @@ function main() {
     console.log(`already ${version} — nothing to do`);
     return;
   }
-  if (active) throw new Error(`an override is already recorded (→ ${active.requestedVersion}); run --disable first`);
+  if (active) {
+    // Re-provisioning rea-agents replaces the tree, so a record can outlive the patch
+    // it describes. That stale record must not block the next --enable, and it must
+    // not be trusted by --disable either: judge it by the files on disk.
+    const stillApplied = active.files.every((entry) => {
+      const file = path.join(vendor, entry.file);
+      if (!existsSync(file)) return false;
+      const text = readFileSync(file, "utf8");
+      return new RegExp(`${CONSTANT}\\s*=\\s*"${entry.patched.replace(/\./g, "\\.")}"`).test(text);
+    });
+    if (stillApplied) {
+      throw new Error(`an override is already recorded (→ ${active.requestedVersion}); run --disable first`);
+    }
+    console.log(`previous record is stale (rea-agents was re-provisioned); replacing it`);
+    unlinkSync(record);
+  }
 
   const files = [];
   for (const entry of declarations) {

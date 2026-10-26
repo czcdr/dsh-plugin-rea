@@ -56,6 +56,7 @@ window.__ModuleLoader__.load({
         hint: "跑完重启 dsh。这一步只对齐运行时，不会更新插件包本身；升级后同样再跑一次。",
         noteSmoke: "setup 结束时会用 JDK 自带的 java 跑一次真实分析来验证引擎 —— 那里 30–60 秒没有任何输出是正常的。",
         noteLock: "若它报 “another provisioning run holds …”，说明后台已有一个 setup 在跑，等它结束再试即可。",
+        noteOverride: "若你开过 Ghidra 闸门覆盖（让本机跑 REA 未验证的 Ghidra），setup 会重新供给内置 REA，那层覆盖随之消失 —— 跑完执行 node scripts/ghidra-gate-override.mjs --enable --version 12.2 恢复。",
       },
       en: {
         badge: "ONE-TIME SETUP",
@@ -77,6 +78,7 @@ window.__ModuleLoader__.load({
         hint: "Restart dsh afterwards. This only aligns the runtime; it does not update the plugin package — run it again after the next upgrade.",
         noteSmoke: "It finishes by importing a small file to prove the analysis engine works — 30–60 s with no output there is normal.",
         noteLock: "If it reports “another provisioning run holds …”, a setup is already running in the background; wait for it.",
+        noteOverride: "If you had enabled the Ghidra gate override (running a Ghidra REA has not verified), setup re-provisions the bundled REA and the patch goes with it — run node scripts/ghidra-gate-override.mjs --enable --version 12.2 afterwards to restore it.",
       },
     };
 
@@ -354,6 +356,7 @@ window.__ModuleLoader__.load({
             },
             h("li", null, t.noteSmoke),
             h("li", null, t.noteLock),
+            h("li", null, t.noteOverride),
           ),
 
           h(

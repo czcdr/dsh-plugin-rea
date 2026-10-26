@@ -32,6 +32,8 @@
 > does **not** move the bundle to the new pins — REA and the engines stay at the versions recorded by the last
 > setup run. Skip it on a first install and the row exits `MODULE_NOT_FOUND` with no tools and no message;
 > skip it after an upgrade and you keep running the old REA silently (`check-updates.ps1` reports the drift).
+> If you had enabled the Ghidra gate override (see §9 of the 2026-10-26 review), that setup run re-provisions the
+> bundled REA and the patch goes with it — re-enable it afterwards, or accept the pinned Ghidra again.
 > The full rule set is under [Updating](#updating--three-independent-things).
 
 > **A first install and every plugin upgrade also show a one-time guide in the Web GUI.** It says whether the
