@@ -6,19 +6,23 @@ Ghidra / jadx / JDK / apktool / platform-tools / Node 全部原地不动。**
 
 ---
 
+
 ## 0. 结论
 
 | 组件 | 上游最新 | 本轮钉子 | 动作 | 依据 |
 |---|---|---|---|---|
 | REA（`rea-agents`） | **6.8.0**（2026-10-25） | **6.8.0** | **升** | npm `dist-tags.latest = 6.8.0`，`time.modified 2026-10-25T09:07:31Z` |
 | Node | LTS 24.22.1（2026-10-20）；current 26.12.1（非 LTS） | 24.22.1 | 不动 | 24.22.1 仍是 24 线最新 LTS，且**正好等于 6.8.0 的 24 线下限** |
-| Ghidra | **12.2**（2026-10-22） | 12.1.4 | **不动** | 6.8.0 的 `SUPPORTED_GHIDRA_VERSION` 仍是 `12.1.4`；12.2 判 `unsupported`，Ghidra 系工具整组消失 |
+| Ghidra | **12.2**（2026-10-22） | 12.1.4 | **不动**（本机可覆盖，见 §9） | 6.8.0 的 `SUPPORTED_GHIDRA_VERSION` 仍是 `12.1.4`；12.2 判 `unsupported`，Ghidra 系工具整组消失 |
 | jadx 桥接 | **0.8.0**（2026-10-19） | 0.7.1 | **不动** | 6.8.0 的 `JADX_RELEASE` 仍是 0.7.1，`sha256` 与盘上 jar 逐字节相同 |
 | JDK | 21.0.13+9（无 Windows 资产）/ 25.0.4.1+1（Windows 线） | 21.0.12.1 | 不动 | Adoptium `/v3/assets/latest/21/...os=windows` 仍返回 21.0.12.1+1（`updated 2026-08-21`） |
 | apktool | 3.0.3（2026-07-20） | 3.0.3 | 不动 | GitHub latest 未变；jar 15,478,013 B / `dbf930b0…` 现场复核 |
 | platform-tools | 滚动 | 37.0.1 | 不动 | 现场 `adb version` = 37.0.1 (1.0.41)，`source.properties` `Pkg.Revision=37.0.1` |
 
 本轮唯一变化的 pin：`reaAgents 6.7.0 → 6.8.0`。唯一连带变化：`nodeEngines` 与 node probe。
+
+**例外：Ghidra 12.2 在本机是「有记录的本机覆盖」，不是 pin 变更**（§9）。四项 CVE 的修复版就是 12.2，实测桥接可用、
+分析结果与 12.1.4 逐字节一致，所以给了 `scripts/ghidra-gate-override.mjs` 这条显式通道；`setup.mjs` 仍按 12.1.4 供给。
 
 ---
 
@@ -182,6 +186,7 @@ node scripts/setup.mjs --reuse
 ## 6. 仍不能升的四项（与 10-24 结论一致）
 
 1. **Ghidra 12.2**：`SUPPORTED_GHIDRA_VERSION = "12.1.4"` 未变；跨 minor 即 `unsupported`，Ghidra 族工具整组不可用。
+   —— 但这条闸门**不等于 12.2 坏了**：实际测下来它可用，见 §9。
 2. **jadx 0.8.0**：`JADX_RELEASE.version` 仍是 0.7.1，`JadxSession` 在其自报版本不等时立刻抛错。
 3. **JDK 21.0.13**：Adoptium 的 Windows 资产仍停在 21.0.12.1+1；且 21.0.13 只移除 4 个 eMudhra 锚里的 3 个。
 4. **Node 26**：`26.12.1` 是本轮唯一的 26 线新版本，但它是 current 而非 LTS；本包钉 LTS，且 24.22.1 已满足
@@ -206,6 +211,79 @@ node scripts/setup.mjs --reuse
 - **没有动 Ghidra / jadx / JDK / apktool / platform-tools 的任何一个字节**。
 - **没有清理 `C:\Users\lenovo\.dsh`** 下的旧 bundle（本机 `DSH_HOME=D:\dsh-home`，那份是历史遗留，与当前宿主无关）。
 - **没有跑 macOS / Linux 的首次供给分支**（本机只有 Windows）。
+
+---
+
+## 9. 能不能升到 Ghidra 12.2（这四个 CVE 的修复版）：能，但要覆盖上游闸门
+
+用户问的是「这些不是漏洞吗，能不能升到最新版、同时保证 REA 能用」。答案分两半：**「升」可以，「默认升」不行**，
+因为挡住 12.2 的不是兼容性，是 REA 自己的一条版本等值判定。
+
+### 9.1 试了什么
+
+```
+下载   ghidra_12.2_PUBLIC_20261016.zip   569,712,708 B
+sha256 2c2cd776db3c1f6a097ba418922378ac3649cadd5e844a6f5f088ae628a7be67  ← 与 release body 一致
+解包   application.version=12.2 · application.java.min=25 · analyzeHeadless.bat / win_x86_64 decompile.exe 均在
+```
+
+只改了 **vendored 副本**里那三处常量（`dist/ghidra/GhidraReleasePolicy.js`、`dist/cli-runtime/KunaCommand-*.js`、
+`dist/mcp/binary-*.js`，都是 `SUPPORTED_GHIDRA_VERSION = "12.1.4"`），把值换成 `12.2`。
+
+### 9.2 结果
+
+| 检查 | 12.1.4（pin） | 12.2（覆盖后） |
+|---|---|---|
+| `rea doctor` ghidra-version | `12.1.4` ok | `12.2; compatible 12.2.x release` ok |
+| `rea doctor` ghidra-java | `25.0.5 … accepted a 64-bit full JDK 21 or newer` | `25.0.5 … accepted a 64-bit full JDK 25 or newer` |
+| `rea analyze whoami.exe` | 52 s · 9 段 / 341 函数 / 308 字符串 | 52 s · 9 段 / 341 函数 / 308 字符串 |
+| `list_segments`（MCP，经 shim） | 基准 | **逐字节相同** |
+| `list_procedures`（MCP） | 基准 | **逐字节相同**（74,483 字符） |
+| `procedure_pseudo_code("entry")` | `FUN_1400021b4(); FUN_140001af0();` | **逐字节相同**（101 字符） |
+| `provider.version` | `12.1.4` | `12.2` |
+
+即：**段表、函数表、入口伪代码三样在两个版本上完全一致**，桥接也没有出现 API 漂移的编译/运行错误。
+
+### 9.3 所以怎么用
+
+```powershell
+node scripts/ghidra-gate-override.mjs --status                 # 现在是什么状态
+node scripts/ghidra-gate-override.mjs --enable --version 12.2  # 打补丁 + 记录
+node scripts/ghidra-gate-override.mjs --disable                # 还原成上游闸门
+```
+
+- 状态写进 `<bundle>/ghidra-gate-override.json`（原值、目标值、改了哪几个文件、何时启用）。
+- **重跑 `setup.mjs` 会重新供给 rea-agents，补丁随之消失** —— 这是刻意的：选错方向的默认值应该是「回到钉住的
+  已验证组合」，而不是「悄悄继续跑未验证的版本」。
+- `check-updates.ps1` 认得这份记录：盘上是 12.2 时它打印「本机覆盖 Ghidra 闸门」，不再劝你「重跑 setup 对齐」。
+- 12.2 要求 **JDK ≥ 25**（`application.java.min=25`）。本机 `JAVA_HOME=F:\game\xbox` 是 Corretto **25.0.5**，
+  正好满足；而本包钉的 vendor JDK 是 **21**，所以「干净机器 + 12.2」还得把 JDK 钉到 25
+  （Adoptium 25 线 Windows 资产是 25.0.4.1+1）。
+
+### 9.4 没被验证的部分（说清楚）
+
+只测了 PE 的 `open_binary` / `list_segments` / `list_procedures` / `procedure_pseudo_code` / `analyze`。
+**没测**：ELF / macOS / COM / DOL / raw 这些走各自 `ReaGhidraPrepare*` 的路径、PSP 扩展、
+值流（`trace_native_values`）、decompiler hook（`ReaGhidraNoReturnFix`、`ReaGhidraMipsSoftFloat`）的边角。
+上游没有验证 12.2，这些边角现在记在使用者名下 —— 这正是上游闸门存在的理由，覆盖它就得承担它。
+
+---
+
+## 10. CVE-2026-91403（JSSE / eMudhra）为什么不靠「升级」解决
+
+- **没有已发布的 JDK 移除全部 5 张 eMudhra 锚**：Temurin 21.0.13 只掉了 c1/c3/g3（保留 g1），Corretto 25.0.5 五张全在。
+  所以「升到某个版本就干净」在任何厂商都不成立。
+- **这条链上没有 Java 侧出站 TLS**：REA 本体是 Node（用 Node 自带的 CA 集，不用 Java truststore）；Ghidra 是本地
+  headless，jadx 桥接也是本地进程。Java truststore 里那几张锚在这条链上**没有被使用的调用点**。
+- 真要清理，只能给 REA 单独做一份剔除了 emsign 锚的 truststore 并通过 JVM 参数指过去；那属于硬化动作，
+  不改变本链路的实际暴露面。本轮没有做。
+
+---
+
+## 11. jadx 0.8.0 为什么不在这次
+
+它没有对应的 CVE 修复诉求（用户的问题是关于漏洞的），而 REA 对它的要求是**精确等于 0.7.1 + 该 jar 的 sha256**；
+0.8.0 会在 `load_apk` 之前抛 `Expected engine 0.7.1`。要升它同样得覆盖 `JADX_RELEASE`，风险与本轮无关，暂不动。
 
 ---
 

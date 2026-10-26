@@ -347,12 +347,25 @@ if (-not (Test-Path $manifestPath)) {
       $unrecorded = 0
       # 采纳的本机运行时（reused）不按 pin 精确比对，但也不能算进「全绿」。
       $adopted = 0
+      # 本机 Ghidra 闸门覆盖（scripts/ghidra-gate-override.mjs）：盘上跑的是 REA 未
+      # 验证的 Ghidra 版本。这是一次**有记录的、可还原的**偏离，不是「忘了对齐」——
+      # 不这样标注的话，这行会劝人去重跑 setup，而重跑正好会把覆盖悄悄抹掉。
+      $ghidraOverride = $null
+      $overrideFile = Join-Path (Split-Path $bundleJson -Parent) 'ghidra-gate-override.json'
+      if (Test-Path $overrideFile) {
+        try { $ghidraOverride = Get-Content $overrideFile -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $ghidraOverride = $null }
+      }
       foreach ($name in $manifest.pins.PSObject.Properties.Name) {
         if ($name -eq 'nodeEngines') { continue }
         $pinned = [string]$manifest.pins.$name
         $installed = ''
         if ($state.versions -and ($state.versions.PSObject.Properties.Name -contains $name)) {
           $installed = [string]$state.versions.$name
+        }
+        if ($name -eq 'ghidra' -and $ghidraOverride -and [string]$ghidraOverride.requestedVersion -eq $installed) {
+          Info "  ghidra = $installed（本机覆盖 Ghidra 闸门：REA 未验证这一版；要用 pin 就 --disable 再重跑 setup）"
+          $adopted++
+          continue
         }
         if (-not $installed) {
           # 被 --reuse 采纳的组件没有 version 字段（bundle.json 里是 null）。静默

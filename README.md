@@ -19,6 +19,12 @@
 > not analyse untrusted samples with this environment** — and the JDK still trusts the eMudhra anchors. Evidence,
 > mitigations and revisit triggers: [docs/update-review-2026-10-24.md](docs/update-review-2026-10-24.md) and
 > [docs/update-review-2026-10-26.md](docs/update-review-2026-10-26.md).
+>
+> **Ghidra 12.2 itself works** — measured 2026-10-26: same 9 segments, same 341 procedures, byte-identical `entry`
+> pseudocode as 12.1.4, through REA's own bridge. What blocks it is REA's version-equality check, not the bridge.
+> If you want the CVE-fixed engine anyway, `node scripts/ghidra-gate-override.mjs --enable --version 12.2` rewrites
+> that one constant in the vendored copy, records what it changed in `<bundle>/ghidra-gate-override.json`, and
+> `--disable` restores it; re-running setup reverts it too. It needs **JDK 25+** (`application.java.min=25`).
 
 > **You must run `node scripts/setup.mjs` yourself — once after installing, and once after every plugin
 > upgrade.** Nothing runs it for you: a market install or update replaces the package and stops there.

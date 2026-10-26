@@ -18,6 +18,12 @@
 > 仍在链上 —— **别拿这套环境分析来源不可信的样本**；JDK 也仍信任 eMudhra 锚。证据、缓解与重开条件：
 > [docs/update-review-2026-10-24.md](docs/update-review-2026-10-24.md) 与
 > [docs/update-review-2026-10-26.md](docs/update-review-2026-10-26.md)。
+>
+> **Ghidra 12.2 本身是可用的** —— 2026-10-26 实测：经 REA 自己的桥接，段表（9 段）、函数表（341 个）与 `entry`
+> 伪代码与 12.1.4 **逐字节相同**。挡住它的不是兼容性，是 REA 那条版本等值判定。如果你就是要用修掉 CVE 的那一版：
+> `node scripts/ghidra-gate-override.mjs --enable --version 12.2` 只改 vendored 副本里那一个常量、把改动记进
+> `<bundle>/ghidra-gate-override.json`，`--disable` 还原；重跑 setup 也会还原。它要求 **JDK 25+**
+> （`application.java.min=25`）。
 
 > **`node scripts/setup.mjs` 要你自己跑 —— 装完跑一次，之后每次升级插件版本再跑一次。** 没有东西会替你跑：
 > 市场里的安装/更新只替换包，然后到此为止。从 **2.0.8** 起，市场升级能保证**那一行**继续可用（镜像启动器会

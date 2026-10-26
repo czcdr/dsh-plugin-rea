@@ -26,6 +26,18 @@
   jadx 仍 0.7.1（6.8.0 的 `JADX_RELEASE.sha256` 与盘上 0.7.1 jar 逐字节相同）、JDK 21.0.12.1（Adoptium 21 线的
   Windows 资产仍停在 21.0.12.1）、apktool 3.0.3、platform-tools 37.0.1、Node 24.22.1。
 
+### 新增
+
+- **`scripts/ghidra-gate-override.mjs`**：把「要不要跑 REA 未验证的 Ghidra」变成显式、有记录、可还原的选择。
+  2026-10-26 实测 Ghidra **12.2**（那四个 CVE 的修复版）与 6.8.0 的桥接可用 —— 段表 9 段、函数表 341 个
+  （74,483 字符）、`entry` 伪代码与 12.1.4 **逐字节相同**，`provider.version = 12.2` —— 挡住它的只是
+  `SUPPORTED_GHIDRA_VERSION = "12.1.4"` 这条等值判定。脚本只改 vendored 副本里声明该常量的三个文件
+  （`dist/ghidra/GhidraReleasePolicy.js`、`dist/cli-runtime/KunaCommand-*.js`、`dist/mcp/binary-*.js`），
+  把原值/新值/时间写进 `<bundle>/ghidra-gate-override.json`，`--disable` 精确还原；重新供给 rea-agents
+  会把它抹掉（默认回到钉住的已验证组合）。12.2 要求 **JDK 25+**（`application.java.min=25`）。
+- **`check-updates.ps1` 认得这份记录**：盘上跑 12.2 时打印「本机覆盖 Ghidra 闸门」，而不是劝用户「重跑 setup 对齐」
+  —— 后者正好会把覆盖悄悄抹掉。
+
 ### 验证
 
 - 单测 **88 条**（85 过 / 3 平台跳过 / 0 失败）；`audit-manifest` **24/24 hash-pinned clean**；
