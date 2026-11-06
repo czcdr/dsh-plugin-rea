@@ -273,7 +273,29 @@ function decodeOutput(buffer) {
 }
 
 function runPowerShell(command, args, env) {
-  const result = spawnSync(command, ["-NoProfile", "-File", CHECK_UPDATES, ...args], {
+  // Force UTF-8 out of the host process.
+  //
+  // A Windows CI runner answers in CP437, where every CJK character collapses to
+  // "?" — irreversibly, so `decodeOutput`'s GBK fallback cannot rescue it and
+  // every assertion below fails on a host where the script is perfectly fine.
+  // (Measured: the conclusion line arrived as
+  // `[??] ????:pin ?? 1 ?;?? 2 ?(????)`.) Setting this in the CHILD keeps the
+  // shipped script's behaviour untouched — a test harness must not change what
+  // the product prints just to make its own assertions match.
+  // Parameter NAMES must stay unquoted: `& 'script.ps1' '-Registry' 'url'` hands
+  // PowerShell a positional string "-Registry" instead of binding the parameter,
+  // which then became $Registry's VALUE and turned the lookup into a request for
+  // "-Registry/rea-agents/latest" (measured: a 502 and a red suite). `-File` did
+  // the parsing for us; `-Command` does not.
+  const token = (value) =>
+    String(value).startsWith("-") ? String(value) : `"${String(value).replace(/"/g, '""')}"`;
+  const invocation = [
+    "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;",
+    "$OutputEncoding=[System.Text.Encoding]::UTF8;",
+    `& "${CHECK_UPDATES}"`,
+    ...args.map(token),
+  ].join(" ");
+  const result = spawnSync(command, ["-NoProfile", "-Command", invocation], {
     env: { ...process.env, ...env },
     windowsHide: true,
     maxBuffer: 8 * 1024 * 1024,
