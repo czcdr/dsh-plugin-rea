@@ -105,7 +105,14 @@
       "license": "GPL-2.0-with-classpath-exception (Eclipse Temurin)",
       "requires": [],
       "unpack": { "stripRootComponents": 1, "moveTo": "jdk" },
-      "probe": { "argv": ["{jvm}", "--list-modules"], "expect": { "contains": "jdk.compiler" } },
+      "probe": {
+        "argv": ["{jvm}", "--list-modules"],
+        "expect": {
+          "contains": "jdk.compiler",
+          "regex": "jdk\\.compiler@(?:2[1-9]|[3-9]\\d|\\d{3,})\\b"
+        },
+        "why": "Two independent facts, and BOTH are required (runProbe applies contains and regex as an AND). `contains: jdk.compiler` separates a full JDK from a trimmed runtime, but it says nothing about the VERSION: a real Java 17.0.20 also prints `jdk.compiler@17.0.20`, and setup accepted a JAVA_HOME pointing at it, recorded `{version: 17.0.20, reused: true}`, and only then did Ghidra 12.1 (JDK 21+) fail later in a different process. The regex matches the version segment of that same line and demands major >= 21 (21-29 / 30-99 / 100+); 1x, single digits and two-digit values below 21 do not match. "
+      },
       "sources": {
         "win32-x64": {
           "version": "21.0.12.1+1",

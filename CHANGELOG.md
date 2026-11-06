@@ -2,6 +2,156 @@
 
 本插件遵循语义化版本。版本号变化说明「配置组合」这层的变化，与 REA 自身的版本无关。
 
+## 2.0.14 — 2026-11-06
+
+**这一版是对 2.0.13 的一次外部审计（18 项）的逐条修复，外加 DSH 宿主适配到 `0.2.2-rc.1`。
+上游组件一个都没动：REA 6.8.0 / Ghidra 12.1.4 / JDK 21 / apktool 3.0.3 / jadx 0.7.1 / Node 24.22.1 全部原地。**
+
+审计的核心结论不是「有个洞」，而是**「安装状态会说谎」**：一次部分失败的安装会被记录成成功，一个坏路径能被另一份好安装背书，
+一条超时的锁会被从活进程手里删掉。这四类问题的共同点是**验证的对象与实际对象不是同一个**，所以本轮的修法统一是
+「让探针去看真正要交付的那份东西」。
+
+### 高：安装状态造假
+
+- **多文件组件部分失败会记录成新版本（`scripts/setup.mjs`）**。原先某个 entry 下载失败只是 `continue`，只要另一个文件落地就照跑探针，
+  再用 `placed[0]` 的路径/哈希配 `entries[0].version` 写记录 —— apktool 的 jar 下载失败、wrapper 成功时，目录里残留的 **2.0.0 jar
+  通过了 `java -jar --version`**，记录却写着 3.0.3 且哈希取自 wrapper；下一次运行直接 `already provisioned (3.0.3)` 不再下载。
+  现在：**全部 entry 先取全才继续**，缺一个就整体失败并打印「N of M entries were available; nothing was installed」；
+  所有文件先进 `<target>.staging`，**全就位后才原子换入**（旧目录留 `.backup`，探针失败同样回滚）；
+  记录改为**每 entry 独立**的 `{id, version, sha256, tofu}` 数组，`jarName`/`sha256` 按**类型**（`.jar`）而不是列表顺序选主。
+- **记录路径的探针没有绑定该路径（`scripts/setup.mjs`）**。`recorded` 分支直接 `runProbe(..., context)`，而 `{jvm}`/`{ghidra}`/`{node}`
+  是按 `context.resolved` 展开的 —— 于是「记录指向一个坏 Ghidra、vendor 下另有一份好的」时，探针拿好安装给坏路径背书。
+  现在用**独立 context 把该组件解析到 `recorded.path` 再探针**，并新增 **pin 校验**：记录版本必须等于 manifest 的 pin，
+  JDK 按**主版本下限**（`manifest` 钉 21 → 25.0.5 合格）；唯一豁免是**已启用的 Ghidra 闸门覆盖**，
+  否则一次普通 setup 会把操作员显式打开的覆盖悄悄重钉回 12.1.4。
+
+### 中：可用性与并发
+
+- **损坏的 bundle 挡住 auto 回退，且状态命令照样退出 0（`bin/rea-shim.mjs`）**。`loaded.ok`（JSON 解析成功）被当成「已供给」，
+  于是 `paths.node` 已消失的 bundle 凭「记录版本更新」赢了可用的系统 REA（退出 78），`--shim-status` 也在 `rea.ok=false`
+  时返回 0。现在统一成 `bundleUsable = loaded.ok && resolveRea(...).ok`，**启动选择、状态退出码、修复路径三处共用**；
+  bundle 不可用而系统 REA 可用时回退，两者都不可用才进入修复。
+- **六小时过期会删掉活进程的锁（`bin/rea-shim.mjs`）**。原规则只信任「新鲜」的锁，超时后**不问持有者是否还活着**就删 ——
+  慢下载或卡住的 PowerShell 步骤真的会跑过六小时，删锁后第二个 provisioning 会写同一份 cache、同一批 `.staging`
+  和同一份 `bundle.json`。现在**存活 pid 是硬证据，过期只是软证据**：pid 活着就永不删（超过窗口时以 `in-flight-stale`
+  报告并提示手工处理）；只有 pid 证明已消失才回收。配套：`setup` 的 `log()` 兼作**心跳**（30 s 节流刷新 `at`），
+  shim→setup 的 PID 交接改为 **token 交接**（`REA_BUNDLE_LOCK_TOKEN`），关掉「setup 在自己的锁上输给自己、退出 75」的窄窗口。
+- **JDK 探针不保证 21+（`manifest/bundle.manifest.json`）**。`jdk.compiler` 只区分完整 JDK 与裁剪运行时 —— 真实 Java 17.0.20
+  同样打印 `jdk.compiler@17.0.20`，于是 setup 接受并记录 `{version: "17.0.20", reused: true}`，Ghidra 之后才失败。
+  现在 `expect` 同时要求 `contains: jdk.compiler` **和** `regex` 匹配版本段 ≥ 21（21–29 / 30–99 / 100+），
+  8 组版本串正反验证（含本机真实 `jdk.compiler@25.0.5`）。
+- **Frida 原生绑定缺失（`scripts/setup.mjs`）**。`rea-agents` 直接依赖 `frida`，而 frida 只有在 install 脚本里才会放
+  `build/frida_binding.node`；`--ignore-scripts`（正确的加固）导致 `import('frida')` 报 *Could not locate the bindings file*，
+  所有 Frida 工具全死而 run 报成功。**修法不是删 `--ignore-scripts`**，而是**点名这一个包**跑 `npm rebuild frida`，
+  再用 `import('frida')` + `enumerateDevices()` 验证（实测 `FRIDA_OK 3`）。检查放在 `main` 层，因此
+  **已记录 6.8.0 的存量 bundle（也就是每次升级）也会被修**，而不是只有全新安装；结果写进
+  `components.reaAgents.frida = {available, binding, sha256, devices}`。不可用时按 `browser` 的先例报 `skip`，不判失败。
+
+### 中：状态文件与回滚
+
+- **归档替换先删后 rename（`scripts/setup.mjs`）**：rename 失败会同时失去新旧两份。现在旧目录先改名为 `.backup`，
+  失败即回滚，探针失败也回滚（并明说「the previous install was put back」）。
+- **`bundle.json` / `mirror.json` 原地覆盖写**：半文件会被读成「未供给」，进而触发一次全量重装。现在统一走
+  `writeJsonAtomic()`（同目录 `.part` + rename）。
+
+### 低
+
+- **损坏的 `setup.lock` 让手动 setup 抛 `SyntaxError`（`scripts/setup.mjs`）**：`readJson` 会抛，而它没被捕获，
+  与「不可读的锁会被替换」的注释相反。现在捕获并按陈旧锁处理。
+- **`--dry-run` 仍创建 root/cache/`logs/setup.log`**：现在 dry-run **一个字节都不写**（`appendLog` 同步跳过）。
+- **`bin/rea-guide.mjs` / `scripts/ghidra-gate-override.mjs` 忽略 `REA_BUNDLE_ROOT`**：与 setup/shim/bootstrap 的
+  root 解析顺序统一（`--root` → `REA_BUNDLE_ROOT` → `DSH_HOME` → `~/.dsh`），补救命令在该 root 非默认时带 `--root`。
+- **`ghidra-gate-override.mjs` 先 patch 后写恢复记录**：中途失败留下半改状态且无恢复信息。现在**先把全部原值读进内存并
+  落盘记录（`schema: 2`，`status: "patching"`）再动第一个字节**，任一失败用内存原文回滚已改文件；回滚不全则**保留**
+  记录（`status: "rollback-failed"`）而不是丢掉线索。`--disable` 增加恢复后哈希校验。
+- **`--disable` 信任记录里的相对路径**：新增 `containedPath()` —— resolve 后做前缀包含，并**逐段 `lstat`** 拒绝符号链接/junction。
+  实测 `..\..\..\outside-old.js` 与 junction 记录都被拒且 bundle 外文件未被触碰。
+- **Python `tarfile.extractall()` 无 filter（纵深防御）**：补 `filter='data'`（3.12+ 默认、3.11.4+ 可用），
+  `except TypeError` 兜底老 Python。所有归档本就逐条 SHA-256 钉死，这一条防的是将来出现的未固定条目。
+
+### 依赖安全：闭包改为从受审 lock 复放
+
+`rea-agents@6.8.0` 对 zod 是**精确锁 `"4.4.3"`**，而 4.4.3 落在 GHSA-mrhx-c7xc-m3w5（<4.6.6，校验超长约束集合时内存放大）内。
+实测放大器是 REA 自己的 `inspect_analysis_settings` 输入 schema（`.max()` 挂在数组上）：合成 `.max(2)` 喂 25 个元素，
+**4.4.3 产出 26 条 issue，4.6.7 只产出 1 条**。精确锁无法用 `dependencies` 范围挪动，`overrides` 是唯一不改发布 tarball 的杠杆；
+且单独 `npm install zod@4.6.7` 会装出**两份 zod**（REA 仍吃坏的那份），已实测否决。
+
+- 新增 **`scripts/vendor-lock/`**（`package.json` + `package-lock.json`，lockfileVersion 3，183 条目）：
+  `zod 4.6.7` / `minimatch 11.0.5` / `glob 14.0.4`。setup 把它拷进 `vendor/.npm-staging/` 跑 **`npm ci`**，
+  校验通过后才 rename 就位；`npm ci` 失败则删掉拷入的 lock 再走 `npm install` + 同值 overrides（同版本，字节不可复现，日志会明说）。
+  落地后**再读 `node_modules/zod/package.json` 的版本**，< 4.6.6 直接拒绝这个闭包。
+- 新增 **`scripts/check-dependency-advisories.mjs`**（离线）：检查每个包的**所有副本**（含嵌套）是否 ≥ 修复线、
+  锁里的 rea-agents 是否等于 manifest pin、`setup.mjs` 的 `CLOSURE_OVERRIDES` 与 lock 的 overrides 是否互洽。
+  本地一条命令即可挂进 CI；**本轮没有改 `.github/workflows/`**（原因见「已知约束 6」），
+  但 `bundle:test` 已扩到四个测试文件，CI 既有的 `npm run bundle:test` 会自动跑到新的测试。
+- 兼容性实测（不是推断）：`@electron/asar` 在 glob 14 / minimatch 11 下 create/list/extract/stat **往返通过**；
+  REA 真实 MCP stdio 握手 `tools/list` 仍是 **229/229 且每个都有 inputSchema**（与 zod 4.4.3 基线一致）。
+- `frida` 的 minimatch 本来是死路径（绑定缺失），本轮修好绑定后变成可达 —— 已验证 `new Minimatch()` 在 11.0.5 上可用。
+
+### DSH 宿主适配：0.2.1-rc.3 → 0.2.2-rc.1
+
+`HOST_RELEASES` 从 10 条扩到 **16 条**，新增 `0.2.2-rc.1`、`0.2.2-alpha.3`、`0.2.1-rc.5`、`0.2.2-alpha.2`、`0.2.1-rc.4`、`0.2.1-rc.3`。
+`engines.dsh` 声明未动（`>=0.1.7-rc.2 <0.3.0-0`，这 6 个版本全部在范围内），`OUTSIDE_HOSTS` 未放宽。
+
+- 三源交叉核实（releases 页 / atom / npm registry）：6 个 tag 全部真实存在，原有 10 条一条未被撤下；`0.2.2-rc.1` 是当前
+  `latest`。**排序按发布日而非 semver**：`0.2.1-rc.5`(10-29) 晚于 `0.2.2-alpha.2`(10-27)，这一处倒序在代码注释与测试里钉死。
+- 接口面逐条核对：6 个版本对本插件实际依赖的五处（patch 方言 / MCP 行 schema / 宿主插件 API / 客户端注入契约 /
+  市场 engines 判定）**都没有破坏性变化**。唯一沾边的是 `0.2.2-rc.1` 的 "Cordis Core 4.1.0 / Loader 1.1.0"，
+  **已在本机 0.2.2-rc.1 上实测通过**：`GET /dsh-plugin-rea/guide-state` → 200，`mcp__rea__*` 可用。
+- 市场侧的判定语义现场取证：`dshmarket/lib/verify.js` 与 `discovery-compatibility.js` 都只读 `engines.dsh`
+  （`includePrerelease: true`），**不读 `engines.node`**。
+
+### 顺带修掉的两处「自相矛盾」
+
+- **`"21"` 这种只有主版本的 pin 被当成「家族前缀」**（`scripts/pin-match.ps1`、`bin/rea-guide.mjs`）：`25.0.5` 对 pin `21`
+  被判成漂移，于是 `check-updates.ps1` 说「重跑 setup 对齐」，而 setup 说「already provisioned (25.0.5) — major 25
+  satisfies the pin's major 21」。Ghidra 要求的是「JDK 21 **或更新**」，所以**只有主版本的 pin 是下限，不是前缀**；
+  三个文件的判定现在一致。
+- **`check-updates.ps1` 的假红**：`rea doctor` 退出码 1 涵盖「任何可选能力未配置」（Hopper / IDA / Kuna / skill 副本 /
+  五个客户端登记），于是一台供给完好的机器也恒报「需要动作」。退出码降为 `[上游]`，实际状态由输出解析出来的
+  provider 检查决定 —— 假绿修完之后不能顺手留下假红。
+
+### 验证
+
+```
+单测       154 项：151 过 / 0 失败 / 3 跳过
+           （setup.test 98 · deps.test 17 · host-compat.test 25 · hardening.test 14）
+manifest   audit 24 条下载 entry 全部 SHA-256 钉死，0 TOFU
+依赖闸门   zod 4.6.7 · minimatch 11.0.5 · glob 14.0.4，各单副本
+宿主兼容   16 releases covered，5 correctly outside
+verify-branch  ALL CHECKS PASSED
+```
+
+真机（本机 `D:\dsh-home\plugins\rea-bundle`）：`setup --dry-run` 7 个组件全部按 pin 正确 skip（Ghidra 12.2 覆盖与
+JDK 25 均未被误判为漂移）→ 强制重装 apktool 走完整 staging 路径（无残留 `.staging`/`.backup`，目录内容恰好等于
+manifest 的两个文件）→ `--reuse` 全量 8 组件 + `fridaBindings FRIDA_OK 3` → `probe 229 tools`、
+`smoke 28 s 导入 java.exe`（Ghidra 12.2）、`shim resolved 6.8.0`，退出 0。`check-updates.ps1` 由退出 1 转为退出 0。
+
+新增回归测试（旧代码下会红）：部分失败不成假绿 + 第二次仍重试、记录路径不被 vendor 背书、pin 漂移不被信任、
+JDK 17 被拒、dry-run 不写盘、坏锁不抛异常、`tarfile` 带 filter、坏 bundle 回退系统 REA、
+`--shim-status` 对不可用 bundle 返回 78、活 pid 的过期锁不被删。
+
+### 已知约束（本轮没有解决，别当成已解决）
+
+1. **`engines.node` 仍是 `^22.23.4 || ^24.22.1 || >=26.12.1`**，而 `0.2.2-rc.1` 桌面宿主自带 Node **24.21.0**。
+   实测市场不读这个字段（只读 `engines.dsh`），npm 也只在默认配置下警告；**但 `engine-strict=true` 的用户会装不上**。
+   没放宽它的原因：这个字段当前被 `audit-manifest.mjs` 强制与 `manifest.pins.nodeEngines`（REA 的真实要求）逐字相等，
+   拆开两者是一次独立改动。运行期不受影响：shim 用 `bundle.json` 的 `paths.node`（24.22.1）启动 REA。
+2. **`package.json` 的 `dsh.client.inject` 仍列出 `@deepseek-ai/dsh-client-runtime`**，而该包在 `0.2.2-rc.1` 宿主里
+   **一次都不出现**（它是构建期 `devDependency`）。宿主对未知 inject 项**静默跳过**（`dsh-client-modules` 的
+   `graphRows.get()` 取不到就什么也不做），且本插件 `client.js` 不 require 它，真实闸门是服务 `["slots"]` ——
+   所以卡片照常渲染，保留它是为了不损害旧宿主的适配。属于清理项，不是缺陷。
+3. **Ghidra 默认 pin 仍是 12.1.4**（带那四个 CVE）。12.2 只能通过 `scripts/ghidra-gate-override.mjs` 显式开启，
+   它需要 JDK 25+ 且 REA 未验证。**在升级这个 pin 之前，不要用内置 Ghidra 分析来源不可信的样本。**
+4. **硬链接逃逸没有做 containment**：同卷硬链接与 bundle 内文件共享 inode，纯路径检查区分不了；本轮只拒绝了
+   `../`、绝对路径、符号链接/junction。
+5. **minimatch / glob 在 REA 默认 MCP 路径上的可达性仍未证实**：本轮做的是把它们抬到修复线上，不是证明可利用。
+6. **`.github/workflows/validate.yml` 没有加「依赖闸门」那一步**。推送它的凭据缺 GitHub 的 `workflow` scope，
+   被服务端拒绝（`refusing to allow an OAuth App to create or update workflow … without 'workflow' scope`），
+   所以这一轮刻意没把 workflow 改动放进提交 —— 免得为了 4 行 YAML 让整个提交推不上去。
+   补法：在 `Bundle manifest audit` 之后加一步 `run: npm run bundle:deps`（Linux 与 Windows 两个 job 各一处）。
+   新测试不受影响：`package.json` 的 `bundle:test` 已扩到四个文件，CI 现有的 `npm run bundle:test` 就会跑到它们。
+
 ## 2.0.13 — 2026-10-26
 
 **上游 REA 从 6.7.0 升到 6.8.0。这一次上游**同时抬高了 Node 的 engines 下限**，所以不是只改一个版本号 ——

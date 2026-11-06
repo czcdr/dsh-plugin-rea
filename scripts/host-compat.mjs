@@ -24,6 +24,13 @@
  * shape for a gate. When a release is added upstream, add it here too — that
  * edit is the reminder to re-check the row against the new host.
  *
+ * FLOOR AND CEILING: the floor stays at 0.1.7-rc.2 (nothing older was ever
+ * adapted), and the newest entry must still sit below the declared ceiling.
+ * The 2026-11-06 adaptation added the 0.2.2 line and 0.2.1-rc.3/4/5, all of
+ * which remain below `<0.3.0-0` — the ceiling was NOT raised to reach them, so
+ * a release past 0.3.0 arrives here as an `uncovered` failure and as a decision
+ * for a human, never as a silent widening of what the market advertises.
+ *
  * SEMANTICS: this file evaluates the declaration the way `includePrerelease:
  * true` does, and that choice is not stylistic. Both consumers of `engines.dsh`
  * in this ecosystem pass that option — dshmarket's discovery
@@ -51,8 +58,23 @@ const REPO_ROOT = path.join(HERE, '..')
  * floor is the oldest release the plugin has been adapted to; everything above
  * it up to the declared ceiling must keep working, so a release that is missing
  * here is a release nobody checked.
+ *
+ * "Newest first" means BY PUBLISH DATE — the order the release page shows — and
+ * not semver precedence. The two disagree exactly once here: 0.2.1-rc.5
+ * (published 2026-10-30) came out after 0.2.2-alpha.2 (2026-10-27), so a reader
+ * who assumes descending semver will take 0.2.2-alpha.2 to be the newer of the
+ * two. Publication order is the sequence hosts actually upgrade through, so
+ * that is the order recorded; per-release dates are in
+ * docs/host-compat-2026-11-06.md rather than beside the literals, because a
+ * date on every line goes stale the first time someone appends without one.
  */
 export const HOST_RELEASES = [
+  '0.2.2-rc.1', // 2026-11-04 — the host the 2026-11-06 adaptation was measured on
+  '0.2.2-alpha.3', // 2026-11-03
+  '0.2.1-rc.5', // 2026-10-30
+  '0.2.2-alpha.2', // 2026-10-27
+  '0.2.1-rc.4', // 2026-10-26
+  '0.2.1-rc.3', // 2026-10-23
   '0.2.1-rc.2',
   '0.2.1-rc.1',
   '0.2.1-alpha.5',

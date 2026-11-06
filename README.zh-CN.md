@@ -120,7 +120,7 @@ profile 安装插件：
 ```
 dsh plugin --profile <profile> add dsh-plugin-rea
 # 或钉住这个版本，而不是跟着 npm latest 走：
-dsh plugin --profile <profile> add github:czcdr/dsh-plugin-rea#v2.0.13
+dsh plugin --profile <profile> add github:czcdr/dsh-plugin-rea#v2.0.14
 ```
 
 > **Electron 宿主（DeepSeek Harness 桌面版）的 profile 由应用独占。** 那种机器上 `dsh plugin --profile desktop …`
@@ -151,12 +151,22 @@ node scripts/setup.mjs --reuse      # 或先 --dry-run 看计划
 
 | 宿主版本 | 是否覆盖 |
 |---|---|
-| `0.1.7-rc.2` … `0.2.1-rc.2`（中间的 alpha 与 rc 全部在内） | 是 |
+| `0.1.7-rc.2` … `0.2.2-rc.1`（中间的 alpha 与 rc 全部在内，共 16 个 tag） | 是 |
 | `0.3.0` 及以后 | 否 —— 新的小版本线是还没为它核对过这一行的宿主 |
 
-真正被比对过的是「行提供方」：`packages/mcp/mcp-client` 在 `dsh-v0.1.7-rc.2` 与 `dsh-v0.2.1-rc.2` 两个 tag 上，
-暴露的配置面与发布的行完全一致（`serverName`、`transport`、`command`、`args`、`env`、`failOnStartupError`），
-并且两个 tag 都有 `dsh.bundle.patch`。范围之外的宿主可能照样能用，只是没有替它声明。
+2.0.14 逐个核对了 2026-10-23 之后发布的 6 个 tag（`0.2.1-rc.3`、`0.2.1-rc.4`、`0.2.2-alpha.2`、`0.2.1-rc.5`、
+`0.2.2-alpha.3`、`0.2.2-rc.1`）：发布说明里没有触及本插件依赖的五处接口面（patch 方言、MCP 行 schema、
+宿主插件 API、客户端注入契约、市场 engines 判定）。唯一沾边的是 `0.2.2-rc.1` 的 Cordis Core 4.1.0 / Loader 1.1.0，
+**已在本机 0.2.2-rc.1 上实测**：`GET /dsh-plugin-rea/guide-state` 返回 200，`mcp__rea__*` 工具可用。
+
+真正被比对过的是「行提供方」：`packages/mcp/mcp-client` 在 `dsh-v0.1.7-rc.2`、`dsh-v0.2.1-rc.2` 与
+`dsh-v0.2.2-rc.1` 上暴露的配置面与发布的行完全一致（`serverName`、`transport`、`command`、`args`、`env`、
+`failOnStartupError`），并且都带 `dsh.bundle.patch`。范围之外的宿主可能照样能用，只是没有替它声明。
+
+> 市场只读 `engines.dsh`（`dshmarket/lib/verify.js` 与 `discovery-compatibility.js` 现场取证），**不读
+> `engines.node`**。所以宿主自带的 Node 比本包 `engines.node` 的下限低时，市场不会拦你；只有把 npm 配成
+> `engine-strict=true` 的人会在 `npm install` 阶段被挡。运行期不受影响：REA 是用 `bundle.json` 里记录的
+> `paths.node` 启动的，不是宿主那个 Node。
 
 ### 机器上已有 REA 就直接用它
 
@@ -283,10 +293,10 @@ Ghidra 的默认自动分析。如果大文件的第一次 `open_binary` → `li
 | 组件 | 版本 |
 |---|---|
 | REA（`rea-agents`） | **6.8.0**（229 个工具） |
-| DeepSeek Harness | desktop runtime **0.2.0-rc.2**，内含 dsh CLI 0.1.7-rc.2 |
+| DeepSeek Harness | desktop runtime **0.2.2-rc.1**（2.0.14 实测宿主；全范围见上面的版本表） |
 | `@deepseek-ai/dsh-mcp-client`（行 provider） | 随 harness 打包 |
-| Ghidra | 12.1.4 |
-| JDK | Temurin 21（供给）/ Amazon Corretto 25.0.5（宿主复用） |
+| Ghidra | 12.1.4（本机另有 12.2 走闸门覆盖，见下） |
+| JDK | Temurin 21（供给）/ Amazon Corretto 25.0.5（宿主复用；主版本下限满足 pin `21`） |
 | Node.js | **24.22.1**（复用；REA engines：`^22.23.4 \|\| ^24.22.1 \|\| >=26.12.1`，ABI 137） |
 | 宿主 | Windows 11 x64（build 26200） |
 
@@ -309,6 +319,15 @@ shim** 的 MCP `initialize` 握手返回 `serverInfo {name: rea, version: 6.8.0}
 盘上的 jadx jar 仍是 `6e5eacf5…` —— 正是 6.8.0 要求的那个值。把 6.8.0 自己的发布策略加载执行，得到
 `12.1.4 → verified`、`12.1.5 → compatible`、`12.2 → unsupported`，所以 Ghidra 原地不动。
 
+2026-11-06（2.0.14，外部审计 18 项修复 + 宿主适配）：**上游组件一个都没动**（REA 6.8.0 / Ghidra 12.1.4 / JDK 21 /
+apktool 3.0.3 / jadx 0.7.1 / Node 24.22.1）。同一条链路重验：`--dry-run` 7 个组件全部按 pin 正确 skip（Ghidra 12.2
+的闸门覆盖与 JDK 25 都没有被误判成漂移）→ 强制重装 apktool 走完整 staging 路径（无残留 `.staging`/`.backup`，
+目录内容恰好等于 manifest 声明的两个文件）→ `--reuse` 全量 8 个组件 + `fridaBindings FRIDA_OK 3` →
+`probe cli=6.8.0 tools=229`、Ghidra 冒烟 28 s 导入 `java.exe`、shim 解析 6.8.0，退出 0。
+门禁：单测 **154 项**（151 过 / 0 失败 / 3 跳过）、`audit` 24/24 hash-pinned clean、
+依赖闸门 zod 4.6.7 · minimatch 11.0.5 · glob 14.0.4、`host-compat` 16 releases、`verify-branch` ALL CHECKS PASSED。
+`check-updates.ps1` 从「假绿退出 0」变成「如实报告」，本机修完后退出 0。
+
 ## 边界与注意事项
 
 - REA 在 6.8.0 有 229 个工具，每个会话的工具列表都会变长。
@@ -326,8 +345,17 @@ shim** 的 MCP `initialize` 握手返回 `serverInfo {name: rea, version: 6.8.0}
   管不到这个子进程自己去读、写或发送什么；请把插件当作你安装的第三方代码来对待。
 - Linux 上，上游的进程归属检查依赖 PATH 上**兼容 procps 的 `ps`**；Ghidra/JADX 与固件工具会用到它。
   极简镜像里缺它只会让这些工具失败，不影响整体安装。
-- `scripts/setup.mjs` 为 REA CLI 跑的是带 `--ignore-scripts` 的 `npm install`：官方 tarball 不带
-  `node_modules`，必须解析依赖闭包；而供给过程中**刻意跳过包的 lifecycle 脚本**。这一步也是**唯一**用不上
+- `scripts/setup.mjs` 为 REA CLI 跑的是 **`npm ci`**，复放随包发布的 `scripts/vendor-lock/`
+  （`package.json` + `package-lock.json`）：REA 对 zod 是精确锁 `"4.4.3"`，而 4.4.3 落在
+  GHSA-mrhx-c7xc-m3w5 里，所以闭包通过 `overrides` 抬到 **zod 4.6.7 / minimatch 11.0.5 / glob 14.0.4**。
+  `npm ci` 会逐 tarball 校验 sha512；若镜像重打包导致 `EINTEGRITY`，则退到「同版本 overrides + `npm install`」
+  （同版本、字节不可复现，日志会明说）。落地后还会再读一次 `node_modules/zod/package.json` 的版本，低于 4.6.6 直接拒绝。
+  `node scripts/check-dependency-advisories.mjs` 是离线闸门，已接进 CI。
+  供给过程**刻意跳过所有 lifecycle 脚本** —— 唯一的例外是 **frida**：它的原生绑定
+  （`build/frida_binding.node`）只在 install 脚本里才会放下，所以 setup 会点名这一个包跑 `npm rebuild frida`，
+  然后用 `import('frida')` + 设备枚举验证（记录进 `bundle.json` 的 `components.reaAgents.frida`）。
+  绑定缺失时 Frida 系工具不可用，但其余 200 多个工具不受影响，所以这一项报 `skip` 而不是让整次供给失败。
+  这一步也是**唯一**用不上
   本插件自己的路由/代理回退的环节 —— npm 只从环境读 `HTTPS_PROXY`/`HTTP_PROXY` 与
   `NPM_CONFIG_REGISTRY`，所以网络需要镜像时请先设其中一个（例如
   `NPM_CONFIG_REGISTRY=https://registry.npmmirror.com`）。带 `--offline` 时这一步会被**直接拒绝**，

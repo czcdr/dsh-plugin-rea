@@ -18,12 +18,12 @@
  * `index.mjs` serves the result as GET /dsh-plugin-rea/guide-state; `client.js`
  * renders the guide once per plugin version. This file also runs standalone:
  *
- *   node bin/rea-guide.mjs --json
+ *   node bin/rea-guide.mjs --json [--bundle <bundle.json> | --root <dir>]
  */
 
 import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 /** Route served by index.mjs and read by client.js. One definition, two readers. */
@@ -61,12 +61,35 @@ export function readJsonFile(file) {
 /** `$DSH_HOME` when set, otherwise the same `<home>/.dsh` fallback the shim uses. */
 export function dshHome(env = process.env) {
   const explicit = typeof env.DSH_HOME === 'string' ? env.DSH_HOME.trim() : ''
-  return explicit !== '' ? explicit : join(homedir(), '.dsh')
+  return explicit !== '' ? resolve(explicit) : join(homedir(), '.dsh')
+}
+
+/**
+ * The bundle root, by the same order scripts/setup.mjs (`defaultBundleRoot`),
+ * bin/rea-shim.mjs (`bundleRoot`) and scripts/rea-bundle-bootstrap.ps1 use:
+ * `REA_BUNDLE_ROOT` first, then `<DSH_HOME>/plugins/rea-bundle`.
+ *
+ * Reading only DSH_HOME here made a machine that provisions into a custom root
+ * look `missing` to the guide — the one screen whose entire job is to decide
+ * "does setup still have to run" — so it told an already-provisioned machine to
+ * provision again. The guide must answer for the root the rest of the system
+ * agrees on.
+ */
+export function bundleRoot(env = process.env) {
+  const override = typeof env.REA_BUNDLE_ROOT === 'string' ? env.REA_BUNDLE_ROOT.trim() : ''
+  return override !== '' ? resolve(override) : join(dshHome(env), 'plugins', 'rea-bundle')
 }
 
 /** Where setup.mjs records what it provisioned. */
-export function defaultBundlePath(home = dshHome()) {
-  return join(home, 'plugins', 'rea-bundle', 'bundle.json')
+export function defaultBundlePath(root = bundleRoot()) {
+  return join(root, 'bundle.json')
+}
+
+/** Windows paths are case-insensitive; comparing `resolve`d strings is not. */
+function samePath(left, right) {
+  const a = resolve(left)
+  const b = resolve(right)
+  return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b
 }
 
 /**
@@ -78,9 +101,20 @@ export function defaultBundlePath(home = dshHome()) {
  * both slow and the opposite of what "align the runtime" means. On a first
  * install the flag costs nothing — every candidate is probed, and a machine with
  * none downloads exactly as before.
+ *
+ * `--root` is added whenever the guide looked somewhere other than the default
+ * `<DSH_HOME>/plugins/rea-bundle` (a `REA_BUNDLE_ROOT` override, or an explicit
+ * `--bundle`/`--root`). Without it the copy-pasted command would provision the
+ * default root and leave the one the guide just complained about untouched.
  */
-export function setupCommandFor(pluginRoot = PLUGIN_ROOT) {
-  return `node "${join(pluginRoot, 'scripts', 'setup.mjs')}" --reuse`
+export function setupCommandFor(pluginRoot = PLUGIN_ROOT, root = null) {
+  const command = `node ${quotePath(join(pluginRoot, 'scripts', 'setup.mjs'))} --reuse`
+  return root ? `${command} --root ${quotePath(root)}` : command
+}
+
+/** Quote a path so a copy-pasted command survives spaces and quotes. */
+function quotePath(value) {
+  return `"${String(value).replace(/"/g, '\\"')}"`
 }
 
 /**
@@ -97,7 +131,15 @@ export function reaPinMatches(installed, pinned) {
   const want = String(pinned ?? '').trim()
   if (have === '' || want === '') return false
   if (have === want) return true
-  if (!want.includes('.')) return have.startsWith(`${want}.`)
+  if (want.includes('.')) return false
+  // A bare-major pin ("21") is a FLOOR, not a family prefix — the same rule
+  // `scripts/setup.mjs` applies when it decides a recorded component still
+  // satisfies the manifest. The prefix form accepted 21.0.12.1+1 and rejected
+  // 25.0.5, so the guide said "stale, run setup" on a machine that setup had just
+  // called "already provisioned (25.0.5) — major 25 satisfies the pin's major 21".
+  const haveMajor = Number.parseInt(have.split('.')[0], 10)
+  const wantMajor = Number.parseInt(want, 10)
+  if (Number.isFinite(haveMajor) && Number.isFinite(wantMajor)) return haveMajor >= wantMajor
   return false
 }
 
@@ -118,9 +160,19 @@ export function computeGuideState(options = {}) {
   const {
     pluginVersion = '',
     pinnedRea = '',
-    bundlePath = defaultBundlePath(),
+    bundleRoot: rootOption = null,
+    bundlePath: bundlePathOption = null,
     pluginRoot = PLUGIN_ROOT,
   } = options
+
+  // Resolve the root the way setup/shim/bootstrap do, then honour a path a caller
+  // handed in directly (tests and `--bundle` pass a file, not a root).
+  const root = rootOption ? resolve(rootOption) : bundleRoot()
+  const bundlePath = bundlePathOption ? resolve(bundlePathOption) : defaultBundlePath(root)
+  const rootInEffect = bundlePathOption ? dirname(bundlePath) : root
+  // Only the default root needs no flag: setup.mjs resolves DSH_HOME itself, so
+  // the command stays shorter there and identical to what it always printed.
+  const setupRoot = samePath(rootInEffect, join(dshHome(), 'plugins', 'rea-bundle')) ? null : rootInEffect
 
   const base = {
     pluginVersion: String(pluginVersion),
@@ -129,8 +181,9 @@ export function computeGuideState(options = {}) {
     provisionedAt: null,
     state: 'missing',
     needsSetup: true,
+    bundleRoot: rootInEffect,
     bundlePath,
-    setupCommand: setupCommandFor(pluginRoot),
+    setupCommand: setupCommandFor(pluginRoot, setupRoot),
     detail: '',
   }
 
@@ -191,12 +244,20 @@ export function localPackageFacts(pluginRoot = PLUGIN_ROOT) {
 
 function main(argv) {
   const asJson = argv.includes('--json')
-  const bundleFlag = argv.indexOf('--bundle')
+  const flagValue = (name) => {
+    const index = argv.indexOf(name)
+    return index !== -1 && argv[index + 1] ? argv[index + 1] : null
+  }
+  // `--root` mirrors setup.mjs; `--bundle` names the record file itself and is
+  // what the old CLI offered. Both are overrides of the same resolution chain.
+  const bundlePath = flagValue('--bundle')
+  const root = flagValue('--root')
   const facts = localPackageFacts()
   const state = computeGuideState({
     pluginVersion: facts.pluginVersion,
     pinnedRea: facts.pinnedRea,
-    ...(bundleFlag !== -1 && argv[bundleFlag + 1] ? { bundlePath: argv[bundleFlag + 1] } : {}),
+    ...(bundlePath ? { bundlePath } : {}),
+    ...(root ? { bundleRoot: root } : {}),
   })
 
   if (asJson) {

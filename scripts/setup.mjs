@@ -28,7 +28,7 @@
  *     --offline           refuse network; only satisfy from cache/reuse
  */
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { appendFileSync, chmodSync, closeSync, copyFileSync, createWriteStream, existsSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
@@ -131,6 +131,87 @@ function parseArgs(argv) {
   return options;
 }
 
+/* -------------------------------------------------------------- run locking */
+
+/*
+ * Declared up here, not next to `acquireRunLock`, because `log()` reaches for
+ * them and `log()` runs before that point: a `const` is in its temporal dead zone
+ * until its declaration is evaluated, and the first progress line — printed long
+ * before the lock is claimed — threw `Cannot access 'runLock' before
+ * initialization` out of the heartbeat. The lock functions themselves stay down
+ * with the rest of the concurrency code; only the state they read lives here.
+ */
+
+/**
+ * The ownership token for this run's lock.
+ *
+ * `bin/rea-shim.mjs` creates `setup.lock`, spawns this script detached, and hands
+ * the token over in `REA_BUNDLE_LOCK_TOKEN`. A hand-run `node scripts/setup.mjs`
+ * makes its own, so the field is always populated and a lock that carries it can
+ * be recognised as this run's own.
+ */
+const RUN_TOKEN = (() => {
+  const inherited = process.env.REA_BUNDLE_LOCK_TOKEN;
+  return typeof inherited === "string" && inherited.trim() !== "" ? inherited.trim() : randomUUID();
+})();
+
+/** The run lock this process holds; `held` stays false until one is claimed. */
+const runLock = { file: null, held: false, lastTouch: 0 };
+
+/**
+ * How often a long run refreshes the lock's `at`.
+ *
+ * `at` used to be written once, when the lock was claimed and never again, so
+ * after six hours of a slow download it described a perfectly healthy run as
+ * ancient — and the shim deleted the lock of a live process on exactly that
+ * reading. Progress is the fact worth recording, so the refresh rides on the
+ * run's own reporting (see `log`) instead of on a timer, which a synchronous
+ * `spawnSync` download would starve anyway.
+ */
+const LOCK_HEARTBEAT_MS = 30000;
+
+/**
+ * Claim the run lock, or report who holds it.
+ *
+ * `setup.lock` used to be written only at the END of a run, so it recorded an
+ * outcome and excluded nothing: the shim's detached provisioning and a hand-run
+ * `node scripts/setup.mjs` could write the same `.part` and the same
+ * `vendor/<component>.staging` at the same time, and whichever renamed last left
+ * a component whose size and digest belonged to neither run. The lock is now
+ * claimed before the first byte moves and created with O_EXCL (`wx`), so a second
+ * process loses the race instead of interleaving with the first.
+ *
+ * A lock naming a dead pid, or one a previous run left as `failed`, is taken
+ * over: a crash or a failed download must not require a manual `rm` before the
+ * next attempt can start.
+ */
+
+function readJsonSafe(file) {
+  try {
+    return readJson(file);
+  } catch {
+    return null;
+  }
+}
+
+function touchRunLock() {
+  if (!runLock.held || runLock.file === null) return;
+  const now = Date.now();
+  if (now - runLock.lastTouch < LOCK_HEARTBEAT_MS) return;
+  runLock.lastTouch = now;
+  try {
+    const current = readJsonSafe(runLock.file);
+    if (current === null) return;
+    // Only refresh a lock that is still ours. The shim transfers ownership by
+    // rewriting the record, and a heartbeat must not resurrect one that was
+    // replaced underneath us.
+    if (current.token !== RUN_TOKEN && current.pid !== process.pid) return;
+    writeFileSync(runLock.file, JSON.stringify({ ...current, at: now }) + "\n");
+  } catch {
+    /* the lock is advisory: a failed heartbeat must never break a download */
+  }
+}
+
 /* -------------------------------------------------------------------- output */
 
 const state = { log: [], steps: [] };
@@ -145,6 +226,8 @@ function logFilePath() {
   return path.join(options.root, "logs", "setup.log");
 }
 function appendLog(line) {
+  // A dry run writes nothing, logs/ included: see the mkdir note in main().
+  if (options.dryRun) return;
   try {
     const file = logFilePath();
     mkdirSync(path.dirname(file), { recursive: true });
@@ -157,6 +240,10 @@ function appendLog(line) {
 function log(message) {
   state.log.push(message);
   appendLog(message);
+  // Every line of progress is a heartbeat: the shim reads `at` to tell "still
+  // working" from "stopped reporting", and this is the only place the run says
+  // anything at all.
+  touchRunLock();
   if (!options.json) process.stdout.write(message + "\n");
 }
 function step(name, status, detail) {
@@ -735,9 +822,26 @@ function extract(archive, destination, format, context) {
     }
   } else if (format === "tar.gz" || format === "tar.xz" || format === "tar") {
     attempts.push({ command: "tar", args: ["-xf", archive, "-C", destination] });
+    // `filter="data"` is Python's own member filter (3.12+ by default, available
+    // from 3.11.4): it drops absolute paths, `..` escapes, device files and
+    // unsafe symlink targets instead of writing them. Every archive here is
+    // SHA-256 pinned, so this is defense in depth rather than the only guard —
+    // but a bare `extractall` is the shape a future unpinned entry would inherit.
+    // The `except TypeError` keeps older Pythons working rather than replacing
+    // one silent failure mode with "extraction unavailable".
     attempts.push({
       command: "python3",
-      args: ["-c", "import sys,tarfile;tarfile.open(sys.argv[1]).extractall(sys.argv[2])", archive, destination],
+      args: [
+        "-c",
+        "import sys,tarfile\n"
+          + "t=tarfile.open(sys.argv[1])\n"
+          + "try:\n"
+          + "    t.extractall(sys.argv[2],filter='data')\n"
+          + "except TypeError:\n"
+          + "    t.extractall(sys.argv[2])\n",
+        archive,
+        destination,
+      ],
     });
   } else {
     throw new Error(`unsupported archive format: ${format}`);
@@ -951,6 +1055,79 @@ function readGhidraVersion(root) {
   }
 }
 
+/**
+ * The major number of a version string, or null.
+ *
+ * Only the JDK's pin is matched this way, and only because "21+" is a real
+ * contract rather than a preference: Ghidra 12.1 requires JDK 21 or newer, so a
+ * JAVA_HOME holding 25.0.5 and a manifest pinning 21.0.12.1+1 agree with each
+ * other. Every other component is matched exactly — `apktool 3.0.3` and
+ * `apktool 3.0.2` are different files, not a range.
+ */
+function majorVersion(version) {
+  const match = /^(\d+)/.exec(String(version ?? "").trim());
+  return match === null ? null : Number(match[1]);
+}
+
+/** Every version the current manifest pins for one component. */
+function pinnedVersions(component) {
+  const versions = resolveEntries(component)
+    .map((entry) => entry?.version)
+    .filter((version) => typeof version === "string" && version.trim() !== "");
+  return [...new Set(versions)];
+}
+
+/**
+ * Does a `bundle.json` record still describe the component the manifest pins?
+ *
+ * The recorded-state branch trusted any record whose path existed: it ran the
+ * probe but never compared `recorded.version` to the manifest. A pin bump then
+ * left the old component in place and reported `already provisioned (old)`
+ * forever — the run that was supposed to upgrade it chose to trust a record
+ * about the version it was replacing.
+ *
+ * An explicit Ghidra gate override is the one sanctioned exception: while
+ * `ghidra-gate-override.json` names a requested version, that version IS the
+ * intended record, and treating it as drift would make the next plain setup
+ * silently re-pin the vendor copy over an override the operator turned on.
+ * @returns {{ ok: boolean, reason: string }} verdict, with a readable reason.
+ */
+function recordedMatchesPin(name, recorded, component) {
+  const recordedVersion = typeof recorded.version === "string" ? recorded.version.trim() : "";
+  if (component.kind === "npm") {
+    // An npm component's version lives in the manifest's `sources.npm`, which
+    // resolveEntries does not cover (npm is installed by name, not by URL).
+    const pinned = component.sources?.npm?.version;
+    if (typeof pinned !== "string" || pinned === "") return { ok: true, reason: "no npm pin" };
+    return recordedVersion === pinned
+      ? { ok: true, reason: `pinned ${pinned}` }
+      : { ok: false, reason: `recorded ${recordedVersion || "no version"}, manifest pins ${pinned}` };
+  }
+  if (name === "ghidra") {
+    try {
+      const override = readJson(path.join(options.root, "ghidra-gate-override.json"));
+      const requested = override?.requestedVersion;
+      if (typeof requested === "string" && requested.trim() !== "" && recordedVersion === requested.trim()) {
+        return { ok: true, reason: `recorded ${recordedVersion} matches the enabled gate override` };
+      }
+    } catch {
+      /* no override record: fall through to the manifest pin */
+    }
+  }
+  const pins = pinnedVersions(component);
+  if (pins.length === 0) return { ok: true, reason: "the manifest pins no version" };
+  if (pins.includes(recordedVersion)) return { ok: true, reason: `pinned ${recordedVersion}` };
+  if (name === "jdk") {
+    const pinnedMajor = majorVersion(pins[0]);
+    const recordedMajor = majorVersion(recordedVersion);
+    if (pinnedMajor !== null && recordedMajor !== null && recordedMajor >= pinnedMajor) {
+      return { ok: true, reason: `major ${recordedMajor} satisfies the pin's major ${pinnedMajor}` };
+    }
+    return { ok: false, reason: `recorded ${recordedVersion || "no version"}, manifest pins ${pins.join("/")} (needs major >= 21)` };
+  }
+  return { ok: false, reason: `recorded ${recordedVersion || "no version"}, manifest pins ${pins.join("/")}` };
+}
+
 /** Adopt an existing installation instead of downloading a duplicate. */
 function reuseExisting(name, root) {
   if (!options.reuse) return null;
@@ -1100,6 +1277,32 @@ function readBundleJson(file) {
   }
 }
 
+/**
+ * Write JSON through a sibling temporary file, then rename it into place.
+ *
+ * `bundle.json` is what the shim reads on every row start, and `mirror.json` is
+ * what a mirrored run uses to find the checkout it came from. Writing either one
+ * in place means a kill (or a full disk) mid-write leaves a truncated file:
+ * `readBundleJson` tolerates that by treating it as absent, which turns one
+ * interrupted write into a full re-provisioning run, and the shim's own reader
+ * reports the bundle as malformed and refuses to start. A rename on the same
+ * volume is atomic, so a reader sees either the previous file or the new one.
+ */
+function writeJsonAtomic(file, value) {
+  const temporary = `${file}.${process.pid}.part`;
+  writeFileSync(temporary, JSON.stringify(value, null, 2) + "\n");
+  try {
+    renameSync(temporary, file);
+  } catch (error) {
+    try {
+      rmSync(temporary, { force: true });
+    } catch {
+      /* the rename failure is the interesting one */
+    }
+    throw error;
+  }
+}
+
 const INSTALL_ORDER = ["node", "jdk", "ghidra", "apktool", "jadxHeadlessMcp", "androidPlatformTools", "reaAgents"];
 
 /* -------------------------------------------------------------------- stages */
@@ -1148,12 +1351,28 @@ async function provisionComponent(name, component, context) {
     const current = readBundleJson(path.join(root, "bundle.json"));
     const recorded = current?.components?.[name];
     if (recorded && typeof recorded.path === "string" && existsSync(recorded.path)) {
-      const probe = runProbe(component.probe ?? {}, context);
-      if (probe.ok) {
-        step(name, "skip", `already provisioned (${recorded.version ?? "recorded"})`);
+      // Probe the RECORDED path, never whatever path this run would have used.
+      // `runProbe` resolves {jvm}/{ghidra}/{node} through `context.resolved`, and
+      // the reuse branch above plants its candidate there for exactly this
+      // reason. Without planting the recorded path here, a record pointing at a
+      // broken Ghidra was verified against a different, working vendor copy: the
+      // probe passed, the broken path stayed in `bundle.json`, and only REA
+      // failed later — a runtime vouching for a path it was not asked about.
+      const recordedContext = {
+        ...context,
+        resolved: { ...context.resolved, [name]: { path: recorded.path, root: recorded.root } },
+      };
+      const probe = runProbe(component.probe ?? {}, recordedContext);
+      // The probe proves "the component at that path works". The pin check
+      // proves it is the component THIS manifest asks for; without it a pin bump
+      // left the previous build installed and reported `already provisioned`.
+      const pin = recordedMatchesPin(name, recorded, component);
+      if (probe.ok && pin.ok) {
+        step(name, "skip", `already provisioned (${recorded.version ?? "recorded"}) — ${pin.reason}`);
         return recorded;
       }
-      step(name, "plan", `recorded but unverifiable: ${probe.detail}`);
+      if (!probe.ok) step(name, "plan", `recorded but unverifiable at ${recorded.path}: ${probe.detail}`);
+      else step(name, "plan", `recorded but out of date at ${recorded.path}: ${pin.reason}`);
     } else if (recorded) {
       step(name, "plan", "recorded without a usable path; provisioning again");
     }
@@ -1175,15 +1394,25 @@ async function provisionComponent(name, component, context) {
     return null;
   }
 
-  /* Multi-file components: fetch and place every file, then probe once. */
+  /* Multi-file components: stage every file, swap in once, probe, roll back. */
   if (component.kind === "multi-file" || component.kind === "file") {
-    const placed = [];
-    for (const entry of entries) {
-      const targetDirectory = path.join(vendor, entry.moveTo ?? component.unpack?.moveTo ?? name);
-      if (options.dryRun) {
-        step(`${name}:${entry.id ?? "file"}`, "plan", `${entry.url} -> ${path.join(targetDirectory, entry.saveAs ?? path.basename(new URL(entry.url).pathname))}`);
-        continue;
+    const targetOf = (entry) => path.join(vendor, entry.moveTo ?? component.unpack?.moveTo ?? name);
+    if (options.dryRun) {
+      for (const entry of entries) {
+        step(`${name}:${entry.id ?? "file"}`, "plan", `${entry.url} -> ${path.join(targetOf(entry), entry.saveAs ?? path.basename(new URL(entry.url).pathname))}`);
       }
+      return { planned: true };
+    }
+
+    // 1) Fetch EVERY entry, or fail the component outright. A `continue` here is
+    //    what made a half-install record itself as complete: the jar download
+    //    failed, the wrapper succeeded, the stale 2.0.0 jar already in the target
+    //    directory answered the component's own probe, and the record claimed
+    //    3.0.3 — carrying the WRAPPER's digest — so every later run printed
+    //    "already provisioned (3.0.3)" without downloading anything again.
+    const downloads = [];
+    for (const entry of entries) {
+      const label = `${name}:${entry.id ?? "file"}`;
       const archiveName = path.basename(new URL(entry.url).pathname);
       const archivePath = path.join(context.cache, archiveName);
       let fetched = null;
@@ -1199,49 +1428,126 @@ async function provisionComponent(name, component, context) {
       }
       if (!fetched) {
         if (options.offline) {
-          step(`${name}:${entry.id ?? "file"}`, "FAIL", `offline and ${archiveName} is not in the cache`);
-          continue;
+          step(label, "FAIL", `offline and ${archiveName} is not in the cache`);
+          step(name, "FAIL", `${downloads.length} of ${entries.length} entries were available; nothing was installed`);
+          return null;
         }
         try {
           fetched = await download(entry.url, archivePath, entry, `${name} ${entry.version ?? ""}`);
         } catch (error) {
-          step(`${name}:${entry.id ?? "file"}`, "FAIL", String(error.message));
-          continue;
+          step(label, "FAIL", String(error.message));
+          step(name, "FAIL", `${downloads.length} of ${entries.length} entries were available; nothing was installed`);
+          return null;
         }
       }
-      mkdirSync(targetDirectory, { recursive: true });
-      const target = path.join(targetDirectory, entry.saveAs ?? archiveName);
-      copyFileSync(archivePath, target);
-      // A wrapper script has to be executable. copyFileSync lands the 0644 that
-      // the archive carries and nothing else in this file changes a mode, while
-      // REA starts REA_APKTOOL_COMMAND through execFile/no shell — so on POSIX a
-      // 0644 wrapper fails with EACCES. The component's own probe misses it
-      // because it runs `java -jar` and never executes the wrapper.
-      if (entry.executable === true) {
-        try {
-          chmodSync(target, 0o755);
-        } catch {
-          /* a filesystem that cannot carry the bit must not fail the component */
-        }
-      }
-      placed.push({ target, sha256: fetched.sha256, tofu: fetched.tofu });
+      downloads.push({ entry, archivePath, sha256: fetched.sha256, tofu: fetched.tofu, label });
     }
-    if (options.dryRun) return { planned: true };
-    const probe = runProbe(component.probe ?? {}, context);
-    if (placed.length === 0) {
-      step(name, "FAIL", "nothing could be fetched");
+
+    // 2) Stage into <target>.staging. The live directory is not touched yet, so
+    //    nothing here can produce a new wrapper next to an old jar.
+    const swaps = [];
+    try {
+      for (const targetDirectory of [...new Set(downloads.map((item) => targetOf(item.entry)))]) {
+        const staging = targetDirectory + ".staging";
+        rmSync(staging, { recursive: true, force: true });
+        mkdirSync(staging, { recursive: true });
+        const staged = [];
+        for (const item of downloads.filter((candidate) => targetOf(candidate.entry) === targetDirectory)) {
+          const saveAs = item.entry.saveAs ?? path.basename(new URL(item.entry.url).pathname);
+          const file = path.join(staging, saveAs);
+          copyFileSync(item.archivePath, file);
+          // A wrapper script has to be executable. copyFileSync lands the 0644
+          // that the archive carries and nothing else in this file changes a
+          // mode, while REA starts REA_APKTOOL_COMMAND through execFile/no shell
+          // — so on POSIX a 0644 wrapper fails with EACCES. The component's own
+          // probe misses it because it runs `java -jar` and never executes the
+          // wrapper.
+          if (item.entry.executable === true) {
+            try {
+              chmodSync(file, 0o755);
+            } catch {
+              /* a filesystem that cannot carry the bit must not fail the component */
+            }
+          }
+          staged.push({ entry: item.entry, saveAs, sha256: item.sha256, tofu: item.tofu, label: item.label });
+        }
+        swaps.push({ targetDirectory, staging, backup: targetDirectory + ".backup", staged });
+      }
+    } catch (error) {
+      for (const swap of swaps) rmSync(swap.staging, { recursive: true, force: true });
+      step(name, "FAIL", `could not stage ${name}: ${String(error?.message ?? error)}`);
       return null;
     }
-    step(name, probe.ok ? "ok" : "FAIL", `${placed.map((item) => item.target).join(", ")}${probe.ok ? "" : " — " + probe.detail}`);
-    return probe.ok
-      ? {
-          path: path.dirname(placed[0].target),
-          jarName: path.basename(placed[0].target),
-          version: entries[0].version,
-          sha256: placed[0].sha256,
-          tofu: placed.some((item) => item.tofu),
+
+    // 3) Swap each staged directory in, keeping the old one as a backup so a
+    //    failed rename or a failed probe can put it back. The previous code
+    //    deleted the target and renamed second: a rename that failed left
+    //    NEITHER the old install nor a new one.
+    const rollback = () => {
+      for (const swap of swaps) {
+        try {
+          rmSync(swap.targetDirectory, { recursive: true, force: true });
+          if (existsSync(swap.backup)) renameSync(swap.backup, swap.targetDirectory);
+        } catch {
+          /* best effort: the failure being reported is the interesting one */
         }
-      : null;
+      }
+    };
+    try {
+      for (const swap of swaps) {
+        rmSync(swap.backup, { recursive: true, force: true });
+        if (existsSync(swap.targetDirectory)) renameSync(swap.targetDirectory, swap.backup);
+        try {
+          renameSync(swap.staging, swap.targetDirectory);
+        } catch (error) {
+          if (existsSync(swap.backup)) renameSync(swap.backup, swap.targetDirectory);
+          throw error;
+        }
+      }
+    } catch (error) {
+      rollback();
+      step(name, "FAIL", `could not replace ${swaps.map((swap) => swap.targetDirectory).join(", ")}: ${String(error?.message ?? error)}`);
+      return null;
+    }
+
+    const probe = runProbe(component.probe ?? {}, context);
+    if (!probe.ok) {
+      rollback();
+      step(name, "FAIL", `${swaps.map((swap) => swap.targetDirectory).join(", ")} — ${probe.detail}; the previous install was put back`);
+      return null;
+    }
+    for (const swap of swaps) {
+      try {
+        rmSync(swap.backup, { recursive: true, force: true });
+      } catch {
+        /* a leftover .backup is inert; the component itself works */
+      }
+    }
+
+    // 4) One record per entry, with the primary chosen by KIND rather than by the
+    //    order the manifest happens to list entries in. `placed[0]` supplied the
+    //    path AND the digest while `entries[0].version` supplied the version —
+    //    two different files answering one question, which is exactly how the
+    //    wrapper's digest came to be recorded as the jar's.
+    const files = swaps.flatMap((swap) =>
+      swap.staged.map((item) => ({
+        id: item.entry.id ?? item.saveAs,
+        file: path.join(swap.targetDirectory, item.saveAs),
+        version: item.entry.version ?? null,
+        sha256: item.sha256,
+        tofu: item.tofu,
+      })),
+    );
+    const primary = files.find((item) => /\.jar$/i.test(item.file)) ?? files[0];
+    step(name, "ok", swaps.map((swap) => swap.targetDirectory).join(", "));
+    return {
+      path: path.dirname(primary.file),
+      jarName: path.basename(primary.file),
+      version: primary.version,
+      sha256: primary.sha256,
+      tofu: files.some((item) => item.tofu),
+      files: files.map((item) => ({ id: item.id, version: item.version, sha256: item.sha256, tofu: item.tofu })),
+    };
   }
 
   const source = entries[0];
@@ -1333,6 +1639,92 @@ async function provisionComponent(name, component, context) {
 }
 
 /**
+ * The Node that will run the npm CLI, and that CLI itself.
+ *
+ * Resolved rather than assumed: on the machine this bundle exists for, `npm` is
+ * only on PATH because a system Node happens to be installed, and the bootstrap's
+ * whole job is the case where it is not — a bare `spawnSync("npm", …)` dies with
+ * ENOENT on exactly that machine. Shared by the REA install and the Frida binding
+ * check so both resolve the same pair instead of drifting apart.
+ */
+function resolveNpmRuntime(nodePath) {
+  const nodeRuntime = typeof nodePath === "string" && nodePath !== "" && existsSync(nodePath) ? nodePath : process.execPath;
+  const candidates = [
+    // Portable Windows zip: <node>\node_modules\npm\bin\npm-cli.js
+    path.join(path.dirname(nodeRuntime), "node_modules", "npm", "bin", "npm-cli.js"),
+    // POSIX tarball: <node>/lib/node_modules/npm/bin/npm-cli.js
+    path.join(path.dirname(nodeRuntime), "..", "lib", "node_modules", "npm", "bin", "npm-cli.js"),
+    // An installed Node: <prefix>/lib/node_modules/..., also covered above.
+    path.join(path.dirname(nodeRuntime), "..", "..", "lib", "node_modules", "npm", "bin", "npm-cli.js"),
+  ];
+  return { nodeRuntime, npmCli: candidates.find((candidate) => existsSync(candidate)) ?? null };
+}
+
+/**
+ * Make Frida's native binding present, and prove it loads.
+ *
+ * `rea-agents` depends on `frida` directly, and the only thing frida installs at
+ * install time is `build/frida_binding.node` (its install script runs
+ * `prebuild-install` for it). Provisioning uses `--ignore-scripts` on purpose —
+ * no arbitrary package script runs during a download — so the binding was never
+ * placed, and `import('frida')` failed with "Could not locate the bindings file".
+ * Every Frida-backed tool in REA was dead while this run reported success, because
+ * no probe ever imported the module.
+ *
+ * The fix is not "drop --ignore-scripts". It is to NAME the one package whose
+ * install script is actually load-bearing, run its rebuild explicitly, and then
+ * verify the result the way REA will use it: import the module and enumerate
+ * devices. A binding that still does not load is reported, not swallowed, and does
+ * not fail the whole provision — the other 200-odd tools do not need it.
+ */
+function ensureFridaBindings(nodeRuntime, npmCli, installRoot) {
+  const fridaRoot = path.join(installRoot, "node_modules", "frida");
+  if (!existsSync(path.join(fridaRoot, "package.json"))) {
+    return { ok: false, skipped: true, detail: "frida is not in the resolved closure; nothing to bind" };
+  }
+  const bindingFile = path.join(fridaRoot, "build", "frida_binding.node");
+  // Device enumeration, not just import(): a binding can load and still be
+  // unusable, and `enumerateDevices` is the cheapest call that proves the native
+  // side actually runs. String.fromCharCode(10) keeps this free of nested escapes.
+  const probeScript =
+    "const NL=String.fromCharCode(10);"
+    + "import('frida')"
+    + ".then(m=>{const f=m.default??m;return f.enumerateDevices()})"
+    + ".then(d=>console.log('FRIDA_OK '+d.length))"
+    + ".catch(e=>{console.error('FRIDA_BAD '+String(e.message).split(NL)[0]);process.exit(3)})";
+  const verify = () => {
+    const run = spawnSync(nodeRuntime, ["-e", probeScript], { cwd: installRoot, encoding: "utf8", timeout: 180000 });
+    const text = `${run.stdout ?? ""}${run.stderr ?? ""}`.trim();
+    const line = text.split(/\r?\n/).filter(Boolean).slice(-1)[0] ?? `exit ${run.status}`;
+    return { ok: run.status === 0 && text.includes("FRIDA_OK"), detail: line };
+  };
+
+  const before = verify();
+  if (before.ok) return { ok: true, rebuilt: false, detail: before.detail, binding: bindingFile, sha256: existsSync(bindingFile) ? sha256File(bindingFile) : null };
+  if (options.offline) {
+    return { ok: false, detail: `offline, and the native binding does not load (${before.detail})` };
+  }
+  log(`       frida native binding does not load (${before.detail}); running its own install script via npm rebuild frida`);
+  const rebuild = spawnSync(
+    nodeRuntime,
+    [npmCli, "rebuild", "frida", "--prefix", installRoot, "--loglevel", "error"],
+    { cwd: installRoot, encoding: "utf8", timeout: 1800000 },
+  );
+  const after = verify();
+  if (!after.ok) {
+    const tail = `${rebuild.stderr ?? ""}${rebuild.stdout ?? ""}`.trim().split(/\r?\n/).filter(Boolean).slice(-2).join(" | ").slice(0, 300);
+    log(`       npm rebuild frida exited ${rebuild.status}${tail ? `: ${tail}` : ""}`);
+  }
+  return {
+    ok: after.ok,
+    rebuilt: true,
+    detail: after.detail,
+    binding: existsSync(bindingFile) ? bindingFile : null,
+    sha256: existsSync(bindingFile) ? sha256File(bindingFile) : null,
+  };
+}
+
+/**
  * The registry tarball for rea-agents ships NO node_modules (verified: 1161
  * entries, 0 under node_modules), so unpacking it alone yields a CLI that
  * cannot import its own dependencies. A real install is therefore required to
@@ -1359,7 +1751,7 @@ async function provisionReaAgents(component, context) {
   }
 
   if (options.dryRun) {
-    step("reaAgents", "plan", `npm install ${component.sources.npm.registry.replace("https://registry.npmjs.org/", "")}@${version} --prefix ${installRoot}`);
+    step("reaAgents", "plan", `npm ci from vendor-lock (${component.sources.npm.registry.replace("https://registry.npmjs.org/", "")}@${version}, zod/minimatch/glob overridden) --prefix ${installRoot}`);
     return { planned: true, version };
   }
 
@@ -1384,59 +1776,225 @@ async function provisionReaAgents(component, context) {
   mkdirSync(installRoot, { recursive: true });
 
   /*
-   * Resolve npm, do not assume it.
-   *
-   * On the machine this bundle exists for, `npm` is only on PATH because a
-   * system Node happens to be installed; the bootstrap's whole job is the case
-   * where it is not. A bare `spawnSync("npm", ...)` therefore dies with ENOENT
-   * on exactly the target machine — and did, until this was fixed. The vendored
-   * or discovered Node ships its own npm-cli.js, which is used instead.
+   * Resolve npm, do not assume it. See resolveNpmRuntime for why a bare
+   * `spawnSync("npm", ...)` is the wrong shape on the machine this exists for —
+   * and note that this function and the Frida check in `main` share that one
+   * resolution instead of each keeping its own copy.
    */
-  const nodeRuntime = context.resolved.node?.path && existsSync(context.resolved.node.path)
-    ? context.resolved.node.path
-    : process.execPath;
-  const npmCandidates = [
-    // Portable Windows zip: <node>\node_modules\npm\bin\npm-cli.js
-    path.join(path.dirname(nodeRuntime), "node_modules", "npm", "bin", "npm-cli.js"),
-    // POSIX tarball: <node>/lib/node_modules/npm/bin/npm-cli.js
-    path.join(path.dirname(nodeRuntime), "..", "lib", "node_modules", "npm", "bin", "npm-cli.js"),
-    // An installed Node: <prefix>/lib/node_modules/..., also covered above.
-    path.join(path.dirname(nodeRuntime), "..", "..", "lib", "node_modules", "npm", "bin", "npm-cli.js"),
-  ];
-  const npmCli = npmCandidates.find((candidate) => existsSync(candidate)) ?? null;
+  const { nodeRuntime, npmCli } = resolveNpmRuntime(context.resolved.node?.path);
 
-  const installArgs = [
-    "install",
-    `rea-agents@${version}`,
-    "--prefix", installRoot,
-    "--no-save",
-    "--ignore-scripts",
-    "--no-audit",
-    "--no-fund",
-    "--loglevel", "error",
-  ];
   if (!npmCli) {
     step("reaAgents", "FAIL", `no npm-cli.js next to ${nodeRuntime}; cannot resolve the dependency closure without npm`);
     return null;
   }
   log(`       ${path.relative(installRoot, npmCli) || npmCli} (vendored npm, not PATH)`);
-  const install = spawnSync(nodeRuntime, [npmCli, ...installArgs], {
-    cwd: installRoot,
-    encoding: "utf8",
-    timeout: 1800000,
-  });
+
+  /*
+   * The closure is resolved from an audited lock, not from whatever the registry
+   * answers on the day of the install.
+   *
+   * `rea-agents@6.8.0` pins zod EXACTLY (`"zod": "4.4.3"`), and 4.4.3 is inside
+   * GHSA-mrhx-c7xc-m3w5 (<4.6.6: memory exhaustion while validating oversized
+   * constrained collections). Measured on this closure: a `.max(2)` schema handed
+   * 25 elements produced 26 issue objects on 4.4.3 and 1 on 4.6.7 — and REA's own
+   * `inspect_analysis_settings` input puts `.max()` on an array, so a malformed
+   * tool call is the amplifier. An exact pin cannot be moved by a `dependencies`
+   * range, so `overrides` is the only lever that does not rewrite the published
+   * tarball. minimatch and glob come with it because each carries an advisory of
+   * its own (GHSA-g3hv-75wg-m249, GHSA-3g3m-2fjr-6pw4) and both reach the tree
+   * through @electron/asar and frida.
+   *
+   * vendor-lock/ carries one package.json + package-lock.json pair for the whole
+   * closure, so two installs a month apart resolve the same bytes — and `npm ci`
+   * verifies the lock's sha512 per tarball, which a fresh `npm install` never
+   * does. The pair lives under `scripts/` because that is the only directory the
+   * plugin's `files` already ships; a top-level vendor-lock/ is honoured too, so
+   * the pair can move without touching this function.
+   */
+  const CLOSURE_OVERRIDES = { zod: "4.6.7", minimatch: "11.0.5", glob: "14.0.4" };
+  const ZOD_FLOOR = "4.6.6";
+  const lockCandidates = [path.join(HERE, "vendor-lock"), path.join(PLUGIN_ROOT, "vendor-lock")];
+  let lockSource = lockCandidates.find((dir) => existsSync(path.join(dir, "package-lock.json")) && existsSync(path.join(dir, "package.json"))) ?? null;
+  if (lockSource) {
+    // A lock that pins a different REA than the manifest asks for would install
+    // the wrong server and then fail the probe with a version mismatch, which
+    // names neither cause. Say which of the two is stale, and resolve the
+    // manifest's pin instead of silently shipping the older REA.
+    // readJsonSafe, not a raw parse of the file's bytes: the same BOM/UTF-16
+    // handling every other record in this file gets. An editor that writes a BOM
+    // would otherwise make this read as "the lock pins nothing", and the run would
+    // silently ignore an audited lock instead of installing from it.
+    const locked = readJsonSafe(path.join(lockSource, "package.json"))?.dependencies?.["rea-agents"] ?? null;
+    if (locked !== version) {
+      log(`       ignoring ${path.relative(PLUGIN_ROOT, lockSource) || lockSource}: it pins rea-agents@${locked ?? "nothing"} but the manifest pins ${version}; regenerate the lock`);
+      lockSource = null;
+    }
+  }
+
+  /** `<modules>/<name>/package.json`'s version, or null when it is not installed. */
+  const closureVersion = (modules, name) => {
+    const manifestPath = path.join(modules, ...name.split("/"), "package.json");
+    if (!existsSync(manifestPath)) return null;
+    // readJsonSafe for the same reason as the lock above: a dependency's
+    // package.json is a record like any other, and a BOM must not read as
+    // "no version" — that would make the closure check report a package as
+    // absent while it sits on disk.
+    return readJsonSafe(manifestPath)?.version ?? null;
+  };
+  /** Dotted numeric compare; a prerelease suffix is ignored, not ordered. */
+  const atLeast = (actual, floor) => {
+    const parts = (value) => String(value).split("-")[0].split(".").map((part) => Number.parseInt(part, 10) || 0);
+    const found = parts(actual);
+    const needed = parts(floor);
+    for (let index = 0; index < Math.max(found.length, needed.length); index += 1) {
+      const left = found[index] ?? 0;
+      const right = needed[index] ?? 0;
+      if (left !== right) return left > right;
+    }
+    return true;
+  };
+
+  /*
+   * Install into a staging prefix and swap it in afterwards.
+   *
+   * `npm ci` deletes node_modules before it downloads anything, so replaying the
+   * lock in place would trade a working vendor copy for a network error on
+   * exactly the machine this script exists for. The rename below is the only step
+   * that touches the live tree, and it runs after the closure has been installed
+   * AND verified.
+   */
+  const staging = path.join(installRoot, ".npm-staging");
+  const modules = path.join(staging, "node_modules");
+  const live = path.join(installRoot, "node_modules");
+  const retired = path.join(installRoot, ".node_modules.retired");
+  const npmRun = (verb) =>
+    spawnSync(nodeRuntime, [npmCli, verb, "--prefix", staging, "--ignore-scripts", "--no-audit", "--no-fund", "--loglevel", "error"], {
+      cwd: installRoot,
+      encoding: "utf8",
+      timeout: 1800000,
+    });
+  const npmTail = (result) => `${result.stderr ?? ""}${result.stdout ?? ""}`.trim().split("\n").slice(-3).join(" | ").slice(0, 300);
+  const generatePackageJson = () =>
+    writeFileSync(
+      path.join(staging, "package.json"),
+      `${JSON.stringify(
+        {
+          name: "rea-bundle-vendor",
+          version: "1.0.0",
+          private: true,
+          description: "Generated by dsh-plugin-rea setup: the vendored REA closure, pinned to patched zod/minimatch/glob.",
+          dependencies: { "rea-agents": version },
+          overrides: CLOSURE_OVERRIDES,
+        },
+        null,
+        2,
+      )}\n`,
+    );
+
+  rmSync(staging, { recursive: true, force: true });
+  mkdirSync(staging, { recursive: true });
+  let install = null;
+  let verb = "ci";
+  if (lockSource) {
+    copyFileSync(path.join(lockSource, "package.json"), path.join(staging, "package.json"));
+    copyFileSync(path.join(lockSource, "package-lock.json"), path.join(staging, "package-lock.json"));
+    log(`       replaying the audited closure lock ${path.relative(PLUGIN_ROOT, lockSource) || lockSource}`);
+    install = npmRun("ci");
+    if (install.status !== 0) {
+      // A mirror serving different tarball bytes, or a package the lock names and
+      // the registry no longer serves, breaks `ci` without breaking the install it
+      // stands for. The overrides below still apply, and the zod floor is checked
+      // after either route, so this degrades reproducibility loudly rather than
+      // failing the whole bootstrap.
+      log(`       npm ci could not replay the lock (${npmTail(install)}); resolving the same pins with overrides instead`);
+      // The lock itself has to go too: leaving it in the staging prefix makes the
+      // `npm install` below honour the same unreadable entries and fail again, so
+      // the fallback would never actually fall back. Verified against a
+      // deliberately corrupted integrity hash.
+      rmSync(modules, { recursive: true, force: true });
+      rmSync(path.join(staging, "package-lock.json"), { force: true });
+    }
+  }
+  if (!install || install.status !== 0) {
+    generatePackageJson();
+    verb = "install";
+    install = npmRun("install");
+  }
   if (install.status !== 0) {
-    step("reaAgents", "FAIL", `npm install failed (${install.status}): ${`${install.stderr ?? ""}${install.stdout ?? ""}`.trim().split("\n").slice(-3).join(" | ").slice(0, 300)}`);
+    rmSync(staging, { recursive: true, force: true });
+    step("reaAgents", "FAIL", `npm ${verb} failed (${install.status}): ${npmTail(install)}`);
     // Every other component can fall back to the proxy route this script resolves
     // itself; npm cannot, and this step is the one that fails most often on a
     // network where the registry needs a mirror.
     log("       npm reads HTTPS_PROXY/HTTP_PROXY and NPM_CONFIG_REGISTRY from the environment (this script's own proxy routing does not apply here)");
     return null;
   }
+  if (!existsSync(path.join(modules, "rea-agents", "scripts", "rea.mjs"))) {
+    rmSync(staging, { recursive: true, force: true });
+    step("reaAgents", "FAIL", `npm ${verb} reported success but ${path.join(modules, "rea-agents")} has no scripts/rea.mjs`);
+    return null;
+  }
+
+  /*
+   * The audit's actual demand, verified against what landed instead of against
+   * what the lock intended: a degraded install or a future re-pin must fail here,
+   * not in someone's REA session weeks later.
+   */
+  log(`       closure ${["zod", "minimatch", "glob"].map((name) => `${name}@${closureVersion(modules, name) ?? "absent"}`).join(" ")}`);
+  const zodVersion = closureVersion(modules, "zod");
+  if (!zodVersion || !atLeast(zodVersion, ZOD_FLOOR)) {
+    rmSync(staging, { recursive: true, force: true });
+    step("reaAgents", "FAIL", `resolved zod@${zodVersion ?? "absent"} is below the ${ZOD_FLOOR} floor of GHSA-mrhx-c7xc-m3w5; refusing to vendor this closure`);
+    return null;
+  }
+
+  rmSync(retired, { recursive: true, force: true });
+  let parked = false;
+  try {
+    if (existsSync(live)) {
+      renameSync(live, retired);
+      parked = true;
+    }
+    renameSync(modules, live);
+  } catch (error) {
+    if (parked && !existsSync(live)) {
+      try {
+        renameSync(retired, live);
+      } catch {
+        /* the message below already says where the install did not land */
+      }
+    }
+    rmSync(staging, { recursive: true, force: true });
+    step("reaAgents", "FAIL", `could not move the new closure into ${live}: ${String(error?.message ?? error)}`);
+    return null;
+  }
+  rmSync(retired, { recursive: true, force: true });
+  rmSync(staging, { recursive: true, force: true });
 
   const current = probe();
   step("reaAgents", current.ok ? "ok" : "FAIL", `${vendor}${current.ok ? "" : " — " + current.detail}`);
-  return current.ok ? { path: vendor, version } : null;
+  if (!current.ok) return null;
+
+  // The package is in place; its native dependency is a separate claim. Checked
+  // here as well as in `main` so a fresh install records the verdict immediately;
+  // `main` covers the case this path never runs — a bundle that already records
+  // 6.8.0, which is every upgrade.
+  const frida = ensureFridaBindings(nodeRuntime, npmCli, installRoot);
+  if (frida.ok) {
+    step("fridaBindings", "ok", `${frida.detail}${frida.rebuilt ? " (rebuilt by setup)" : ""}${frida.binding ? ` — ${frida.binding}` : ""}`);
+  } else {
+    // Never "FAIL": the package itself provisioned, and one optional native
+    // binding must not turn a working bundle into a failed run. `browser` reports
+    // its own absence the same way.
+    step("fridaBindings", "skip", frida.skipped ? frida.detail : `unavailable: ${frida.detail}`);
+  }
+  return {
+    path: vendor,
+    version,
+    frida: frida.ok
+      ? { available: true, binding: frida.binding, sha256: frida.sha256 ?? null, devices: frida.detail }
+      : { available: false, reason: frida.detail },
+  };
 }
 
 /* ---------------------------------------------------------------------- main */
@@ -1447,8 +2005,14 @@ if (options.help) {
   process.exit(0);
 }
 
-mkdirSync(options.root, { recursive: true });
-mkdirSync(options.cache, { recursive: true });
+// `--dry-run` writes nothing at all. The help text only promised "no
+// downloads", but creating the root, the cache and logs/setup.log on a machine
+// whose owner asked for a preview is a side effect nobody asked for — and the
+// audit read that gap as a promise the code did not keep.
+if (!options.dryRun) {
+  mkdirSync(options.root, { recursive: true });
+  mkdirSync(options.cache, { recursive: true });
+}
 
 log(`rea bundle setup`);
 log(`  plugin   ${sourceRoot()}`);
@@ -1471,6 +2035,12 @@ const context = {
 const results = {};
 
 /* ---------------------------------------------------------------- concurrency */
+
+/*
+ * `RUN_TOKEN`, `runLock`, `LOCK_HEARTBEAT_MS`, `readJsonSafe` and `touchRunLock`
+ * are declared up with the output section, because `log()` reaches for the
+ * heartbeat and `log()` runs long before the lock is claimed.
+ */
 
 /**
  * True while a pid still exists.
@@ -1505,7 +2075,7 @@ function pidAlive(pid) {
  */
 function acquireRunLock() {
   const lockFile = path.join(options.root, "setup.lock");
-  const record = { state: "running", pid: process.pid, at: Date.now(), log: logFilePath() };
+  const record = { state: "running", pid: process.pid, at: Date.now(), log: logFilePath(), token: RUN_TOKEN };
   try {
     mkdirSync(options.root, { recursive: true });
   } catch (error) {
@@ -1518,7 +2088,33 @@ function acquireRunLock() {
     } catch (error) {
       if (error?.code !== "EEXIST") return { ok: false, holder: null, error };
     }
-    const holder = readJson(lockFile);
+    // A lock written by a crashed run — or by a `writeFileSync` that a kill or a
+    // full disk caught halfway — can be unparseable, and `readJson` throws on
+    // that. The throw escaped `acquireRunLock`, so a hand-run
+    // `node scripts/setup.mjs` died with a raw JSON SyntaxError even though the
+    // comment below promises an unreadable lock is replaced. An unparseable lock
+    // names no live holder, so it is stale by definition.
+    let holder = null;
+    try {
+      holder = readJson(lockFile);
+    } catch (error) {
+      log(`       setup.lock is not readable JSON (${String(error?.message ?? error)}); replacing it`);
+    }
+    // OUR OWN lock, claimed on our behalf by `bin/rea-shim.mjs`: take it over.
+    //
+    // The shim creates the lock, spawns this script detached, and only THEN
+    // rewrites the record with the child's pid. Without this branch a run that
+    // reached this point inside that window read a live pid it did not own and
+    // exited 75 — losing the exclusive create to the lock that was reserved for
+    // it. The token is the fact; `pid` is only a hint.
+    if (holder && typeof holder.token === "string" && holder.token === RUN_TOKEN) {
+      try {
+        writeFileSync(lockFile, JSON.stringify(record) + "\n");
+        return { ok: true, lockFile, inherited: true };
+      } catch (error) {
+        return { ok: false, holder, error };
+      }
+    }
     if (holder && holder.state === "running" && holder.pid !== process.pid && pidAlive(holder.pid)) {
       return { ok: false, holder };
     }
@@ -1529,7 +2125,13 @@ function acquireRunLock() {
       /* the next write reports why */
     }
   }
-  return { ok: false, holder: readJson(lockFile) };
+  let lastHolder = null;
+  try {
+    lastHolder = readJson(lockFile);
+  } catch {
+    /* an unparseable lock leaves nothing usable to name as the holder */
+  }
+  return { ok: false, holder: lastHolder };
 }
 
 if (!options.dryRun && !options.help) {
@@ -1546,6 +2148,9 @@ if (!options.dryRun && !options.help) {
     if (lock.error) process.stderr.write(`  ${String(lock.error?.message ?? lock.error)}\n`);
     process.exit(75);
   }
+  runLock.file = lock.lockFile;
+  runLock.held = true;
+  runLock.lastTouch = Date.now();
 }
 
 /**
@@ -1635,6 +2240,48 @@ for (const name of INSTALL_ORDER) {
   if (carried) merged[name] = carried;
 }
 
+/*
+ * Frida's native binding — checked whenever the provisioning path above did not.
+ *
+ * `rea-agents` depends on `frida` directly, and the only thing frida installs at
+ * install time is `build/frida_binding.node`. Provisioning runs npm with
+ * `--ignore-scripts` on purpose, so that binding is never placed by the install
+ * itself; `ensureFridaBindings` repairs it. But that repair lives inside the
+ * provisioning path, which a bundle already recording 6.8.0 never enters — that
+ * is, every upgrade — so the binding could stay missing while every line of the
+ * run said "already provisioned". This closes the gap: when this run produced no
+ * frida verdict, take one now.
+ *
+ * Reported, never fatal, for the same reason `browser` is: the other 200-odd REA
+ * tools do not need it, and failing a whole provision over one optional native
+ * binding answers a worse question than naming the capability that is missing.
+ */
+if (
+  !options.dryRun
+  && merged.reaAgents
+  && merged.reaAgents.frida === undefined
+  && typeof merged.reaAgents.path === "string"
+  && existsSync(merged.reaAgents.path)
+) {
+  const fridaRuntime = resolveNpmRuntime(merged.node?.path);
+  if (!fridaRuntime.npmCli) {
+    step("fridaBindings", "skip", `no npm-cli.js next to ${fridaRuntime.nodeRuntime}; the binding cannot be repaired from here`);
+  } else {
+    const frida = ensureFridaBindings(fridaRuntime.nodeRuntime, fridaRuntime.npmCli, path.join(options.root, "vendor"));
+    merged.reaAgents = {
+      ...merged.reaAgents,
+      frida: frida.ok
+        ? { available: true, binding: frida.binding, sha256: frida.sha256 ?? null, devices: frida.detail }
+        : { available: false, reason: frida.detail },
+    };
+    if (frida.ok) {
+      step("fridaBindings", "ok", `${frida.detail}${frida.rebuilt ? " (rebuilt by setup)" : ""}${frida.binding ? ` — ${frida.binding}` : ""}`);
+    } else {
+      step("fridaBindings", "skip", frida.skipped ? frida.detail : `unavailable: ${frida.detail}`);
+    }
+  }
+}
+
 /* browser is adopted, never downloaded */
 const browser = reuseExisting("browser", options.root);
 if (browser) step("browser", "skip", `adopting ${browser.path}`);
@@ -1683,7 +2330,7 @@ if (!options.dryRun) {
       .filter(([, value]) => value?.tofu)
       .map(([name]) => name),
   };
-  writeFileSync(path.join(options.root, "bundle.json"), JSON.stringify(bundleConfig, null, 2) + "\n");
+  writeJsonAtomic(path.join(options.root, "bundle.json"), bundleConfig);
   step("wire", "ok", path.join(options.root, "bundle.json"));
 
   // The row launches <DSH_HOME>/plugins/rea-bundle/bin/rea-shim.mjs; create it
@@ -1903,7 +2550,7 @@ function writeMirrorRecord(context, source) {
   }
   try {
     mkdirSync(context.root, { recursive: true });
-    writeFileSync(path.join(context.root, "mirror.json"), JSON.stringify(record, null, 2) + "\n");
+    writeJsonAtomic(path.join(context.root, "mirror.json"), record);
   } catch (error) {
     // An unwritable root must not fail provisioning; the only cost is that a
     // mirrored run cannot find the original checkout again.
@@ -1945,11 +2592,14 @@ const optionalUnavailable = failures.filter(optionalFailure);
  * the shim say what actually happened instead of claiming a run is in flight.
  */
 const lockFile = path.join(options.root, "setup.lock");
+// Stop heartbeating before deciding the outcome: from here the record is the
+// verdict, not a "still running" marker.
+runLock.held = false;
 if (failed.length === 0) {
   rmSync(lockFile, { force: true });
 } else {
   try {
-    writeFileSync(lockFile, JSON.stringify({ state: "failed", pid: process.pid, at: Date.now(), exit: 1, log: logFilePath() }) + "\n");
+    writeFileSync(lockFile, JSON.stringify({ state: "failed", pid: process.pid, at: Date.now(), exit: 1, log: logFilePath(), token: RUN_TOKEN }) + "\n");
   } catch {
     /* the lock is advisory: a read-only root must not break the report */
   }

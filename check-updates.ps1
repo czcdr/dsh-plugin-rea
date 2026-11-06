@@ -22,10 +22,22 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
+# 判绿计数器。「注意」必须计入最终结论：2.0.13 里 pin 漂移只写一行 Warn、不进
+# $actions，末尾照样打印「无需动作」，而那一行正是 pin 升级后唯一面向用户的信号。
+$warnings = 0
+$badCount = 0
+# bundle 分支只在 bundle.json 存在时赋这三个值；结论处直接拿它们比较，所以先给 0
+# （$null -eq 0 是 $false，会让「根本没供给」也走进「另有 N 项采纳」那条绿分支）。
+$drift = 0
+$unrecorded = 0
+$adopted = 0
 function Head($t) { Write-Host "`n=== $t ===" -ForegroundColor Cyan }
 function Ok($t)   { Write-Host "  [OK]   $t" -ForegroundColor Green }
-function Warn($t) { Write-Host "  [注意] $t" -ForegroundColor Yellow }
-function Bad($t)  { Write-Host "  [动作] $t" -ForegroundColor Red }
+function Warn($t) { $script:warnings++; Write-Host "  [注意] $t" -ForegroundColor Yellow }
+# 「上游」不是本机状态：registry 查不通、GitHub 最新版不是 12.1.x、本机没有 rea 可跑
+# doctor —— 这些既不能证明 bundle 一致，也不构成待办，所以单独一类，不参与判绿。
+function Note($t) { Write-Host "  [上游] $t" -ForegroundColor DarkYellow }
+function Bad($t)  { $script:badCount++; Write-Host "  [动作] $t" -ForegroundColor Red }
 function Info($t) { Write-Host "  $t" -ForegroundColor Gray }
 
 $actions = [System.Collections.Generic.List[string]]::new()
@@ -164,7 +176,7 @@ $latest = $null
 foreach ($r in @($Registry, 'https://registry.npmjs.org')) {
   if (-not $r) { continue }
   try { $latest = (Invoke-RestMethod "$r/rea-agents/latest" -TimeoutSec 20).version; Info "最新版本($r): $latest"; break }
-  catch { Warn "查询失败 $r : $($_.Exception.Message)" }
+  catch { Note "查询失败 $r : $($_.Exception.Message)" }
 }
 if ($installed -and $latest) {
   $vi = Get-NumericVersion $installed; $vl = Get-NumericVersion $latest
@@ -179,9 +191,9 @@ if ($installed -and $latest) {
     Warn "同版本号但通道不同：$installed → $latest（预发布/正式）"
   } else { Ok '已是最新版本' }
 } elseif (-not $latest) {
-  Warn '未能取到上游最新版本（两个 registry 都查不通？）—— 已跳过版本比对'
+  Note '未能取到上游最新版本（两个 registry 都查不通？）—— 已跳过版本比对'
 } else {
-  Warn '本地没读到已安装版本（见上面那条）—— 已跳过版本比对'
+  Note '本地没读到已安装版本（见上面那条）—— 已跳过版本比对'
 }
 
 # ------------------------------------------------------------- Node 运行时
@@ -194,7 +206,7 @@ if (Get-Command node -ErrorAction SilentlyContinue) {
     $ok = Test-NodeEngines $nodeV $engines
     if ($ok -eq $true) { Ok "满足当前 engines（$engines）" }
     elseif ($ok -eq $false) { Bad "不满足 engines（$engines）—— 请升级 Node；插件侧走 PATH，无需改配置" }
-    else { Warn "无法解析 engines：$engines" }
+    else { Note "无法解析 engines：$engines" }
   }
 } else {
   Warn 'node 不在 PATH —— 跳过 Node 检查；若 harness 也看不到它，MCP 服务器将无法启动'
@@ -225,7 +237,21 @@ if ($gd -and (Test-Path $gd)) {
     } else {
       $v = $line -replace '^application\.version=', ''
       Ok "已安装版本: $v"
-      if ($v -notmatch '^12\.1\.') { Bad "REA 当前要求 Ghidra 12.1.x，当前为 $v —— 先确认新版 REA 是否放开版本门槛" }
+      if ($v -notmatch '^12\.1\.') {
+        # 本机 --enable 过的闸门覆盖是**有记录的**偏离：REA 的闸门确实钉在 12.1.x，
+        # 但这台机器故意跑了更新的版本。把它报成 [动作] 等于劝人撤掉覆盖，而
+        # override 记录已经在下方的 bundle 分支单独列出 —— 所以这里只说明，不计数。
+        $gateOverride = $null
+        $gateOverrideFile = Join-Path $bundleRootEarly 'ghidra-gate-override.json'
+        if (Test-Path $gateOverrideFile) {
+          try { $gateOverride = Get-Content $gateOverrideFile -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $gateOverride = $null }
+        }
+        if ($gateOverride -and [string]$gateOverride.requestedVersion -eq $v) {
+          Info "REA 闸门钉在 12.1.x；当前 $v 是本机 --enable 的覆盖（不是 pin 漂移，记录见 bundle 分支）"
+        } else {
+          Bad "REA 当前要求 Ghidra 12.1.x，当前为 $v —— 先确认新版 REA 是否放开版本门槛"
+        }
+      }
     }
   } else { Bad '缺少 Ghidra\application.properties —— 目录不完整' }
 } else {
@@ -235,8 +261,8 @@ if ($gd -and (Test-Path $gd)) {
 try {
   $rel = Invoke-RestMethod 'https://api.github.com/repos/NationalSecurityAgency/ghidra/releases/latest' -TimeoutSec 25 -Headers @{ 'User-Agent' = 'rea-check' }
   Info "Ghidra 官方最新: $($rel.tag_name)  ($($rel.published_at))"
-  if ($rel.tag_name -notmatch 'Ghidra_12\.1') { Warn '官方已有更新；升级前先确认 REA 是否接受该版本' }
-} catch { Warn "GitHub API 查询失败（可跳过）: $($_.Exception.Message)" }
+  if ($rel.tag_name -notmatch 'Ghidra_12\.1') { Note '官方已有更新；升级前先确认 REA 是否接受该版本' }
+} catch { Note "GitHub API 查询失败（可跳过）: $($_.Exception.Message)" }
 
 # --------------------------------------------------------- REA 引擎自检
 Head 'REA 引擎自检（rea doctor）'
@@ -266,13 +292,24 @@ if (-not $reaCmd) {
 if (-not $reaCmd) {
   if ($reaEntry -and (Test-Path $reaEntry) -and (Get-Command node -ErrorAction SilentlyContinue)) {
     $reaCmd = 'node'; $reaArgs = @($reaEntry)
-    Warn 'rea 不在 PATH —— 回退到 node <包内入口>'
-  } else { Warn 'rea 与 node 均不可用 —— 跳过引擎自检' }
+    Note 'rea 不在 PATH —— 回退到 node <包内入口>'
+  } else { Note 'rea 与 node 均不可用 —— 跳过引擎自检' }
 }
 if ($reaCmd) {
   try {
     $raw = & $reaCmd @reaArgs doctor --format json 2>$null
-    if ($LASTEXITCODE -ne 0) { Warn "rea doctor 退出码 $LASTEXITCODE —— 报告了不健康状态，下面按输出解析" }
+    if ($LASTEXITCODE -ne 0) {
+      # Not a machine-state warning.
+      #
+      # `rea doctor` exits non-zero while ANY optional capability is unconfigured:
+      # Hopper, IDA, Kuna, the skill copies, the five client registrations. A
+      # perfectly provisioned bundle therefore still exits 1, and treating that as
+      # a warning made every healthy machine report "需要动作" — a false red, which
+      # is the mirror image of the false green this script was just fixed for. The
+      # state that actually matters is parsed out of the output below (the provider
+      # inspection and its checks), and THAT drives Ok/Bad.
+      Note "rea doctor 退出码 $LASTEXITCODE（包含可选能力未配置；实际状态按下方输出解析）"
+    }
     $doc = ($raw -join "`n") | ConvertFrom-Json
     $g = @($doc.providerInspections) | Where-Object { $_.id -eq 'ghidra' }
     if ($g) {
@@ -287,7 +324,7 @@ if ($reaCmd) {
       if ($doc.identity.catalog -and $doc.identity.catalog.counts) { $toolCount = $doc.identity.catalog.counts.mcp_tools }
       Info "doctor 识别到的 CLI 版本: $($doc.identity.cli_package_version)$(if ($toolCount) { "，MCP 工具数: $toolCount" })"
     }
-  } catch { Warn "rea doctor 解析失败，请手动运行: rea doctor" }
+  } catch { Note "rea doctor 解析失败，请手动运行: rea doctor" }
 }
 
 # ---------------------------------------------------- DSH 插件登记状态
@@ -302,15 +339,15 @@ if (Test-Path $profPkg) {
     if ($p.PSObject.Properties.Name -contains 'dsh' -and $p.dsh -and $p.dsh.profile -and $p.dsh.profile.bundles) { $bundles = @($p.dsh.profile.bundles) }
     if ($dep) { Ok "依赖已登记: dsh-plugin-rea = $dep" } else { Bad '依赖未登记 —— 用插件管理器重新安装本插件' }
     if ($bundles -contains 'dsh-plugin-rea') { Ok '已列入 dsh.profile.bundles（装载层已生效）' }
-    elseif ($bundles.Count -eq 0) { Warn '未读到 dsh.profile.bundles（profile 结构可能不同）' }
+    elseif ($bundles.Count -eq 0) { Note '未读到 dsh.profile.bundles（profile 结构可能不同）' }
     else { Bad '未列入 bundles —— 插件不会加载' }
     Info '本插件不会自动更新：从插件市场安装的在市场里更新；本地 file: 目录方式则覆盖目录后在插件管理器里重装'
     if ($dep -like 'file:*') {
       $p2 = $dep -replace '^file:', ''
       if (Test-Path $p2) { Ok "插件目录存在: $p2" } else { Bad "插件目录不存在: $p2 —— 移走目录会加载失败" }
     }
-  } catch { Warn "profile package.json 解析失败: $($_.Exception.Message)" }
-} else { Warn "找不到 profile: $profPkg" }
+  } catch { Note "profile package.json 解析失败: $($_.Exception.Message)" }
+} else { Note "找不到 profile: $profPkg" }
 
 $profPatch = Join-Path $ProfileDir 'cordis.patch.yml'
 if (Test-Path $profPatch) {
@@ -404,8 +441,11 @@ if (-not (Test-Path $manifestPath)) {
         if (Test-PinMatch -Installed $installed -Pinned $pinned) { Info "  $name = $installed（pin $pinned）" }
         else { Warn "$name 盘上为 $installed，manifest 已钉 $pinned —— 重跑 setup 对齐"; $drift++ }
       }
+      # 采纳（--reuse 的本机运行时）和本机覆盖（ghidra-gate-override）是**有记录的**
+      # 偏离，不是「忘了对齐」：它们既不是 drift，也不该变成一条警告把每台正常机器
+      # 都判成需要动作。所以这里用 [上游] 如实说明「并非全部精确等于 pin」。
       if ($drift -eq 0 -and $unrecorded -eq 0 -and $adopted -eq 0) { Ok '所有组件与 manifest 的 pin 一致' }
-      elseif ($drift -eq 0 -and $unrecorded -eq 0) { Warn "共比对 $compared 项：其中 $adopted 项为采纳的本机运行时（按 engines 放行，见上），其余与 pin 一致" }
+      elseif ($drift -eq 0 -and $unrecorded -eq 0) { Note "共比对 $compared 项：其中 $adopted 项为采纳的本机运行时 / 本机覆盖（见上），其余与 pin 一致" }
       elseif ($drift -eq 0) { Warn "已比对的 $compared 项与 pin 一致，但 $unrecorded 项没有记录版本（见上）—— 不是全绿" }
       if ($state.unverifiedChecksums -and @($state.unverifiedChecksums).Count -gt 0) {
         Warn ("TOFU（无厂商校验和，取首次实测值）: " + (@($state.unverifiedChecksums) -join ', '))
@@ -452,7 +492,23 @@ if (-not (Test-Path $manifestPath)) {
 
 # ------------------------------------------------------------------ 汇总
 Head '结论'
-if ($actions.Count -eq 0) { Ok '无需动作：整条链路与上游保持一致' }
-else { $actions | ForEach-Object { Bad $_ } }
+# 判绿条件：没有待办、没有 pin 漂移、没有未记录版本、没有「注意」、没有「动作」行。
+# 此前只看 $actions，于是「jdk 盘上为 25.0.5，manifest 已钉 21」这种漂移照样以
+# 「无需动作：整条链路与上游保持一致」收尾、退出码 0 —— 假绿正是这么产生的。
+$reasons = @()
+if ($actions.Count -gt 0) { $reasons += "待办 $($actions.Count) 项" }
+if ($drift -gt 0) { $reasons += "pin 漂移 $drift 项" }
+if ($unrecorded -gt 0) { $reasons += "未记录版本 $unrecorded 项" }
+if ($warnings -gt 0) { $reasons += "提醒 $warnings 条" }
+if ($badCount -gt 0) { $reasons += "问题 $badCount 处" }
 Write-Host ''
 Write-Host '提示：DSH 侧更新（应用升级可能改变 MCP 客户端配置结构）后，请重跑本脚本并调用一次 mcp__rea__binary_session 验证。' -ForegroundColor Gray
+if ($reasons.Count -eq 0) {
+  if ($drift -eq 0 -and $unrecorded -eq 0 -and $adopted -eq 0) { Ok '无需动作：整条链路与上游保持一致' }
+  else { Ok "无需动作：能比对的项目均与 pin 一致（另有 $adopted 项采纳 / 本机覆盖，见上）" }
+  exit 0
+}
+# 先列待办，最后打印结论：末行必须永远是判绿/判红的结论，而不是它上面某条动作。
+$actions | ForEach-Object { Bad $_ }
+Write-Host ('  [结论] 需要动作：' + ($reasons -join '；') + '（逐条见上）') -ForegroundColor Red
+exit 1

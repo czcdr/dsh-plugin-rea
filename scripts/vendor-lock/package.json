@@ -1,0 +1,14 @@
+{
+  "name": "rea-bundle-vendor",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Install root for the vendored REA MCP server closure. scripts/setup.mjs copies this pair into <root>/vendor/.npm-staging and runs `npm ci --ignore-scripts`, so provisioning resolves exactly the versions in package-lock.json. The `overrides` block is the audit fix: rea-agents pins zod exactly (\"4.4.3\"), which is inside GHSA-mrhx-c7xc-m3w5 (<4.6.6), and only an override can move an exact pin without editing the published tarball.",
+  "dependencies": {
+    "rea-agents": "6.8.0"
+  },
+  "overrides": {
+    "zod": "4.6.7",
+    "minimatch": "11.0.5",
+    "glob": "14.0.4"
+  }
+}

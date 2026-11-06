@@ -1419,6 +1419,16 @@ test("the release list this gate checks is the published one", () => {
   // Pinned literally: deleting an entry from the list would otherwise shrink the
   // coverage claim silently, and every test below would still pass.
   assert.deepEqual(HOST_RELEASES, [
+    // Newest first BY PUBLISH DATE, not by semver precedence: 0.2.1-rc.5 came
+    // out after 0.2.2-alpha.2, so it sits above it even though 0.2.2 is the
+    // newer line. Do not "fix" the order — scripts/host-compat.test.mjs pins
+    // this one inversion deliberately.
+    "0.2.2-rc.1",
+    "0.2.2-alpha.3",
+    "0.2.1-rc.5",
+    "0.2.2-alpha.2",
+    "0.2.1-rc.4",
+    "0.2.1-rc.3",
     "0.2.1-rc.2",
     "0.2.1-rc.1",
     "0.2.1-alpha.5",
@@ -1583,6 +1593,10 @@ test("an older system REA does not displace a newer provisioned one unless pinne
   mkdirSync(f.bundleRoot, { recursive: true });
   const rea = writeFakeRea(f.bin, { version: "6.4.0" });
   try {
+    // The bundle has to be launchable, not merely recorded: the launch decision
+    // now compares against whether the bundle can actually start REA, so a
+    // bundle.json naming no runtime is a broken bundle rather than a newer one.
+    addReaStub(f.bundleRoot, "6.5.0");
     writeFileSync(
       path.join(f.bundleRoot, "bundle.json"),
       JSON.stringify({ schema: 1, paths: { node: process.execPath }, versions: { reaAgents: "6.5.0" } }),
@@ -2066,13 +2080,18 @@ test("a BOM-ed bundle.json is read instead of treated as unprovisioned", () => {
     assert.equal(fresh.status, 0, fresh.stderr);
     assert.match(fresh.stdout, /\[plan\] node/);
 
+    // A record is checked against the manifest pin before it is trusted, so the
+    // marker has to be the pin itself — a made-up version would exercise the
+    // "out of date" branch instead of proving that the BOM was decoded.
+    const bomNodeSources = JSON.parse(readFileSync(MANIFEST_SOURCE, "utf8")).components.node.sources;
+    const bomNodePin = (bomNodeSources[`${process.platform}-${process.arch}`] ?? bomNodeSources.all).version;
     writeFileSync(
       path.join(bundle, "bundle.json"),
-      "\uFEFF" + JSON.stringify({ schema: 1, components: { node: { path: process.execPath, version: "v-bom-test" } } }, null, 2),
+      "\uFEFF" + JSON.stringify({ schema: 1, components: { node: { path: process.execPath, version: bomNodePin } } }, null, 2),
     );
     const run = spawnSync(process.execPath, args, { encoding: "utf8", timeout: 120000 });
     assert.equal(run.status, 0, run.stderr);
-    assert.match(run.stdout, /already provisioned \(v-bom-test\)/, run.stdout);
+    assert.match(run.stdout, new RegExp(`already provisioned \\(${bomNodePin.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\)`), run.stdout);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -2103,11 +2122,21 @@ test("a UTF-16 bundle.json is read by setup instead of treated as unprovisioned"
     assert.equal(fresh.status, 0, fresh.stderr);
     assert.match(fresh.stdout, /\[plan\] node/);
 
-    const json = JSON.stringify({ schema: 1, components: { node: { path: process.execPath, version: "v-utf16" } } }, null, 2);
+    // The recorded version has to be the pin.
+    //
+    // This test is about DECODING the UTF-16 file, and it used to mark a
+    // successful decode with a made-up version ("v-utf16"). A record is now also
+    // checked against the manifest pin before it is trusted, so a made-up version
+    // exercises the "recorded but out of date" branch instead of this one — the
+    // decode would still be proven, but by a message about drift. Reading the pin
+    // from the manifest keeps the marker meaningful without hard-coding it.
+    const nodeSources = JSON.parse(readFileSync(MANIFEST_SOURCE, "utf8")).components.node.sources;
+    const nodePin = (nodeSources[`${process.platform}-${process.arch}`] ?? nodeSources.all).version;
+    const json = JSON.stringify({ schema: 1, components: { node: { path: process.execPath, version: nodePin } } }, null, 2);
     writeFileSync(path.join(bundle, "bundle.json"), utf16le(json));
     const run = spawnSync(process.execPath, args, { encoding: "utf8", timeout: 120000 });
     assert.equal(run.status, 0, run.stderr);
-    assert.match(run.stdout, /already provisioned \(v-utf16\)/, run.stdout);
+    assert.match(run.stdout, new RegExp(`already provisioned \\(${nodePin.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\)`), run.stdout);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -2141,12 +2170,16 @@ function guideBundle(root, record, encoding) {
   return file;
 }
 
-test("reaPinMatches pins a dotted version exactly and a bare major as a family", () => {
+test("reaPinMatches pins a dotted version exactly and a bare major as a floor", () => {
   assert.equal(reaPinMatches("6.7.0", "6.7.0"), true);
   assert.equal(reaPinMatches("6.5.0", "6.7.0"), false);
   assert.equal(reaPinMatches("6.7.0-rc.1", "6.7.0"), false);
   assert.equal(reaPinMatches("21.0.12.1+1", "21"), true);
-  assert.equal(reaPinMatches("20.0.1", "21"), false);
+  // A bare-major pin is a FLOOR: Ghidra requires "JDK 21 or newer", so a machine
+  // on 25 satisfies a pin that names 21. The family-prefix rule said otherwise,
+  // which made the guide contradict setup about the same JAVA_HOME.
+  assert.equal(reaPinMatches("25.0.5", "21"), true, "a newer major satisfies a major-only pin");
+  assert.equal(reaPinMatches("20.0.1", "21"), false, "a lower major does not satisfy it");
   assert.equal(reaPinMatches("", "6.7.0"), false);
   assert.equal(reaPinMatches("6.7.0", ""), false);
 });
@@ -2239,3 +2272,262 @@ test("check-updates names the portable commands it falls back to", () => {
   const win = unsupportedMessage("win32");
   assert.match(win, /No PowerShell/);
 });
+
+/* ============================================================================
+ * Regressions for the 2026-11-06 audit (`kimi.txt`).
+ *
+ * Each test below fails on the 2.0.13 code and passes after the fix it names, so
+ * the defect cannot come back without a red run. The two "double run" cases are
+ * the audit's explicit requirement: a first run that fails partway, and a second
+ * run that must retry rather than report the phantom success.
+ * ========================================================================== */
+
+test("a half-fetched multi-file component fails outright instead of recording a version", async () => {
+  const payload = Buffer.from("jar-bytes-0123456789");
+  const server = createServer((req, res) => {
+    req.on("error", () => {});
+    res.on("error", () => {});
+    res.writeHead(200, { "content-type": "application/octet-stream", "content-length": String(payload.length) });
+    res.end(payload);
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = server.address().port;
+  const root = mkdtempSync(path.join(tmpdir(), "rea-multifile-atomic-"));
+  try {
+    const bundle = path.join(root, "bundle");
+    const setup = makePluginTree(root, (manifest) => {
+      const component = testComponent(`http://127.0.0.1:${port}/apktool.jar`, payload, {
+        moveTo: "apktool",
+        saveAs: "apktool.jar",
+        probe: { file: "{vendor}/apktool/apktool.jar" },
+      });
+      component.kind = "multi-file";
+      // The second half of the component is unreachable. Port 1 on loopback is
+      // refused immediately, which is the "jar arrives, wrapper does not" shape
+      // the audit reproduced.
+      component.entries.byPlatform = {
+        [`${process.platform}-${process.arch}`]: [
+          {
+            id: "wrapper",
+            version: "1",
+            url: "http://127.0.0.1:1/apktool.bat",
+            format: "file",
+            size: 11,
+            sha256: "0".repeat(64),
+            moveTo: "apktool",
+            saveAs: "apktool.bat",
+          },
+        ],
+      };
+      manifest.components.apktool = component;
+    });
+    const env = { ...process.env, REA_BUNDLE_FETCH_RETRIES: "1", REA_BUNDLE_CONNECT_TIMEOUT_MS: "2000" };
+    const first = await runToCompletion(process.execPath, [setup, "--only", "apktool", "--root", bundle], {
+      encoding: "utf8",
+      timeout: 180000,
+      env,
+    });
+    assert.equal(first.status, 1, `${first.stdout}\n${first.stderr}`);
+    assert.match(first.stdout, /nothing was installed/, first.stdout);
+    // All-or-nothing: the file that DID arrive must not be left in place.
+    assert.equal(existsSync(path.join(bundle, "vendor", "apktool", "apktool.jar")), false, "a partial multi-file component must not be placed");
+    const record = JSON.parse(readFileSync(path.join(bundle, "bundle.json"), "utf8"));
+    const apktool = (record.components ?? {}).apktool ?? {};
+    // "Unrecorded" is written as an explicit unavailable marker, which is fine —
+    // what must NOT happen is a version and a digest that describe files the
+    // component does not have, which is what made the next run print
+    // "already provisioned (3.0.3)" over a stale 2.0.0 jar.
+    assert.equal(apktool.unavailable, true, JSON.stringify(apktool));
+    assert.equal(apktool.version, undefined, "a component that could not be placed must not record a version");
+    assert.equal(apktool.sha256, undefined, "a component that could not be placed must not record a digest");
+
+    // The second run must try again. On 2.0.13 it printed "already provisioned".
+    const second = await runToCompletion(process.execPath, [setup, "--only", "apktool", "--root", bundle], {
+      encoding: "utf8",
+      timeout: 180000,
+      env,
+    });
+    assert.doesNotMatch(second.stdout, /already provisioned/, second.stdout);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a recorded component is probed at its recorded path, not at a vendor path", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "rea-recorded-path-"));
+  try {
+    const checkout = bomFixtureCheckout(root);
+    const bundle = path.join(root, "bundle");
+    mkdirSync(bundle, { recursive: true });
+    const nodeSources = JSON.parse(readFileSync(MANIFEST_SOURCE, "utf8")).components.node.sources;
+    const nodePin = (nodeSources[`${process.platform}-${process.arch}`] ?? nodeSources.all).version;
+    // The record points at a path that does not exist. A vendor copy that WOULD
+    // verify must not be allowed to answer for it: on 2.0.13 the probe ran against
+    // the default vendor path and the broken record was kept.
+    writeFileSync(
+      path.join(bundle, "bundle.json"),
+      JSON.stringify({ schema: 1, components: { node: { path: path.join(root, "no-such-node"), version: nodePin } } }),
+    );
+    const run = spawnSync(process.execPath, [path.join(checkout, "scripts", "setup.mjs"), "--dry-run", "--only", "node", "--root", bundle], {
+      encoding: "utf8",
+      timeout: 120000,
+    });
+    assert.equal(run.status, 0, run.stderr);
+    assert.doesNotMatch(run.stdout, /already provisioned/, run.stdout);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a record whose version is not the manifest pin is not trusted", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "rea-pin-drift-"));
+  try {
+    const checkout = bomFixtureCheckout(root);
+    const bundle = path.join(root, "bundle");
+    mkdirSync(bundle, { recursive: true });
+    // Path exists and the probe passes; only the version is wrong. That is a pin
+    // bump against an old install, and 2.0.13 reported "already provisioned".
+    writeFileSync(
+      path.join(bundle, "bundle.json"),
+      JSON.stringify({ schema: 1, components: { node: { path: process.execPath, version: "0.0.1-ancient" } } }),
+    );
+    const run = spawnSync(process.execPath, [path.join(checkout, "scripts", "setup.mjs"), "--dry-run", "--only", "node", "--root", bundle], {
+      encoding: "utf8",
+      timeout: 120000,
+    });
+    assert.equal(run.status, 0, run.stderr);
+    assert.match(run.stdout, /recorded but out of date/, run.stdout);
+    assert.doesNotMatch(run.stdout, /already provisioned/, run.stdout);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the JDK probe rejects a full JDK older than 21", () => {
+  const probe = JSON.parse(readFileSync(MANIFEST_SOURCE, "utf8")).components.jdk.probe;
+  assert.equal(probe.expect.contains, "jdk.compiler", "the trimmed-runtime check must stay");
+  const pattern = new RegExp(probe.expect.regex, "m");
+  // A real Java 17 prints jdk.compiler too; only the version segment separates it.
+  assert.equal(pattern.test("jdk.compiler@17.0.20"), false, "Java 17 must be rejected");
+  assert.equal(pattern.test("jdk.compiler@11.0.2"), false, "Java 11 must be rejected");
+  assert.equal(pattern.test("jdk.compiler@9"), false, "Java 9 must be rejected");
+  assert.equal(pattern.test("jdk.compiler@21.0.12"), true, "the pinned JDK 21 must pass");
+  assert.equal(pattern.test("jdk.compiler@25.0.5"), true, "a newer major must pass");
+  assert.equal(pattern.test("java.base@21.0.12\njdk.compiler@25.0.5"), true, "a real --list-modules listing must pass");
+});
+
+test("--dry-run creates nothing on disk", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "rea-dry-run-clean-"));
+  try {
+    const checkout = bomFixtureCheckout(root);
+    const bundle = path.join(root, "bundle-that-must-not-appear");
+    const run = spawnSync(process.execPath, [path.join(checkout, "scripts", "setup.mjs"), "--dry-run", "--only", "node", "--root", bundle], {
+      encoding: "utf8",
+      timeout: 120000,
+    });
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(existsSync(bundle), false, "a dry run must not create the root");
+    assert.equal(existsSync(path.join(bundle, "logs", "setup.log")), false, "a dry run must not write a log");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("an unparseable setup.lock is replaced instead of throwing", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "rea-broken-lock-"));
+  try {
+    const checkout = bomFixtureCheckout(root);
+    const bundle = path.join(root, "bundle");
+    mkdirSync(bundle, { recursive: true });
+    writeFileSync(path.join(bundle, "setup.lock"), "{broken");
+    const run = spawnSync(process.execPath, [path.join(checkout, "scripts", "setup.mjs"), "--only", "node", "--offline", "--root", bundle], {
+      encoding: "utf8",
+      timeout: 120000,
+    });
+    const combined = `${run.stdout}\n${run.stderr}`;
+    assert.doesNotMatch(combined, /SyntaxError/, combined);
+    assert.match(combined, /setup\.lock is not readable JSON/, combined);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the tar extractor asks Python for its member filter", () => {
+  // Defense in depth rather than a live exploit: every archive is SHA-256 pinned.
+  // A bare extractall() is what a future unpinned entry would inherit, so the
+  // contract is pinned in the source.
+  const source = readFileSync(SETUP_SOURCE, "utf8");
+  assert.match(source, /filter='data'/, "the python3 tar fallback must pass filter='data'");
+  assert.doesNotMatch(source, /tarfile\.open\(sys\.argv\[1\]\)\.extractall\(sys\.argv\[2\]\)/, "the unfiltered extractall must be gone");
+});
+
+test("a parsed bundle that cannot launch REA falls back to a working system REA", () => {
+  const f = launchFixture();
+  mkdirSync(f.bin, { recursive: true });
+  mkdirSync(f.bundleRoot, { recursive: true });
+  const rea = writeFakeRea(f.bin, { version: "6.4.0" });
+  try {
+    // Records a NEWER version than the system one, but names a Node runtime that
+    // is gone. On 2.0.13 the recorded version decided the comparison, so the
+    // broken bundle won and the row exited 78 without trying the system REA.
+    writeFileSync(
+      path.join(f.bundleRoot, "bundle.json"),
+      JSON.stringify({ schema: 1, paths: { node: path.join(f.bundleRoot, "gone", "node.exe") }, versions: { reaAgents: "9.9.9" } }),
+    );
+    const run = runShimIsolated(
+      { PATH: f.emptyPath, REA_BUNDLE_SYSTEM_REA: rea, REA_BUNDLE_ROOT: f.bundleRoot, REA_BUNDLE_AUTO_PROVISION: "0", REA_BUNDLE_LAUNCH: "" },
+      ["--shim-status"],
+    );
+    const report = JSON.parse(run.stdout);
+    assert.equal(report.provisioned, true, "the state exists, and the report must still say so");
+    assert.equal(report.bundleUsable, false, JSON.stringify(report.rea));
+    assert.equal(report.launch.mode, "system", JSON.stringify(report.launch));
+    assert.equal(run.status, 0, "a working system REA is a healthy row");
+  } finally {
+    f.clean();
+  }
+});
+
+test("--shim-status does not exit 0 for a bundle that cannot launch REA and has no system REA", () => {
+  const f = launchFixture();
+  mkdirSync(f.bundleRoot, { recursive: true });
+  try {
+    writeFileSync(
+      path.join(f.bundleRoot, "bundle.json"),
+      JSON.stringify({ schema: 1, paths: { node: path.join(f.bundleRoot, "gone", "node.exe") }, versions: { reaAgents: "9.9.9" } }),
+    );
+    const run = runShimIsolated(
+      { PATH: f.emptyPath, REA_BUNDLE_ROOT: f.bundleRoot, REA_BUNDLE_AUTO_PROVISION: "0", REA_BUNDLE_LAUNCH: "" },
+      ["--shim-status"],
+    );
+    const report = JSON.parse(run.stdout);
+    assert.equal(report.bundleUsable, false, JSON.stringify(report.rea));
+    assert.equal(report.launch.mode, "bundle");
+    assert.equal(run.status, 78, "an unusable bundle with nothing to fall back to must not look healthy");
+  } finally {
+    f.clean();
+  }
+});
+
+test("an expired lock whose owner is still alive is reported, not deleted", () => {
+  const f = launchFixture();
+  mkdirSync(f.bundleRoot, { recursive: true });
+  try {
+    const lock = path.join(f.bundleRoot, "setup.lock");
+    // Seven hours old — past the six-hour window — but the pid is this very
+    // process, so it is provably alive. 2.0.13 deleted it and started a SECOND
+    // provisioning run: slow downloads really do pass six hours.
+    writeFileSync(lock, JSON.stringify({ state: "running", pid: process.pid, at: Date.now() - 7 * 60 * 60 * 1000 }));
+    const run = runShimIsolated(
+      { PATH: f.emptyPath, REA_BUNDLE_ROOT: f.bundleRoot, REA_BUNDLE_LAUNCH: "" },
+      ["mcp"],
+    );
+    assert.match(run.stderr, /has not reported for/, run.stderr);
+    assert.equal(existsSync(lock), true, "a lock owned by a live pid must survive its own age");
+  } finally {
+    f.clean();
+  }
+});
+
+

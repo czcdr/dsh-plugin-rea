@@ -15,7 +15,7 @@
  *                            and the message is the operator's remediation.
  */
 import { spawn, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -255,51 +255,100 @@ function maybeAutoProvision(root) {
   const lock = path.join(root, "setup.lock");
   const logPath = path.join(root, "logs", "setup.log");
   if (existsSync(lock)) {
-    // A crashed run must not wedge provisioning forever: honour the lock only
-    // while it is fresh; setup removes it itself when it finishes cleanly.
     const record = readLock(lock);
     const age = record && Number.isFinite(record.at) ? Date.now() - record.at : Infinity;
     const fresh = Number.isFinite(age) && age < STALE_LOCK_MS;
-    if (fresh && record?.state === "failed") {
-      // The run gave up and left the lock behind so it would not be retried in a
-      // loop. Claiming it is still provisioning was a six-hour lie: nothing runs,
-      // and every restart repeated the sentence.
-      return {
-        started: false,
-        reason: "last-run-failed",
-        exit: record.exit,
-        failedAt: record.at,
-        ageMs: age,
-        logPath,
-      };
-    }
-    if (fresh) {
+    if (record?.state === "failed") {
+      // A FAILED run keeps its lock on purpose: it is the brake that stops a
+      // broken setup from being re-downloaded in a loop, and every restart
+      // printing "in flight" over nothing was the six-hour lie this branch
+      // replaced. The verdict is read BEFORE the pid check because the pid that
+      // failed is necessarily gone by the time the record is read — ordering it
+      // the other way would delete the brake and retry a broken run forever.
+      // After the freshness window the brake is released so a fixed environment
+      // can try again.
+      if (fresh) {
+        return {
+          started: false,
+          reason: "last-run-failed",
+          exit: record.exit,
+          failedAt: record.at,
+          ageMs: age,
+          logPath,
+        };
+      }
+      try {
+        rmSync(lock, { force: true });
+      } catch {
+        // A read-only bundle root cannot drop the expired brake either; keep
+        // reporting the failure rather than starting a second run beside it.
+        return { started: false, reason: "last-run-failed", exit: record.exit, failedAt: record.at, ageMs: age, logPath };
+      }
+    } else {
+      // Liveness decides for a RUNNING lock — not age.
+      //
+      // The previous rule honoured only locks younger than six hours and deleted
+      // anything older WITHOUT asking whether its owner still ran. A slow
+      // download or a stuck PowerShell step passes six hours with a live pid, and
+      // deleting the lock then let a SECOND provisioning run write the same
+      // cache, the same `<component>.staging` directories and the same
+      // `bundle.json` as the first. `at` is refreshed by the run itself while it
+      // reports progress (setup's heartbeat), so an old timestamp now means
+      // "nothing has reported in a long time" — a weaker claim than "the process
+      // is gone", and the weaker claim must not authorise the deletion.
+      const hasPid = Number.isInteger(record?.pid) && record.pid > 0;
       const alive = pidAlive(record?.pid);
-      if (alive !== false) return { started: false, reason: "in-flight", logPath, ageMs: age };
-    }
-    // Reached when the lock is older than the freshness window, or its holder is
-    // gone and never wrote an outcome (harness restart, power loss, a kill): what
-    // it records is not happening any more. This removal is the whole point of the
-    // freshness rule — without it the exclusive create below failed with EEXIST
-    // *forever*, auto-provisioning never ran again, and main() printed nothing at
-    // all for that outcome. The lock's own "honour it only while it is fresh"
-    // comment described behaviour the code did not have.
-    try {
-      rmSync(lock, { force: true });
-    } catch {
-      // A read-only bundle root (system-wide install, chmod 555) cannot drop the
-      // stale lock either. Returning the same "cannot write here" outcome as the
-      // exclusive create below keeps the row alive: an uncaught EACCES killed the
-      // shim with a stack trace, which is louder than the old silence but just as
-      // unable to start REA.
-      return { started: false, reason: "unwritable", logPath };
+      if (hasPid && alive !== false) {
+        // A stale-but-live lock is named as such instead of pretending to be a
+        // normal in-flight run: the operator's move is to look at the log (or
+        // delete the lock by hand), and neither is discoverable from "in flight".
+        return {
+          started: false,
+          reason: age < STALE_LOCK_MS ? "in-flight" : "in-flight-stale",
+          logPath,
+          ageMs: age,
+          pid: record.pid,
+        };
+      }
+      if (!hasPid && fresh) {
+        // A record with no pid has no owner to check — a legacy plain-number lock,
+        // or one a human wrote by hand. "Cannot tell" must not read as "alive"
+        // forever, so here the timestamp is the only evidence there is: honoured
+        // while fresh, released afterwards, exactly as before.
+        return { started: false, reason: "in-flight", logPath, ageMs: age, pid: null };
+      }
+      // Reached only when the recorded pid is provably gone: what the lock records
+      // is not happening any more, and no outcome was ever written (harness
+      // restart, power loss, a kill). This removal is what keeps a lost lock from
+      // wedging auto-provisioning *forever* behind an exclusive create that can
+      // only ever fail with EEXIST.
+      try {
+        rmSync(lock, { force: true });
+      } catch {
+        // A read-only bundle root (system-wide install, chmod 555) cannot drop the
+        // stale lock either. Returning the same "cannot write here" outcome as the
+        // exclusive create below keeps the row alive: an uncaught EACCES killed
+        // the shim with a stack trace, which is louder than the old silence but
+        // just as unable to start REA.
+        return { started: false, reason: "unwritable", logPath };
+      }
     }
   }
+  // Ownership token.
+  //
+  // The lock used to be handed from this shim to the detached setup through the
+  // PID alone: the shim wrote its own pid, spawned setup, and rewrote the record
+  // with `child.pid` afterwards. Between those two writes setup could already be
+  // running, read a live `pid` it did not own, and exit 75 — its own exclusive
+  // create losing to a lock that was meant for it. The window is narrow (100
+  // natural starts never hit it) but it is a race, not a preference, so the token
+  // is what setup recognises as "this lock is mine", and the pid becomes a hint.
+  const token = randomUUID();
   try {
     mkdirSync(path.join(root, "logs"), { recursive: true });
     // Exclusive create: check-then-write is not atomic, so two rows starting at
     // once could both decide to provision. EEXIST means another run owns it.
-    writeFileSync(lock, JSON.stringify({ state: "running", pid: process.pid, at: Date.now() }), { flag: "wx" });
+    writeFileSync(lock, JSON.stringify({ state: "running", pid: process.pid, at: Date.now(), token }), { flag: "wx" });
   } catch (error) {
     if (error?.code === "EEXIST") return { started: false, reason: "in-flight", logPath };
     /* a read-only bundle root must never break the harness */
@@ -311,6 +360,7 @@ function maybeAutoProvision(root) {
       detached: true,
       stdio: "ignore",
       windowsHide: true,
+      env: { ...process.env, REA_BUNDLE_LOCK_TOKEN: token },
     });
   } catch {
     // The lock created a few lines up is ours. Leaving it as `running` with this
@@ -351,10 +401,12 @@ function maybeAutoProvision(root) {
   });
   child.unref();
   // Hand the lock to the detached downloader, so a later start that finds this
-  // row dead still sees the run that is actually doing the work as alive.
+  // row dead still sees the run that is actually doing the work as alive. The
+  // token travels with it: setup recognises it as its own even if it reaches its
+  // own lock check before this line runs.
   if (Number.isInteger(child.pid)) {
     try {
-      writeFileSync(lock, JSON.stringify({ state: "running", pid: child.pid, at: Date.now(), supervisor: process.pid }));
+      writeFileSync(lock, JSON.stringify({ state: "running", pid: child.pid, at: Date.now(), supervisor: process.pid, token }));
     } catch {
       /* the lock is advisory: the row keeps working without it */
     }
@@ -834,8 +886,16 @@ function compareDotted(a, b) {
  * honoured literally — `system` fails loudly rather than provisioning 800 MB
  * behind an operator who asked for their own REA.
  */
-async function resolveLaunch({ root, bundleVersion = null, bundleProvisioned = false, env = process.env, platform = process.platform } = {}) {
+async function resolveLaunch({ root, bundleVersion = null, bundleProvisioned = false, bundleUsable = null, env = process.env, platform = process.platform } = {}) {
   const preference = launchPreference(env);
+  // `bundleProvisioned` says a record exists; `bundleUsable` says it can start
+  // REA. The comparison below has to use the second one — a bundle whose record
+  // is "newer" but whose runtime is missing is not a better answer than a system
+  // REA that works. Callers that pass only the first keep the old behaviour.
+  const bundleRunnable = bundleUsable === null ? bundleProvisioned : bundleUsable === true;
+  const bundleStateReason = bundleProvisioned && !bundleRunnable
+    ? "the provisioned bundle cannot launch REA"
+    : null;
   if (preference.value === "bundle") {
     return { preference: preference.value, invalid: preference.invalid, mode: "bundle", reason: "pinned by REA_BUNDLE_LAUNCH=bundle" };
   }
@@ -858,15 +918,17 @@ async function resolveLaunch({ root, bundleVersion = null, bundleProvisioned = f
     const pinned = preference.value === "system";
     // No provisioned build at all: there is nothing to compare against, and the
     // machine's own REA is exactly what this mode exists to use.
-    if (!bundleProvisioned || pinned || (order !== null && order >= 0)) {
+    if (!bundleRunnable || pinned || (order !== null && order >= 0)) {
       return {
         preference: preference.value,
         invalid: preference.invalid,
         mode: "system",
         reason: pinned
           ? `pinned by REA_BUNDLE_LAUNCH=system (system ${system.version}, bundle ${bundleVersion ?? "none"})`
-          : !bundleProvisioned
-            ? `a working REA is on PATH (${system.version}) and this machine has no provisioned bundle`
+          : !bundleRunnable
+            ? bundleStateReason !== null
+              ? `a working REA is on PATH (${system.version}) and ${bundleStateReason}; using the system install`
+              : `a working REA is on PATH (${system.version}) and this machine has no provisioned bundle`
             : `the REA on PATH (${system.version}) is at least as new as the provisioned one (${bundleVersion})`,
         system,
       };
@@ -1155,11 +1217,20 @@ async function main() {
     }
   }
   const loaded = readBundleConfig(root);
-  // Decide what to run before asking whether the bundle is provisioned: a
-  // machine with its own working REA must not be sent into an ~800 MB
-  // provisioning run just because this bundle has no state yet.
-  const bundleVersion = loaded.ok ? (loaded.config.versions?.reaAgents ?? null) : null;
-  const launch = await resolveLaunch({ root, bundleVersion, bundleProvisioned: loaded.ok });
+  // One definition of "the bundle can actually launch REA", used by the launch
+  // decision, the status exit code and the repair path alike.
+  //
+  // `loaded.ok` only means `bundle.json` parsed. Treating that as "provisioned"
+  // decided three separate questions with the wrong answer: a bundle naming a
+  // `paths.node` that no longer exists still won the auto comparison against a
+  // system REA that worked (because its recorded version was "newer"), still
+  // printed `provisioned: true`, and still returned exit 0 from `--shim-status`
+  // while `rea.ok` was false — a monitor reading the exit code saw a healthy row
+  // that could not start.
+  const bundleRea = loaded.ok ? resolveRea(loaded.config, root) : null;
+  const bundleUsable = loaded.ok && bundleRea !== null && bundleRea.ok === true;
+  const bundleVersion = bundleUsable ? (loaded.config.versions?.reaAgents ?? null) : null;
+  const launch = await resolveLaunch({ root, bundleVersion, bundleProvisioned: loaded.ok, bundleUsable });
   if (launch.invalid !== null) {
     process.stderr.write(
       `rea-shim: REA_BUNDLE_LAUNCH="${launch.invalid}" is not one of ${LAUNCH_MODES.join("/")}; using auto.\n`,
@@ -1205,14 +1276,19 @@ async function main() {
     if (loaded.ok) {
       report.paths = loaded.config.paths ?? {};
       report.versions = loaded.config.versions ?? {};
-      report.rea = resolveRea(loaded.config, root);
+      // `bundleUsable` is what makes the fields above trustworthy: paths and
+      // versions can be reported for a bundle that cannot start, and a caller
+      // reading only those would conclude the opposite of `rea.ok`.
+      report.bundleUsable = bundleUsable;
+      report.rea = bundleRea;
     }
     process.stdout.write(JSON.stringify(report, null, 2) + "\n");
     // The row works either way round — a system launch needs no bundle, a bundle
-    // launch needs a provisioned one — but a PINNED system launch with nothing to
-    // launch is a failure whether or not the bundle happens to be provisioned,
-    // and reporting 0 there is how a broken row looks healthy until it starts.
-    const usable = launch.mode === "system" ? launch.unusable !== true : loaded.ok;
+    // launch needs a bundle that can actually start REA. Reporting 0 off
+    // `loaded.ok` meant a parsed-but-broken bundle looked healthy until the row
+    // started and exited non-zero, which is the one thing a status command exists
+    // to prevent.
+    const usable = launch.mode === "system" ? launch.unusable !== true : bundleUsable;
     return usable ? 0 : EX_CONFIG;
   }
 
@@ -1237,16 +1313,22 @@ async function main() {
     return launchSystemRea(launch.system, argv);
   }
 
-  if (!loaded.ok) {
-    const message =
-      loaded.code === "missing"
+  if (!bundleUsable) {
+    // Two ways to get here, and they need different words: no usable state at
+    // all, or state that parses but names a runtime that is not there. The second
+    // case used to fall through to a bare `fail(rea.reason)` with no repair path
+    // at all, so a bundle whose `paths.node` had been deleted failed on every
+    // restart until a human ran setup by hand.
+    const message = !loaded.ok
+      ? loaded.code === "missing"
         ? `No bundle state at ${loaded.file}.`
-        : `Bundle state at ${loaded.file} could not be parsed.`;
-    // Both "missing" and "malformed" start a run. A malformed file used to fail
-    // permanently: setup overwrites a bundle.json it cannot parse, but nothing
-    // ever started setup, so every restart reported the same EX_CONFIG until the
-    // operator deleted the file by hand. The lock stops a provisioning loop when
-    // writing keeps failing.
+        : `Bundle state at ${loaded.file} could not be parsed.`
+      : `Bundle state at ${loaded.file} parsed, but it cannot launch REA: ${bundleRea.reason}`;
+    // Both "missing"/"malformed" and "unusable" start a run. A malformed file used
+    // to fail permanently: setup overwrites a bundle.json it cannot parse, but
+    // nothing ever started setup, so every restart reported the same EX_CONFIG
+    // until the operator deleted the file by hand. The lock stops a provisioning
+    // loop when writing keeps failing.
     const provisioning = maybeAutoProvision(root);
     if (provisioning.started) {
       process.stderr.write(
@@ -1263,17 +1345,30 @@ async function main() {
       process.stderr.write(
         `\n  dsh-plugin-rea (bundle): provisioning is already running in the background.\n  progress: ${provisioning.logPath}\n`,
       );
+    } else if (provisioning.reason === "in-flight-stale") {
+      // The lock names a pid that still exists but has not reported progress for
+      // over six hours. Deleting it would risk two runs writing the same staging
+      // directories, so the decision is left to the operator, who can see whether
+      // that pid is really a downloader.
+      const minutes = Number.isFinite(provisioning.ageMs) ? Math.round(provisioning.ageMs / 60000) : null;
+      process.stderr.write(
+        `\n  dsh-plugin-rea (bundle): a provisioning run still owns the lock but has not reported for ` +
+          `${minutes === null ? "a long time" : `${minutes} minute(s)`} (pid ${provisioning.pid ?? "?"}).\n` +
+          `  progress: ${provisioning.logPath}\n` +
+          `  If that process is gone, delete ${path.join(root, "setup.lock")} and restart.\n`,
+      );
     } else if (provisioning.reason === "spawn-failed" || provisioning.reason === "unwritable") {
       process.stderr.write(
         `\n  dsh-plugin-rea (bundle): provisioning could not be started (${provisioning.reason}).\n` +
           `  Run it by hand:\n    node "${path.join(root, "scripts", "setup.mjs")}" --root "${root}"\n`,
       );
     }
-    return fail(message, loaded.detail);
+    return fail(message, loaded.ok ? undefined : loaded.detail);
   }
 
-  const rea = resolveRea(loaded.config, root);
-  if (!rea.ok) return fail(rea.reason);
+  // Already resolved above, and `bundleUsable` is exactly that verdict: resolving
+  // a second time would open the door to the two answers disagreeing.
+  const rea = bundleRea;
 
   const env = childEnvironment(loaded.config);
   if (argv.includes("--shim-print-env")) {

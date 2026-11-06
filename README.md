@@ -132,7 +132,7 @@ releases, checksum-verified). Then install the plugin for your profile:
 ```
 dsh plugin --profile <profile> add dsh-plugin-rea
 # or pin this release instead of tracking npm latest:
-dsh plugin --profile <profile> add github:czcdr/dsh-plugin-rea#v2.0.13
+dsh plugin --profile <profile> add github:czcdr/dsh-plugin-rea#v2.0.14
 ```
 
 > **On an Electron host (the DeepSeek Harness desktop app) the profile is owned by the application.**
@@ -167,13 +167,24 @@ two disagree:
 
 | Host | Covered |
 |---|---|
-| `0.1.7-rc.2` … `0.2.1-rc.2` — every release in between, alpha and rc | yes |
+| `0.1.7-rc.2` … `0.2.2-rc.1` — every release in between, alpha and rc (16 tags) | yes |
 | `0.3.0` and later | no — a new minor line is a host nobody updated this row for yet |
 
-What was actually compared across that range is the row provider: `packages/mcp/mcp-client` at `dsh-v0.1.7-rc.2` and at
-`dsh-v0.2.1-rc.2` exposes the same config surface the shipped row uses (`serverName`, `transport`, `command`, `args`,
-`env`, `failOnStartupError`), and `dsh.bundle.patch` exists at both tags. A host outside the range can still work; it is
-simply not claimed.
+2.0.14 checked the six tags published after 2026-10-23 individually (`0.2.1-rc.3`, `0.2.1-rc.4`, `0.2.2-alpha.2`,
+`0.2.1-rc.5`, `0.2.2-alpha.3`, `0.2.2-rc.1`): none of their release notes touch the five surfaces this plugin depends on
+(patch dialect, MCP row schema, host plugin API, client injection contract, market `engines` verdict). The one adjacent
+item is `0.2.2-rc.1`'s Cordis Core 4.1.0 / Loader 1.1.0, and it was **measured on this machine**:
+`GET /dsh-plugin-rea/guide-state` answered 200 and the `mcp__rea__*` tools were available.
+
+What was actually compared across that range is the row provider: `packages/mcp/mcp-client` at `dsh-v0.1.7-rc.2`,
+`dsh-v0.2.1-rc.2` and `dsh-v0.2.2-rc.1` exposes the same config surface the shipped row uses (`serverName`, `transport`,
+`command`, `args`, `env`, `failOnStartupError`), and `dsh.bundle.patch` exists at all three. A host outside the range can
+still work; it is simply not claimed.
+
+> The market reads `engines.dsh` only, and **not** `engines.node` (measured in `dshmarket/lib/verify.js` and
+> `discovery-compatibility.js`). A host whose bundled Node sits below this package's `engines.node` floor is therefore
+> not blocked by the market; only someone running npm with `engine-strict=true` is stopped at install time. Run time is
+> unaffected either way: REA is started with the `paths.node` recorded in `bundle.json`, not the host's Node.
 
 ### A REA you already have is used as-is
 
@@ -311,10 +322,10 @@ Author's machine, 2026-10-13 / 14 / 16 / 19 / 23 / 26:
 | Component | Version |
 |---|---|
 | REA (`rea-agents`) | **6.8.0** (229 tools) |
-| DeepSeek Harness | desktop runtime **0.2.0-rc.2**, with its bundled dsh CLI 0.1.7-rc.2 |
+| DeepSeek Harness | desktop runtime **0.2.2-rc.1** (the host 2.0.14 was measured on; full range in the table above) |
 | `@deepseek-ai/dsh-mcp-client` (row provider) | bundled by the harness |
-| Ghidra | 12.1.4 |
-| JDK | Temurin 21 (provisioned) / Amazon Corretto 25.0.5 (adopted by the host) |
+| Ghidra | 12.1.4 (this machine also runs 12.2 through the gate override — see below) |
+| JDK | Temurin 21 (provisioned) / Amazon Corretto 25.0.5 (adopted; its major satisfies the pin `21`) |
 | Node.js | **24.22.1** adopted (REA engines: `^22.23.4 \|\| ^24.22.1 \|\| >=26.12.1`; ABI 137) |
 | Host | Windows 11 x64 (build 26200) |
 
@@ -342,6 +353,17 @@ protocol `2024-11-05`; apktool still answers `3.0.3`, `adb` still reports 37.0.1
 disk still hashes to `6e5eacf5…` — the value REA 6.8.0 requires. Executing 6.8.0's own release policy gave
 `12.1.4 → verified`, `12.1.5 → compatible`, `12.2 → unsupported`, so Ghidra stays where it was.
 
+On 2026-11-06 (2.0.14 — an 18-item external audit plus host adaptation) **no upstream component moved** (REA 6.8.0 /
+Ghidra 12.1.4 / JDK 21 / apktool 3.0.3 / jadx 0.7.1 / Node 24.22.1). The same chain was re-verified: `--dry-run`
+skipped all 7 components on their pins (the Ghidra 12.2 gate override and JDK 25 were not mistaken for drift) →
+a forced apktool re-provision went through the full staging path (no leftover `.staging`/`.backup`, and the directory
+held exactly the two files the manifest declares) → a full `--reuse` run covered 8 components plus
+`fridaBindings FRIDA_OK 3` → `probe cli=6.8.0 tools=229`, the Ghidra smoke imported `java.exe` in 28 s, and the shim
+resolved 6.8.0, exit 0. Gates: **154 tests** (151 pass / 0 fail / 3 skipped), `audit` 24/24 hash-pinned clean,
+the dependency gate at zod 4.6.7 · minimatch 11.0.5 · glob 14.0.4, `host-compat` 16 releases, and
+`verify-branch` ALL CHECKS PASSED. `check-updates.ps1` went from a false-green exit 0 to reporting honestly, and exits 0
+on this machine once repaired.
+
 ## Scope and caveats
 
 - REA exposes 229 tools at 6.8.0, so every session's tool list grows.
@@ -359,9 +381,19 @@ disk still hashes to `6e5eacf5…` — the value REA 6.8.0 requires. Executing 6
   treat the plugin like any third-party code you install.
 - On Linux, upstream's process-ownership checks need a **procps-compatible `ps`** on PATH; the
   Ghidra/JADX and firmware paths use it. A minimal image without it fails those tools, not the install.
-- `scripts/setup.mjs` runs `npm install` for the REA CLI with `--ignore-scripts`: the published tarball
-  carries no `node_modules`, so a dependency closure must be resolved, and package lifecycle scripts are
-  skipped on purpose during provisioning. That step is also the **only** one that cannot use this bundle's
+- `scripts/setup.mjs` resolves the REA CLI's closure with **`npm ci`** against the shipped
+  `scripts/vendor-lock/` (`package.json` + `package-lock.json`). REA pins zod **exactly** (`"4.4.3"`), and 4.4.3 is
+  inside GHSA-mrhx-c7xc-m3w5, so the closure is raised through `overrides` to **zod 4.6.7 / minimatch 11.0.5 /
+  glob 14.0.4**. `npm ci` verifies every tarball's sha512; if a repackaging mirror makes that fail with `EINTEGRITY`,
+  it falls back to "same versions via overrides + `npm install`" (same versions, not byte-reproducible, and the log
+  says so). After landing, the version in `node_modules/zod/package.json` is read once more and anything below 4.6.6
+  is refused. `node scripts/check-dependency-advisories.mjs` is the offline gate, wired into CI.
+  Package lifecycle scripts are still skipped on purpose — with exactly one named exception: **frida**, whose native
+  binding (`build/frida_binding.node`) only exists after its install script runs, so setup runs `npm rebuild frida`
+  for that one package and then proves it with `import('frida')` plus device enumeration (recorded under
+  `components.reaAgents.frida` in `bundle.json`). A missing binding makes the Frida-backed tools unavailable and the
+  rest of REA untouched, so it is reported as `skip` rather than failing the whole provision.
+  This step is also the **only** one that cannot use this bundle's
   own route/proxy resolution — npm reads `HTTPS_PROXY`/`HTTP_PROXY` and `NPM_CONFIG_REGISTRY` from the
   environment, so on a network that needs a mirror, set one of those before provisioning
   (`NPM_CONFIG_REGISTRY=https://registry.npmmirror.com`). With `--offline` the step is refused outright
