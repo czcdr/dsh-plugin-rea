@@ -428,10 +428,26 @@ test("check-updates: a pin drift is reported as needing action, not as green", a
   assert.match(last, /pin 漂移 1 项/, last);
 });
 
+function hasFileHash(command) {
+  // The stale-mirror warning below is produced by comparing two file hashes, so a
+  // host without `Get-FileHash` (hosted Windows runners, restricted language mode)
+  // cannot construct that scenario at all. Skip honestly instead of asserting on a
+  // warning the platform can never emit — the script itself already reports the
+  // missing capability as [上游] rather than as "needs action".
+  const probe = spawnSync(command, ["-NoProfile", "-Command", "if (Get-Command Get-FileHash -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }"], {
+    windowsHide: true,
+  });
+  return probe.status === 0;
+}
+
 test("check-updates: a warning alone is enough to stop the green verdict", async (t) => {
   const command = powerShell();
   if (!command) {
     t.skip("PowerShell is not available on this host");
+    return;
+  }
+  if (!hasFileHash(command)) {
+    t.skip("this host has no Get-FileHash, so the stale-mirror warning cannot be produced");
     return;
   }
   const registry = await stubRegistry(t);

@@ -463,13 +463,23 @@ if (-not (Test-Path $manifestPath)) {
             $record = Get-Content $mirrorRecord -Raw -Encoding UTF8 | ConvertFrom-Json
             $pluginShim = if ($record.pluginRoot) { Join-Path $record.pluginRoot 'bin\rea-shim.mjs' } else { $null }
             if ($pluginShim -and (Test-Path $pluginShim)) {
-              $same = (Get-FileHash $mirrored -Algorithm SHA256).Hash -eq (Get-FileHash $pluginShim -Algorithm SHA256).Hash
-              if ($same) { Ok '镜像 shim 与插件一致（行跑的就是这个版本）' }
-              else { Warn "镜像 shim 落后于插件（$($record.pluginRoot)）—— 行仍在跑旧副本；重跑 node scripts/setup.mjs 让它换成新版本" }
+              # `Get-FileHash` is missing on hosted Windows runners and in any host
+              # running PowerShell in a restricted language mode. That is a
+              # "cannot verify" answer, not an "inconsistent" one: reporting it as
+              # [注意] made such a machine look like it needed action, which is the
+              # same false red this script was just fixed for in the other
+              # direction. Ask whether the comparison is even possible first.
+              if (-not (Get-Command Get-FileHash -ErrorAction SilentlyContinue)) {
+                Note '本机没有 Get-FileHash，无法比对镜像 shim 是否最新 —— 跳过这一项'
+              } else {
+                $same = (Get-FileHash $mirrored -Algorithm SHA256).Hash -eq (Get-FileHash $pluginShim -Algorithm SHA256).Hash
+                if ($same) { Ok '镜像 shim 与插件一致（行跑的就是这个版本）' }
+                else { Warn "镜像 shim 落后于插件（$($record.pluginRoot)）—— 行仍在跑旧副本；重跑 node scripts/setup.mjs 让它换成新版本" }
+              }
             } else {
-              Warn "mirror.json 指向的插件目录已不存在（$($record.pluginRoot)）—— 无法比对镜像 shim 是否最新"
+              Note "mirror.json 指向的插件目录已不存在（$($record.pluginRoot)）—— 无法比对镜像 shim 是否最新"
             }
-          } catch { Warn "mirror.json 解析失败: $($_.Exception.Message)" }
+          } catch { Note "mirror.json 解析失败: $($_.Exception.Message)" }
         }
       }
       else { Bad "缺少 MCP 行指向的 shim: $mirrored —— 重跑 setup --reuse" }
