@@ -228,6 +228,15 @@ jobs:
         # patch-wiring agreement between the row, the shim and setup.mjs.
         run: npm run bundle:audit
 
+      - name: Vendored dependency advisories
+        # Provisioning resolves REA's closure from scripts/vendor-lock. This fails
+        # the build if that lock drifts back onto an advisory-affected zod,
+        # minimatch or glob, or onto a rea-agents release the manifest does not
+        # pin. It is offline on purpose: a gate that needs the registry fails on a
+        # plane and passes during a registry outage, which is the wrong shape for
+        # a build check.
+        run: npm run bundle:deps
+
   windows:
     # The PowerShell download route, the tar/Expand-Archive extraction path and
     # scripts/rea-bundle-bootstrap.ps1 are Windows-only code, and an ubuntu-only
@@ -251,3 +260,6 @@ jobs:
 
       - name: Bundle manifest audit (Windows)
         run: npm run bundle:audit
+
+      - name: Vendored dependency advisories (Windows)
+        run: npm run bundle:deps

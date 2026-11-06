@@ -185,11 +185,11 @@ REA 真实 MCP stdio 握手 `tools/list` 仍是 **229/229 且每个都有 inputS
 6. **lock 放在 `scripts/vendor-lock/` 而不是仓库根**：根级新目录不在 `package.json` 的 `files` 白名单里，
    发出去会静默走降级路径。setup 同时认 `HERE/vendor-lock` 与 `PLUGIN_ROOT/vendor-lock`，
    所以将来搬到根级只需加一条 `files`，代码不用动。已实测 `npm pack` 确实带上了这两个文件。
-7. **`.github/workflows/validate.yml` 没加「依赖闸门」步骤**。推送它的凭据缺 GitHub `workflow` scope，服务端直接拒绝
+7. **CI 时序**：`bundle:deps` 已作为独立 step 接进 `validate.yml` 的两个 job，但它是在本轮**第二个**提交里补上的
+   —— 第一次推送用的凭据缺 GitHub `workflow` scope，服务端拒绝改 workflow 文件
    （`refusing to allow an OAuth App to create or update workflow … without 'workflow' scope`），
-   所以这一轮刻意把 workflow 改动排除在提交之外 —— 不值得为了 4 行 YAML 让整个提交推不上去。
-   补法是两个 job 各加一步 `run: npm run bundle:deps`。**新测试不受影响**：`package.json` 的 `bundle:test`
-   已扩到四个文件，CI 现有的 `npm run bundle:test` 就会跑到它们。
+   所以那一次提交刻意排除了 workflow 改动。第二次换用带 `workflow` scope 的凭据后才补上，
+   期间 CI 的 Windows job 先红了一次（原因见 §三 的测试夹具 bug），已修复。
 
 ---
 

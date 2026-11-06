@@ -82,8 +82,8 @@
   落地后**再读 `node_modules/zod/package.json` 的版本**，< 4.6.6 直接拒绝这个闭包。
 - 新增 **`scripts/check-dependency-advisories.mjs`**（离线）：检查每个包的**所有副本**（含嵌套）是否 ≥ 修复线、
   锁里的 rea-agents 是否等于 manifest pin、`setup.mjs` 的 `CLOSURE_OVERRIDES` 与 lock 的 overrides 是否互洽。
-  本地一条命令即可挂进 CI；**本轮没有改 `.github/workflows/`**（原因见「已知约束 6」），
-  但 `bundle:test` 已扩到四个测试文件，CI 既有的 `npm run bundle:test` 会自动跑到新的测试。
+  已作为独立 step 接进 `.github/workflows/validate.yml` 的 Linux 与 Windows 两个 job（`npm run bundle:deps`）；
+  `bundle:test` 也扩到四个测试文件。
 - 兼容性实测（不是推断）：`@electron/asar` 在 glob 14 / minimatch 11 下 create/list/extract/stat **往返通过**；
   REA 真实 MCP stdio 握手 `tools/list` 仍是 **229/229 且每个都有 inputSchema**（与 zod 4.4.3 基线一致）。
 - `frida` 的 minimatch 本来是死路径（绑定缺失），本轮修好绑定后变成可达 —— 已验证 `new Minimatch()` 在 11.0.5 上可用。
@@ -146,11 +146,6 @@ JDK 17 被拒、dry-run 不写盘、坏锁不抛异常、`tarfile` 带 filter、
 4. **硬链接逃逸没有做 containment**：同卷硬链接与 bundle 内文件共享 inode，纯路径检查区分不了；本轮只拒绝了
    `../`、绝对路径、符号链接/junction。
 5. **minimatch / glob 在 REA 默认 MCP 路径上的可达性仍未证实**：本轮做的是把它们抬到修复线上，不是证明可利用。
-6. **`.github/workflows/validate.yml` 没有加「依赖闸门」那一步**。推送它的凭据缺 GitHub 的 `workflow` scope，
-   被服务端拒绝（`refusing to allow an OAuth App to create or update workflow … without 'workflow' scope`），
-   所以这一轮刻意没把 workflow 改动放进提交 —— 免得为了 4 行 YAML 让整个提交推不上去。
-   补法：在 `Bundle manifest audit` 之后加一步 `run: npm run bundle:deps`（Linux 与 Windows 两个 job 各一处）。
-   新测试不受影响：`package.json` 的 `bundle:test` 已扩到四个文件，CI 现有的 `npm run bundle:test` 就会跑到它们。
 
 ## 2.0.13 — 2026-10-26
 
