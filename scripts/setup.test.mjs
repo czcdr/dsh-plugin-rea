@@ -1137,7 +1137,11 @@ test("--offline refuses the npm step instead of going online anyway", () => {
       timeout: 120000,
     });
     assert.equal(run.status, 1, `${run.stdout}\n${run.stderr}`);
-    assert.match(run.stdout, /--offline and the vendored REA/);
+    // The message names WHY it has to be reinstalled (no copy at all, a CLI that
+    // does not answer, or a closure below its advisory floors) instead of calling
+    // all three "not usable".
+    assert.match(run.stdout, /--offline, and the REA at .* has to be reinstalled/, run.stdout);
+    assert.match(run.stdout, /there is no vendored REA/, run.stdout);
 
     // The other direction: a usable vendored copy is still accepted offline, so the
     // flag does not turn into "reaAgents can never be provisioned".
@@ -2531,3 +2535,159 @@ test("an expired lock whose owner is still alive is reported, not deleted", () =
 });
 
 
+
+/* ============================================================================
+ * Audit round 2 (2026-11-07) — the four release-blocking gaps.
+ *
+ * Each one failed on 5c71bf8 and passes after its fix. Three are real fault
+ * injections (a probe that fails, an old closure on disk, a stale record); the
+ * fourth is a structural contract, because exercising it end to end needs a real
+ * npm install of a deliberately broken closure.
+ * ========================================================================== */
+
+/** Real zip bytes on this platform, or null when no tool on hand can build one. */
+function makeZipFixture(dir, innerName, text) {
+  const zipPath = path.join(dir, "fixture.zip");
+  const source = path.join(dir, innerName);
+  writeFileSync(source, text);
+  if (process.platform === "win32") {
+    // bsdtar ships with Windows 10+ and creates zip through -a.
+    const built = spawnSync("tar", ["-a", "-c", "-f", zipPath, "-C", dir, innerName], { windowsHide: true });
+    if (built.status === 0 && existsSync(zipPath)) return readFileSync(zipPath);
+    return null;
+  }
+  const built = spawnSync("python3", [
+    "-c",
+    "import sys,zipfile;z=zipfile.ZipFile(sys.argv[1],'w');z.write(sys.argv[2],sys.argv[3]);z.close()",
+    zipPath,
+    source,
+    innerName,
+  ]);
+  if (built.status === 0 && existsSync(zipPath)) return readFileSync(zipPath);
+  return null;
+}
+
+test("a failed archive probe puts the previous install back", async (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "rea-archive-rollback-"));
+  try {
+    const payload = makeZipFixture(root, "inside.txt", "hello from inside\n");
+    if (!payload) {
+      t.skip("no tool on this host can build a zip fixture (tar -a / python3)");
+      return;
+    }
+    const bundle = path.join(root, "bundle");
+    // Primed cache: the component is satisfied without opening a socket, so this
+    // test exercises the swap/rollback path and nothing else.
+    mkdirSync(path.join(bundle, "cache"), { recursive: true });
+    writeFileSync(path.join(bundle, "cache", "fixture.zip"), payload);
+    // A known-good previous install, at the exact path the swap will use.
+    const installed = path.join(bundle, "vendor", "apktool");
+    mkdirSync(installed, { recursive: true });
+    writeFileSync(path.join(installed, "old-good.txt"), "the previous working install\n");
+
+    const setup = makePluginTree(root, (manifest) => {
+      // Overrides a name INSTALL_ORDER actually walks, because `--only` cannot
+      // reach a component the install order does not list. The probe names a file
+      // the archive does not contain, so it fails AFTER the swap — the case where
+      // 2.0.14 deleted the old tree and left a broken one in its place.
+      manifest.components.apktool = testArchive("http://127.0.0.1:9/fixture.zip", payload, {
+        moveTo: "apktool",
+        probe: { file: "{vendor}/apktool/must-not-exist.txt" },
+      });
+    });
+    const run = await runToCompletion(process.execPath, [setup, "--only", "apktool", "--offline", "--root", bundle], {
+      encoding: "utf8",
+      timeout: 180000,
+    });
+    assert.equal(run.status, 1, `${run.stdout}\n${run.stderr}`);
+    assert.match(run.stdout, /the previous install was put back/, run.stdout);
+    assert.ok(existsSync(path.join(installed, "old-good.txt")), "the previous known-good install must survive a failed probe");
+    assert.equal(existsSync(path.join(bundle, "vendor", "apktool.backup")), false, "a successful rollback must not leave the backup behind");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a recorded REA whose closure still carries zod 4.4.3 is not reported as provisioned", async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "rea-old-closure-"));
+  try {
+    const bundle = path.join(root, "bundle");
+    const setup = makePluginTree(root, () => {});
+    addReaStub(bundle, REA_PIN);
+    const reaPath = path.join(bundle, "vendor", "node_modules", "rea-agents");
+    // Exactly what a 2.0.13 installation looks like: the pin matches, --version
+    // answers, and the closure underneath still carries the vulnerable zod.
+    const zodDir = path.join(bundle, "vendor", "node_modules", "zod");
+    mkdirSync(zodDir, { recursive: true });
+    writeFileSync(path.join(zodDir, "package.json"), JSON.stringify({ name: "zod", version: "4.4.3" }));
+    writeFileSync(
+      path.join(bundle, "bundle.json"),
+      JSON.stringify({
+        schema: 1,
+        paths: { node: process.execPath },
+        versions: { reaAgents: REA_PIN },
+        components: { reaAgents: { path: reaPath, version: REA_PIN } },
+      }),
+    );
+
+    const run = await runToCompletion(process.execPath, [setup, "--only", "reaAgents", "--offline", "--root", bundle], {
+      encoding: "utf8",
+      timeout: 180000,
+    });
+    assert.doesNotMatch(run.stdout, /already provisioned \(6\.8\.0\)/, run.stdout);
+    assert.match(run.stdout, /below its advisory floors/, run.stdout);
+    assert.match(run.stdout, /zod 4\.4\.3 < 4\.6\.6/, run.stdout);
+    // Offline, so the honest answer is failure — not "healthy" with the old closure.
+    assert.equal(run.status, 1, `${run.stdout}\n${run.stderr}`);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a recorded frida verdict is re-checked instead of trusted forever", async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "rea-frida-retry-"));
+  try {
+    const bundle = path.join(root, "bundle");
+    const setup = makePluginTree(root, () => {});
+    addReaStub(bundle, REA_PIN);
+    const reaPath = path.join(bundle, "vendor", "node_modules", "rea-agents");
+    // The record claims Frida is fine. Nothing on disk backs it: gating the check
+    // on `frida === undefined` meant this record was never revisited, so a binding
+    // deleted later (or one that failed once) stayed that way.
+    writeFileSync(
+      path.join(bundle, "bundle.json"),
+      JSON.stringify({
+        schema: 1,
+        paths: { node: process.execPath },
+        versions: { reaAgents: REA_PIN },
+        components: {
+          reaAgents: { path: reaPath, version: REA_PIN, frida: { available: true, binding: "gone.node", sha256: "0".repeat(64), devices: "FRIDA_OK 3" } },
+        },
+      }),
+    );
+
+    const run = await runToCompletion(process.execPath, [setup, "--only", "reaAgents", "--offline", "--root", bundle], {
+      encoding: "utf8",
+      timeout: 180000,
+    });
+    // The check ran again and said so, instead of accepting the stored verdict.
+    assert.match(run.stdout, /fridaBindings/, run.stdout);
+    assert.match(run.stdout, /not in the resolved closure/, run.stdout);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the REA closure swap keeps the previous install until the new one answers", () => {
+  // Structural rather than behavioural: driving this end to end needs a real npm
+  // install of a deliberately broken closure, which is minutes of network per run.
+  // The ordering IS the guarantee — `retired` has to outlive both probes.
+  const source = readFileSync(SETUP_SOURCE, "utf8");
+  const swapAt = source.indexOf("renameSync(modules, live)");
+  const doctorAt = source.indexOf("const doctorAnswered");
+  const retireAt = source.indexOf("rmSync(retired, { recursive: true, force: true });", swapAt);
+  assert.ok(swapAt > 0, "the swap into the live directory must exist");
+  assert.ok(doctorAt > swapAt, "the new closure must be verified after the swap");
+  assert.ok(retireAt > doctorAt, "retired must not be deleted before --version and doctor both answer");
+  assert.match(source, /restorePreviousClosure/, "a failed verification must be able to put the old closure back");
+});

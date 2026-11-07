@@ -2,6 +2,87 @@
 
 本插件遵循语义化版本。版本号变化说明「配置组合」这层的变化，与 REA 自身的版本无关。
 
+## 2.0.15 — 2026-11-07
+
+**第一版 2.0.14 被外部审计判为「不建议发布」，4 个发版级缺口全部属实：两个是上一轮漏修/描述超实现，
+两个是 2.0.14 自己引入的。上游组件仍然一个都没动。**
+
+这四项的共同教训和上一轮一样，只是方向相反：上一轮修的是「验证的对象不是要交付的对象」，
+这一轮全是「**修完的那条路径不是用户实际会走的那条**」—— 回滚只做在 multi-file 分支、依赖锁只在新装后校验、
+Frida 结论只写一次、旧闭包在探针之前就被删了。
+
+### P0：上一轮漏修 / 描述超实现
+
+- **普通归档没有回滚（`scripts/setup.mjs`）**。2.0.14 的 CHANGELOG 写了「旧目录先改名 `.backup`，探针失败也回滚」，
+  但那只实现在 multi-file 分支；`archive` 分支仍是 `rmSync(target)` → `renameSync` → 探针失败只 `return null`。
+  审计的复现是 exit 1、旧 known-good 树消失、新坏树留在原地、`.backup` 不存在 —— 与发布说明正好相反。
+  现在两个分支同一契约：`staging → backup → 换入 → 探针 → 成功后删 backup`，rename 或探针任一失败都恢复旧目录，
+  并把「旧安装被放回去了 / 停在哪 / 本来就没有旧安装」三种结局分别写进那一行。
+- **存量安装升级后 zod 仍是 4.4.3（`scripts/setup.mjs`）**。依赖修复只在新装路径上生效：`recorded` 分支和
+  「已 vendored」分支都在闭包检查之前就 `return` 了，于是一个 2.0.13 → 2.0.14 的升级会打印
+  `already provisioned (6.8.0)`、探针通过、Zod 仍是 4.4.3。新增 `closureAdvisories()`（读 `node_modules` 与
+  `rea-agents/node_modules` 两处的 zod/minimatch/glob 版本，与 `CLOSURE_FLOORS` 比对），**两个提前返回前都先过它**：
+  低于修复线就重新供给；离线则明确 FAIL，不再报健康。
+
+### P0：2.0.14 引入的新缺陷
+
+- **Frida 结论被永久缓存（`scripts/setup.mjs`）**。2.0.14 只在 `merged.reaAgents.frida === undefined` 时检查，
+  于是一次瞬时失败（`npm rebuild` 期间的网络抖动、文件被占）会变成永久判决：之后每次 setup 读到
+  `available: false` 就直接跳过，连重试都没有；反过来，`available: true` 之后绑定文件被删也不会复查。
+  现在**每次非 dry-run 都调用 `ensureFridaBindings()`** —— 它本来第一步就是 import + 设备枚举，重复跑就是正确的检查。
+- **REA 闭包换入后探针失败会删掉旧闭包（`scripts/setup.mjs`）**。顺序是「旧 `node_modules` 改名 `.retired` →
+  换入新的 → **立刻删 retired** → 才跑新版本探针」，所以一个 rename 成功但自己起不来的闭包会让机器上没有任何可用 REA。
+  现在 `retired` 保留到 **`--version` 与 `doctor --format json` 都答得出来**为止，任一失败用 `restorePreviousClosure()`
+  放回旧闭包，并把「已放回 / 停在 retired / 本来没有旧闭包」写清楚。
+  `doctor` 的判据是「产出了可解析的 JSON」而不是「healthy」——它只要有任何可选能力未配置就退出非 0。
+
+### P1
+
+- **`npm ci` 失败不再静默降级为无锁安装（`scripts/setup.mjs`）**。原实现删掉 lock 再 `npm install`，
+  等于把「受审 lock 的字节复放」换成「按当时的 registry 范围重新解析」，而且不告诉用户。
+  现在默认**失败关闭**并说明原因（顺带点明重打包镜像会故意触发它）；确实需要时用
+  **`--allow-unlocked-npm-fallback`** 显式接受（日志会写明这次是不复现的闭包）。
+- **Frida 原生绑定的哈希：区分「记录」与「验证」（`scripts/setup.mjs`）**。新增 `FRIDA_BINDING_SHA256`
+  （`<frida 版本>/<platform>-<arch>` → 摘要），目前**只有一条**——`17.23.2/win32-x64` 的 `32c73230…`，
+  2026-11-06 在本机实测。三种结局现在不同：匹配 → `verified: true`；该平台没有受信值 → 可用但 **`verified: false`**，
+  step 行明写「digest recorded, no pinned value for this platform」；**不匹配 → 直接禁用 Frida**，不加载未测量的原生模块。
+  记录里同时写入 `verified` 字段，`bundle.json` 不再暗示「记录了哈希 = 供应链已验证」。
+
+### P2
+
+- **锁释放前再次比对 token（`scripts/setup.mjs`）**：claimed 与释放之间记录可能被换掉（前一次运行死掉、人手工删、
+  shim 重新接管）。删除或覆盖别人的锁正好会拿掉一个活运行的刹车，所以现在先确认
+  `token === RUN_TOKEN || pid === process.pid`，不匹配就一行日志、什么都不动。
+
+### 测试
+
+审计要求的四个故障注入，四个都补上（旧代码下会红）：
+
+- 归档探针失败 → 旧安装被放回、`.backup` 不残留（真实 zip，primed cache，不联网）；
+- 记录的是 6.8.0 但闭包带 zod 4.4.3 → **不**出现 `already provisioned`，离线时明确退出 1；
+- 记录里 `frida.available: true` 但盘上什么都没有 → 仍然执行检查并报 `not in the resolved closure`；
+- REA 闭包换入的顺序契约：`retired` 的删除必须在 `--version` 与 `doctor` 之后，且 `restorePreviousClosure` 存在
+  （端到端注入需要真实 npm 装一个坏闭包，这里用结构断言，已在注释里说明理由）。
+
+### 验证
+
+```
+单测        102（setup）+ 17（deps）+ 25（host-compat）+ 14（hardening）= 158，0 失败
+manifest    audit 24 条下载 entry 全部 SHA-256 钉死，0 TOFU
+依赖闸门    zod 4.6.7 · minimatch 11.0.5 · glob 14.0.4
+宿主兼容    16 releases covered
+verify-branch  ALL CHECKS PASSED
+真机        --reuse 全量：reaAgents 因闭包不达标重供给（zod 4.4.3 → 4.6.7），fridaBindings 复查通过
+```
+
+### 仍未解决的（与上一轮相同，别当成已解决）
+
+1. `engines.node` 仍比桌面宿主自带的 Node 严格（市场不读它，只有 `engine-strict=true` 会拦）。
+2. `dsh.client.inject` 里那个 `dsh-client-runtime` 保留（宿主静默跳过）。
+3. Ghidra 默认 pin 仍是 12.1.4，带那四个 CVE —— 不要用它分析来源不可信的样本。
+4. 硬链接逃逸没做 containment；minimatch/glob 在 REA 默认路径上的可达性仍未证实。
+5. Frida 绑定只有 win32-x64 一条受信摘要，其余平台是 `verified: false`（记录，不是验证）。
+
 ## 2.0.14 — 2026-11-06
 
 **这一版是对 2.0.13 的一次外部审计（18 项）的逐条修复，外加 DSH 宿主适配到 `0.2.2-rc.1`。
@@ -49,8 +130,10 @@
 
 ### 中：状态文件与回滚
 
-- **归档替换先删后 rename（`scripts/setup.mjs`）**：rename 失败会同时失去新旧两份。现在旧目录先改名为 `.backup`，
+- **归档替换先删后 rename（`scripts/setup.mjs`）**：rename 失败会同时失去新旧两份。旧目录先改名为 `.backup`，
   失败即回滚，探针失败也回滚（并明说「the previous install was put back」）。
+  ⚠️ **这条在第一版 2.0.14 里只对多文件组件成立**，普通归档仍是「先删目标、再 rename、探针失败只 return」——
+  描述大于实现。已在 2.0.15 补齐，见该段。
 - **`bundle.json` / `mirror.json` 原地覆盖写**：半文件会被读成「未供给」，进而触发一次全量重装。现在统一走
   `writeJsonAtomic()`（同目录 `.part` + rename）。
 

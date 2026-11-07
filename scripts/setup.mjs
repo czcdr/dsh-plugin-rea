@@ -26,6 +26,12 @@
  *     --only <a,b,c>      restrict to named components
  *     --yes               never prompt (implied; this script has no prompts)
  *     --offline           refuse network; only satisfy from cache/reuse
+ *     --skip-smoke        skip the post-wire REA/engine smoke test
+ *     --allow-unlocked-npm-fallback
+ *                         if `npm ci` cannot replay the audited lock, accept a
+ *                         plain `npm install` with the same overrides. Off by
+ *                         default: that route loses byte-reproducibility, so it
+ *                         is an opt-in, not a silent downgrade.
  */
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -98,6 +104,11 @@ function parseArgs(argv) {
     only: null,
     offline: false,
     skipSmoke: false,
+    // Off by default on purpose: `npm ci` replaying the audited lock is the only
+    // route that is byte-reproducible, and silently degrading it to a plain
+    // `npm install` is the difference between "the closure the audit approved"
+    // and "whatever the registry answered today". Opting in is a deliberate act.
+    allowUnlockedNpm: false,
     // Two different clocks, because one number cannot serve both: a route must
     // be declared dead quickly when the socket never opens, but a slow-but-alive
     // transfer must not be killed for taking long overall (measured here:
@@ -115,6 +126,7 @@ function parseArgs(argv) {
     else if (arg === "--json") options.json = true;
     else if (arg === "--offline") options.offline = true;
     else if (arg === "--skip-smoke") options.skipSmoke = true;
+    else if (arg === "--allow-unlocked-npm-fallback") options.allowUnlockedNpm = true;
     else if (arg === "--yes") continue;
     else if (arg === "--only") options.only = (argv[++i] ?? "").split(",").map((s) => s.trim()).filter(Boolean);
     else if (arg === "--help" || arg === "-h") options.help = true;
@@ -1367,12 +1379,18 @@ async function provisionComponent(name, component, context) {
       // proves it is the component THIS manifest asks for; without it a pin bump
       // left the previous build installed and reported `already provisioned`.
       const pin = recordedMatchesPin(name, recorded, component);
-      if (probe.ok && pin.ok) {
+      // A matching pin and a passing probe still leave one thing unproven for
+      // reaAgents: the closure's advisory floors. Those are properties of an
+      // INSTALLATION rather than of a version, so the only way to answer is to
+      // read it — and this is exactly the branch a 2.0.13 user upgrades through.
+      const closure = name === "reaAgents" ? closureAdvisories(path.join(root, "vendor")) : { ok: true, reason: "" };
+      if (probe.ok && pin.ok && closure.ok) {
         step(name, "skip", `already provisioned (${recorded.version ?? "recorded"}) — ${pin.reason}`);
         return recorded;
       }
       if (!probe.ok) step(name, "plan", `recorded but unverifiable at ${recorded.path}: ${probe.detail}`);
-      else step(name, "plan", `recorded but out of date at ${recorded.path}: ${pin.reason}`);
+      else if (!pin.ok) step(name, "plan", `recorded but out of date at ${recorded.path}: ${pin.reason}`);
+      else step(name, "plan", `recorded closure is below its advisory floors: ${closure.reason}`);
     } else if (recorded) {
       step(name, "plan", "recorded without a usable path; provisioning again");
     }
@@ -1617,13 +1635,63 @@ async function provisionComponent(name, component, context) {
     if (entries.length !== 1 || !statSync(path.join(effective, entries[0])).isDirectory()) break;
     effective = path.join(effective, entries[0]);
   }
-  rmSync(target, { recursive: true, force: true });
-  renameSync(effective, target);
+  // Same contract as the multi-file branch: the previous install is renamed
+  // aside, not deleted, and it comes back if the swap or the probe fails.
+  //
+  // 2.0.14 documented this as done and only implemented it for multi-file — the
+  // worst of both worlds, because the release note promises a failed probe is
+  // survivable while the code deletes the working install anyway. Measured on the
+  // audit's repro: probe fails, exit 1, the old known-good tree is gone, the new
+  // broken tree is in place, and no `.backup` exists anywhere.
+  const backup = target + ".backup";
+  rmSync(backup, { recursive: true, force: true });
+  let parked = false;
+  try {
+    if (existsSync(target)) {
+      renameSync(target, backup);
+      parked = true;
+    }
+    renameSync(effective, target);
+  } catch (error) {
+    if (parked && !existsSync(target)) {
+      try {
+        renameSync(backup, target);
+      } catch {
+        /* the message below reports where the install did not land */
+      }
+    }
+    rmSync(staging, { recursive: true, force: true });
+    step(name, "FAIL", `could not move ${archiveName} into ${target}: ${String(error?.message ?? error)}`);
+    return null;
+  }
   rmSync(staging, { recursive: true, force: true });
 
   const probe = runProbe(component.probe ?? {}, context);
-  step(name, probe.ok ? "ok" : "FAIL", `${target}${probe.ok ? "" : " — " + probe.detail}`);
-  if (!probe.ok) return null;
+  if (!probe.ok) {
+    let restored = false;
+    if (parked) {
+      try {
+        rmSync(target, { recursive: true, force: true });
+        renameSync(backup, target);
+        restored = true;
+      } catch {
+        restored = false;
+      }
+    }
+    step(
+      name,
+      "FAIL",
+      `${target} — ${probe.detail}` +
+        (restored ? "; the previous install was put back" : parked ? `; the previous install is parked at ${backup}` : "; there was no previous install to restore"),
+    );
+    return null;
+  }
+  step(name, "ok", target);
+  try {
+    rmSync(backup, { recursive: true, force: true });
+  } catch {
+    /* a leftover .backup is inert; the component itself works */
+  }
   // A component's resolved path is a DIRECTORY, but `requires` needs something
   // spawnable: without this, {node} would resolve to vendor/node and the probe
   // for a dependent component would try to launch a directory (ENOENT).
@@ -1636,6 +1704,61 @@ async function provisionComponent(name, component, context) {
     }
   }
   return { path: resolvedPath, root: target, version: source.version, sha256: fetched.sha256, tofu: fetched.tofu };
+}
+
+/**
+ * The advisory floors this closure has to clear, and a run-time reader for them.
+ *
+ * `scripts/check-dependency-advisories.mjs` enforces the same three floors at
+ * build time, against the committed lock. This asks the same question about an
+ * installation that already exists, which the version pin cannot answer: a bundle
+ * recording `reaAgents 6.8.0` from before 2.0.14 passes every probe while its
+ * vendored closure still carries zod 4.4.3. Without this, a fresh install got the
+ * fixed closure and every upgrade kept the vulnerable one — the pin matched, the
+ * probe matched, and the run said `already provisioned`.
+ */
+const CLOSURE_FLOORS = { zod: "4.6.6", minimatch: "11.0.1", glob: "14.0.2" };
+
+/** Numeric-aware "a >= b" for dotted versions; a prerelease suffix is ignored. */
+function atLeastVersion(actual, floor) {
+  const parts = (value) => String(value ?? "").split("-")[0].split(".").map((part) => Number.parseInt(part, 10) || 0);
+  const found = parts(actual);
+  const needed = parts(floor);
+  for (let index = 0; index < Math.max(found.length, needed.length); index += 1) {
+    const a = found[index] ?? 0;
+    const b = needed[index] ?? 0;
+    if (a !== b) return a > b;
+  }
+  return true;
+}
+
+/**
+ * Every advisory-affected package in an EXISTING closure that is below its floor.
+ *
+ * Both roots are scanned because npm dedupes into the top level when it can and
+ * nests when it cannot: `rea-agents/node_modules/zod` is the shape that survives a
+ * conflicting range, and a check that only looked at the top level would call that
+ * closure healthy while REA imported the old copy.
+ */
+function closureAdvisories(installRoot) {
+  const roots = [
+    path.join(installRoot, "node_modules"),
+    path.join(installRoot, "node_modules", "rea-agents", "node_modules"),
+  ];
+  const below = [];
+  for (const [name, floor] of Object.entries(CLOSURE_FLOORS)) {
+    for (const modules of roots) {
+      const version = readJsonSafe(path.join(modules, ...name.split("/"), "package.json"))?.version ?? null;
+      // Absent is not this check's business: a closure without the package is a
+      // different question (the probe answers it), and reporting "absent" here
+      // would fail a bundle for a package it never had.
+      if (version === null || atLeastVersion(version, floor)) continue;
+      below.push(`${name} ${version} < ${floor}${modules === roots[0] ? "" : " (nested)"}`);
+    }
+  }
+  return below.length === 0
+    ? { ok: true, reason: "every advisory-affected package is at or above its floor" }
+    : { ok: false, reason: `${below.join(", ")} — GHSA-mrhx-c7xc-m3w5 / -g3hv-75wg-m249 / -3g3m-2fjr-6pw4` };
 }
 
 /**
@@ -1661,6 +1784,26 @@ function resolveNpmRuntime(nodePath) {
 }
 
 /**
+ * Known-good Frida binding digests, keyed `<frida version>/<platform>-<arch>`.
+ *
+ * One entry, and that is the honest state of this. The binding arrives from
+ * `prebuild-install` (or a local compile), so pinning it means recording a digest
+ * somebody actually measured: `32c73230…` was measured on win32-x64 with frida
+ * 17.23.2 on 2026-11-06. There is no equivalent measurement for the other
+ * platforms, and inventing one would be worse than admitting the gap.
+ *
+ * A missing entry therefore does NOT fail provisioning — it downgrades the CLAIM.
+ * The record then carries `verified: false` and the step text says the digest was
+ * recorded rather than checked. "We hashed whatever we got" is not "the supply
+ * chain was verified", and conflating the two is the mistake this table exists to
+ * prevent. A MISMATCH, by contrast, is a refusal: a binding that is not the one
+ * this build was measured with is disabled, not enabled with a note.
+ */
+const FRIDA_BINDING_SHA256 = {
+  "17.23.2/win32-x64": "32c73230bdfd4b9a8f1f1871ef616001e486269919f18a111a195854352057dc",
+};
+
+/**
  * Make Frida's native binding present, and prove it loads.
  *
  * `rea-agents` depends on `frida` directly, and the only thing frida installs at
@@ -1683,6 +1826,41 @@ function ensureFridaBindings(nodeRuntime, npmCli, installRoot) {
     return { ok: false, skipped: true, detail: "frida is not in the resolved closure; nothing to bind" };
   }
   const bindingFile = path.join(fridaRoot, "build", "frida_binding.node");
+  const fridaVersion = readJsonSafe(path.join(fridaRoot, "package.json"))?.version ?? null;
+  const expectedBinding = fridaVersion === null
+    ? null
+    : FRIDA_BINDING_SHA256[`${fridaVersion}/${process.platform}-${process.arch}`] ?? null;
+  /**
+   * Compare the binding on disk with the one recorded for this exact target.
+   *
+   * Three outcomes, and they are deliberately not the same thing:
+   *   - no expectation for this platform  -> usable, but `verified: false`
+   *   - digest matches                    -> usable and verified
+   *   - digest differs                    -> refuse; do not load an unmeasured
+   *     native module into REA's process just because it imports
+   */
+  const judgeBinding = (digest) => {
+    if (digest === null) {
+      return { ok: false, digest: null, verified: false, reason: "the frida binding file is not present after the rebuild" };
+    }
+    if (expectedBinding === null) {
+      return {
+        ok: true,
+        digest,
+        verified: false,
+        reason: `no pinned digest for frida ${fridaVersion ?? "?"} on ${process.platform}-${process.arch}; recorded ${digest} but did not verify it`,
+      };
+    }
+    if (digest !== expectedBinding) {
+      return {
+        ok: false,
+        digest,
+        verified: true,
+        reason: `the frida binding is ${digest}, not the recorded ${expectedBinding} for frida ${fridaVersion} on ${process.platform}-${process.arch}; disabling Frida rather than loading an unverified native module`,
+      };
+    }
+    return { ok: true, digest, verified: true, reason: `binding digest matches the recorded one for frida ${fridaVersion} on ${process.platform}-${process.arch}` };
+  };
   // Device enumeration, not just import(): a binding can load and still be
   // unusable, and `enumerateDevices` is the cheapest call that proves the native
   // side actually runs. String.fromCharCode(10) keeps this free of nested escapes.
@@ -1700,7 +1878,13 @@ function ensureFridaBindings(nodeRuntime, npmCli, installRoot) {
   };
 
   const before = verify();
-  if (before.ok) return { ok: true, rebuilt: false, detail: before.detail, binding: bindingFile, sha256: existsSync(bindingFile) ? sha256File(bindingFile) : null };
+  const bindingOf = () => (existsSync(bindingFile) ? bindingFile : null);
+  const digestOf = () => (existsSync(bindingFile) ? sha256File(bindingFile) : null);
+  if (before.ok) {
+    const verdict = judgeBinding(digestOf());
+    if (!verdict.ok) return { ok: false, detail: verdict.reason, verified: true };
+    return { ok: true, rebuilt: false, detail: before.detail, binding: bindingOf(), sha256: verdict.digest, verified: verdict.verified };
+  }
   if (options.offline) {
     return { ok: false, detail: `offline, and the native binding does not load (${before.detail})` };
   }
@@ -1714,14 +1898,11 @@ function ensureFridaBindings(nodeRuntime, npmCli, installRoot) {
   if (!after.ok) {
     const tail = `${rebuild.stderr ?? ""}${rebuild.stdout ?? ""}`.trim().split(/\r?\n/).filter(Boolean).slice(-2).join(" | ").slice(0, 300);
     log(`       npm rebuild frida exited ${rebuild.status}${tail ? `: ${tail}` : ""}`);
+    return { ok: false, rebuilt: true, detail: after.detail, binding: bindingOf(), sha256: digestOf(), verified: false };
   }
-  return {
-    ok: after.ok,
-    rebuilt: true,
-    detail: after.detail,
-    binding: existsSync(bindingFile) ? bindingFile : null,
-    sha256: existsSync(bindingFile) ? sha256File(bindingFile) : null,
-  };
+  const verdict = judgeBinding(digestOf());
+  if (!verdict.ok) return { ok: false, rebuilt: true, detail: verdict.reason, verified: true };
+  return { ok: true, rebuilt: true, detail: after.detail, binding: bindingOf(), sha256: verdict.digest, verified: verdict.verified };
 }
 
 /**
@@ -1741,13 +1922,28 @@ async function provisionReaAgents(component, context) {
       context,
     );
 
+  // Why a reinstall is needed, carried to the messages below so they say which
+  // of the two things is wrong instead of "not usable" for both.
+  let reinstallReason = `there is no vendored REA at ${vendor}`;
+
   if (existsSync(path.join(vendor, "scripts", "rea.mjs"))) {
     const current = probe();
-    if (current.ok) {
-      step("reaAgents", "skip", `already vendored (${version})`);
+    // `--version` says which REA this is, not what its closure carries. A copy
+    // installed before 2.0.14 answers 6.8.0 perfectly while shipping zod 4.4.3, so
+    // the advisory floors are checked here too — this is the second early return a
+    // 2.0.13 user takes.
+    const closure = closureAdvisories(installRoot);
+    if (current.ok && closure.ok) {
+      step("reaAgents", "skip", `already vendored (${version}) — ${closure.reason}`);
       return { path: vendor, version };
     }
-    log(`       vendored copy is unusable (${current.detail}); reinstalling`);
+    if (!current.ok) {
+      reinstallReason = `the vendored CLI does not answer correctly (${current.detail})`;
+      log(`       vendored copy is unusable (${current.detail}); reinstalling`);
+    } else {
+      reinstallReason = `its closure is below the advisory floors (${closure.reason})`;
+      log(`       vendored closure is below its advisory floors (${closure.reason}); reinstalling`);
+    }
   }
 
   if (options.dryRun) {
@@ -1760,7 +1956,11 @@ async function provisionReaAgents(component, context) {
   // anyway, so a machine with every archive pre-cached still went to the registry
   // (or failed there) after the flag had promised it would not.
   if (options.offline) {
-    step("reaAgents", "FAIL", `--offline and the vendored REA at ${vendor} is not usable; npm install needs the registry (drop --offline or pre-install it)`);
+    step(
+      "reaAgents",
+      "FAIL",
+      `--offline, and the REA at ${vendor} has to be reinstalled — ${reinstallReason}; that needs the registry (drop --offline, or pre-install it)`,
+    );
     return null;
   }
 
@@ -1901,12 +2101,23 @@ async function provisionReaAgents(component, context) {
     log(`       replaying the audited closure lock ${path.relative(PLUGIN_ROOT, lockSource) || lockSource}`);
     install = npmRun("ci");
     if (install.status !== 0) {
-      // A mirror serving different tarball bytes, or a package the lock names and
-      // the registry no longer serves, breaks `ci` without breaking the install it
-      // stands for. The overrides below still apply, and the zod floor is checked
-      // after either route, so this degrades reproducibility loudly rather than
-      // failing the whole bootstrap.
-      log(`       npm ci could not replay the lock (${npmTail(install)}); resolving the same pins with overrides instead`);
+      if (!options.allowUnlockedNpm) {
+        // Fail closed. A mirror serving different tarball bytes, or a package the
+        // lock names and the registry dropped, breaks `ci` — but the honest answer
+        // is to stop and say so, not to resolve the same names freshly and call it
+        // the audited closure. That fallback silently traded byte-reproducibility
+        // (the whole point of committing a lock) for a green run.
+        rmSync(staging, { recursive: true, force: true });
+        step(
+          "reaAgents",
+          "FAIL",
+          `npm ci could not replay the audited lock (${npmTail(install)}); ` +
+            `refusing to fall back to an unlocked install — re-run with --allow-unlocked-npm-fallback to accept a resolved-again closure`,
+        );
+        log("       mirrors that repackage tarballs (npmmirror and friends) fail this check by design; the lock names upstream bytes");
+        return null;
+      }
+      log(`       npm ci could not replay the lock (${npmTail(install)}); resolving the same pins with overrides instead (--allow-unlocked-npm-fallback)`);
       // The lock itself has to go too: leaving it in the staging prefix makes the
       // `npm install` below honour the same unreadable entries and fail again, so
       // the fallback would never actually fall back. Verified against a
@@ -1968,12 +2179,66 @@ async function provisionReaAgents(component, context) {
     step("reaAgents", "FAIL", `could not move the new closure into ${live}: ${String(error?.message ?? error)}`);
     return null;
   }
-  rmSync(retired, { recursive: true, force: true });
   rmSync(staging, { recursive: true, force: true });
 
+  /*
+   * Verify the swap BEFORE deleting what it replaced.
+   *
+   * `retired` used to be removed on the line after the rename, so a closure that
+   * renamed cleanly and then failed its own `--version` left the machine with no
+   * usable REA at all: the old copy was gone and the new one did not work. A
+   * rename that throws is the easy case — a rename that succeeds over a broken
+   * install is the expensive one.
+   *
+   * Two checks, not one: `--version` proves the CLI starts, and `doctor` drives a
+   * much wider slice of the zod schemas REA actually defines. `doctor` exits
+   * non-zero whenever any optional capability is unconfigured (Hopper, IDA, Kuna,
+   * registrations), so the verdict here is "it produced JSON", not "it is green".
+   */
   const current = probe();
-  step("reaAgents", current.ok ? "ok" : "FAIL", `${vendor}${current.ok ? "" : " — " + current.detail}`);
-  if (!current.ok) return null;
+  const doctorRun = spawnSync(nodeRuntime, [path.join(vendor, "scripts", "rea.mjs"), "doctor", "--format", "json"], {
+    encoding: "utf8",
+    timeout: 300000,
+    windowsHide: true,
+  });
+  const doctorOutput = `${doctorRun.stdout ?? ""}`.trim();
+  const doctorAnswered = doctorOutput.startsWith("{") && (() => {
+    try {
+      JSON.parse(doctorOutput);
+      return true;
+    } catch {
+      return false;
+    }
+  })();
+
+  const restorePreviousClosure = () => {
+    if (!parked) return false;
+    try {
+      rmSync(live, { recursive: true, force: true });
+      renameSync(retired, live);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  if (!current.ok || !doctorAnswered) {
+    const why = !current.ok ? current.detail : `doctor did not answer with JSON (exit ${doctorRun.status})`;
+    const restored = restorePreviousClosure();
+    step(
+      "reaAgents",
+      "FAIL",
+      `${vendor} — ${why}` +
+        (restored
+          ? "; the previous closure was put back"
+          : parked
+            ? `; the previous closure is parked at ${retired} and could not be moved back`
+            : "; there was no previous closure to restore"),
+    );
+    return null;
+  }
+  rmSync(retired, { recursive: true, force: true });
+  step("reaAgents", "ok", `${vendor} — --version and doctor both answered`);
 
   // The package is in place; its native dependency is a separate claim. Checked
   // here as well as in `main` so a fresh install records the verdict immediately;
@@ -1992,8 +2257,8 @@ async function provisionReaAgents(component, context) {
     path: vendor,
     version,
     frida: frida.ok
-      ? { available: true, binding: frida.binding, sha256: frida.sha256 ?? null, devices: frida.detail }
-      : { available: false, reason: frida.detail },
+      ? { available: true, binding: frida.binding, sha256: frida.sha256 ?? null, verified: frida.verified === true, devices: frida.detail }
+      : { available: false, reason: frida.detail, verified: frida.verified === true },
   };
 }
 
@@ -2256,10 +2521,20 @@ for (const name of INSTALL_ORDER) {
  * tools do not need it, and failing a whole provision over one optional native
  * binding answers a worse question than naming the capability that is missing.
  */
+/*
+ * Frida's native binding — checked on EVERY run, never decided from the record.
+ *
+ * Gating this on `merged.reaAgents.frida === undefined` turned one transient
+ * failure (a network blip inside `npm rebuild`, a file momentarily locked) into a
+ * permanent verdict: every later setup read the stored `available: false` and moved
+ * on without retrying, and a binding deleted after a successful record kept its
+ * `available: true` forever. `ensureFridaBindings` already begins by importing the
+ * module, so re-running it IS the cheap check — one import, no download when the
+ * binding is there.
+ */
 if (
   !options.dryRun
   && merged.reaAgents
-  && merged.reaAgents.frida === undefined
   && typeof merged.reaAgents.path === "string"
   && existsSync(merged.reaAgents.path)
 ) {
@@ -2271,11 +2546,21 @@ if (
     merged.reaAgents = {
       ...merged.reaAgents,
       frida: frida.ok
-        ? { available: true, binding: frida.binding, sha256: frida.sha256 ?? null, devices: frida.detail }
-        : { available: false, reason: frida.detail },
+        ? {
+            available: true,
+            binding: frida.binding,
+            sha256: frida.sha256 ?? null,
+            // `verified` is about the DIGEST, not about the module loading. A
+            // platform with no pinned digest is usable but unproven, and the
+            // record has to say which of those two it is.
+            verified: frida.verified === true,
+            devices: frida.detail,
+          }
+        : { available: false, reason: frida.detail, verified: frida.verified === true },
     };
     if (frida.ok) {
-      step("fridaBindings", "ok", `${frida.detail}${frida.rebuilt ? " (rebuilt by setup)" : ""}${frida.binding ? ` — ${frida.binding}` : ""}`);
+      const how = frida.verified === true ? "digest matches the recorded one" : "digest recorded, no pinned value for this platform";
+      step("fridaBindings", "ok", `${frida.detail}${frida.rebuilt ? " (rebuilt by setup)" : ""} — ${how}`);
     } else {
       step("fridaBindings", "skip", frida.skipped ? frida.detail : `unavailable: ${frida.detail}`);
     }
@@ -2595,7 +2880,23 @@ const lockFile = path.join(options.root, "setup.lock");
 // Stop heartbeating before deciding the outcome: from here the record is the
 // verdict, not a "still running" marker.
 runLock.held = false;
-if (failed.length === 0) {
+// Only touch the lock if it is still ours.
+//
+// Between claiming it at start-up and reaching here, the record can have been
+// replaced: a run that died after we read it, a human deleting it by hand, or (in
+// the extreme) the shim reclaiming the root. Deleting or overwriting a record that
+// belongs to somebody else is how a live run gets its brake removed — so compare
+// the token before either write, and say nothing at all when it no longer matches.
+let lockIsOurs = false;
+try {
+  const holderNow = readJsonSafe(lockFile);
+  lockIsOurs = holderNow !== null && (holderNow.token === RUN_TOKEN || holderNow.pid === process.pid);
+} catch {
+  lockIsOurs = false;
+}
+if (!lockIsOurs) {
+  log("       setup.lock no longer carries this run's token; leaving it alone");
+} else if (failed.length === 0) {
   rmSync(lockFile, { force: true });
 } else {
   try {
