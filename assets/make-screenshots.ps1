@@ -22,13 +22,18 @@ if (-not $OutDir -or $OutDir.Trim() -eq '') { $OutDir = $PSScriptRoot }
 # 版本号从 manifest 读，不再手写成固定值。2.0.10 就踩过：pin 升到 6.7.0 之后，
 # 这个脚本还写着 6.5.0 —— 现有 PNG 没问题（它们是 6.5.0 时生成的），但下一次
 # 重绘会把旧版本号带进市场页，而且没有人会注意到，因为图片是二进制。
-# 工具数（207）不是 manifest 字段，是人工核对过的常量：升 pin 时一起核一遍。
-$reaPin     = '6.7.0'
+# 工具数（229）不是 manifest 字段，是人工核对过的常量：升 pin 时一起核一遍。
+$reaPin     = '6.8.0'
 $reaTools   = 229
 $ghidraPin  = '12.1.4'
-$nodePin    = '24.21.0'
+$nodePin    = '24.22.1'
 # 截图是一次「实测」，这个日期必须是真的测量日；重绘时改成当天。
-$measuredOn = '2026-10-26'
+# 2026-11-07：2.0.16 发布前的最后一次真机 --reuse（smoke 31 s 导入 java.exe）。
+$measuredOn = '2026-11-07'
+# 宿主版本没有 manifest 字段可读 —— 它不是本包的属性。写死但必须跟着实测更新：
+# 2.0.16 的实测宿主是 desktop runtime 0.2.2-rc.1，之前这里写的是 0.2.0-rc.2，
+# 于是市场页在展示一个两个月前的宿主。
+$hostMeasured = '0.2.2-rc.1'
 $manifestFile = Join-Path (Split-Path -Parent $PSScriptRoot) 'manifest\bundle.manifest.json'
 if (Test-Path $manifestFile) {
   try {
@@ -147,7 +152,7 @@ Draw-Line  $g 358 446 150 446 $muted
 Draw-Arrow $g 150 446 150 342 $muted
 
 Draw-Text $g '上游 REA（MIT）：github.com/morluto/rea      本插件：github.com/czcdr/dsh-plugin-rea' $fSmall $muted 60 620
-Draw-Text $g "实测 REA $reaPin（$reaTools 个工具） + DSH 桌面运行时 0.2.0-rc.2 + Ghidra $ghidraMeasured + Node ${nodePin}（Windows 11 x64，$measuredOn）" $fSmall $muted 60 646
+Draw-Text $g "实测 REA $reaPin（$reaTools 个工具） + DSH 桌面运行时 $hostMeasured + Ghidra $ghidraMeasured + Node ${nodePin}（Windows 11 x64，$measuredOn）" $fSmall $muted 60 646
 Draw-Text $g 'Ghidra 为 Apache-2.0（NSA）；REA 为 MIT。本仓库不分发上游代码。' $fSmall $muted 60 672
 Save-Png $bmp $g (Join-Path $OutDir 'screenshot-1.png')
 
