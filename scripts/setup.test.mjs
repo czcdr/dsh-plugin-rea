@@ -2691,3 +2691,86 @@ test("the REA closure swap keeps the previous install until the new one answers"
   assert.ok(retireAt > doctorAt, "retired must not be deleted before --version and doctor both answer");
   assert.match(source, /restorePreviousClosure/, "a failed verification must be able to put the old closure back");
 });
+
+/* ---- audit round 3: the frida gate must hash BEFORE it imports ------------ */
+
+/**
+ * A frida package whose import has an observable side effect.
+ *
+ * `index.js` writes a marker and then throws, so "was this module imported?" is a
+ * fact on disk rather than an inference. That is what makes the ordering testable:
+ * 2.0.15 imported first and judged second, so the marker appeared even on the run
+ * that then reported the binding as rejected.
+ */
+function makeFridaFixture(root) {
+  const bundle = path.join(root, "bundle");
+  const setup = makePluginTree(root, () => {});
+  addReaStub(bundle, REA_PIN);
+  const fridaRoot = path.join(bundle, "vendor", "node_modules", "frida");
+  mkdirSync(path.join(fridaRoot, "build"), { recursive: true });
+  const marker = path.join(root, "frida-imported");
+  writeFileSync(
+    path.join(fridaRoot, "package.json"),
+    JSON.stringify({ name: "frida", version: "17.23.2", main: "index.js" }),
+  );
+  writeFileSync(
+    path.join(fridaRoot, "index.js"),
+    `require("fs").writeFileSync(${JSON.stringify(marker)}, "imported"); throw new Error("unmeasured binding");`,
+  );
+  const binding = path.join(fridaRoot, "build", "frida_binding.node");
+  writeFileSync(binding, "definitely not the measured binding");
+  writeFileSync(
+    path.join(bundle, "bundle.json"),
+    JSON.stringify({
+      schema: 1,
+      paths: { node: process.execPath },
+      versions: { reaAgents: REA_PIN },
+      components: { reaAgents: { path: path.join(bundle, "vendor", "node_modules", "rea-agents"), version: REA_PIN } },
+    }),
+  );
+  return { bundle, setup, binding, marker };
+}
+
+const FRIDA_PINNED_TARGET = process.platform === "win32" && process.arch === "x64";
+
+test("a mismatched frida binding is never imported", async (t) => {
+  if (!FRIDA_PINNED_TARGET) {
+    t.skip("the only pinned frida digest is win32-x64/17.23.2, so no other target has an expectation to mismatch");
+    return;
+  }
+  const root = mkdtempSync(path.join(tmpdir(), "rea-frida-hash-first-"));
+  try {
+    const { bundle, setup, marker } = makeFridaFixture(root);
+    const run = await runToCompletion(process.execPath, [setup, "--only", "reaAgents", "--offline", "--root", bundle], {
+      encoding: "utf8",
+      timeout: 180000,
+    });
+    assert.equal(existsSync(marker), false, `the mismatched module must not be imported at all:\n${run.stdout}`);
+    assert.match(run.stdout, /before any import/, run.stdout);
+    assert.match(run.stdout, /not the recorded/, run.stdout);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a mismatched frida binding is moved off the path REA loads", async (t) => {
+  if (!FRIDA_PINNED_TARGET) {
+    t.skip("the only pinned frida digest is win32-x64/17.23.2, so no other target has an expectation to mismatch");
+    return;
+  }
+  const root = mkdtempSync(path.join(tmpdir(), "rea-frida-quarantine-"));
+  try {
+    const { bundle, setup, binding } = makeFridaFixture(root);
+    await runToCompletion(process.execPath, [setup, "--only", "reaAgents", "--offline", "--root", bundle], {
+      encoding: "utf8",
+      timeout: 180000,
+    });
+    // REA reaches `build/frida_binding.node` directly, so recording a verdict is not
+    // enough — the file has to leave that path, and it is kept aside rather than
+    // destroyed so the mismatch can still be inspected afterwards.
+    assert.equal(existsSync(binding), false, "the distrusted binding must not remain where REA would load it");
+    assert.ok(existsSync(`${binding}.rejected`), "it is quarantined, not deleted");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

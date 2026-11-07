@@ -2,6 +2,58 @@
 
 本插件遵循语义化版本。版本号变化说明「配置组合」这层的变化，与 REA 自身的版本无关。
 
+## 2.0.16 — 2026-11-07
+
+**第三轮审计：2.0.15 的 4 个 P0 与无锁 npm fallback 全部验收通过，唯一否决项是 Frida 的哈希门禁
+「先加载、后校验」—— 而发布说明已经把它写成完成的安全闸门。这一版把那句话变成事实。
+其余没有任何新发现的数据丢失、回滚或依赖回归。**
+
+### 修复：哈希必须在导入之前
+
+- **顺序反了（`scripts/setup.mjs` `ensureFridaBindings()`）**。2.0.15 是
+  `const before = verify()`（`import('frida')` + `enumerateDevices()`）→ `judgeBinding(digestOf())`。
+  审计给一个 Linux 副本注入不匹配摘要后实测 `moduleImportedBeforeRejection: true`：**模块在拒绝之前就被执行了**，
+  事后写一条 `verified` 不能撤销一次原生模块的加载。现在 `inspect()` 是第一个接触到这个文件的东西 ——
+  纯路径 + SHA-256，不 import；只有哈希匹配（或该平台没有受信值）才会走到 `verify()`。
+  rebuild 之后同样先 `inspect()` 再 `verify()`：一次 rebuild 完全可以产出一个"存在、能加载、但不是被测量过的那份"绑定。
+- **不匹配时必须把绑定移走，不能只写状态**。记录 `available: false` 阻止不了 REA —— shim 不消费这个字段，
+  下一个想用 Frida 的工具照样会 `import` `build/frida_binding.node`。现在不匹配就把它改名为
+  `frida_binding.node.rejected`（隔离而不是销毁，留证据），失败时消息明写"没能移走，用 Frida 前先手工删掉它"。
+- **措辞**：`rejectBinding()` 的消息现在是「moved it to … before any import, so nothing can load it」，
+  不再是没被兑现的「rather than loading an unverified native module」。
+
+### 测试
+
+两个回归测试，都注入一个**导入即有副作用**的假 frida 包（`index.js` 写一个 marker 再抛错，
+于是"这个模块有没有被 import 过"是磁盘上的事实，不是推断）：
+
+- **不匹配的绑定从头到尾没有被 import**：marker 不存在 + 输出含 `before any import`；
+- **不匹配的绑定被移出 REA 的加载路径**：`build/frida_binding.node` 不存在、`.rejected` 存在
+  （只写状态不算修好，REA 读的是那个路径）。
+
+两条都按平台跳过：受信摘要目前只有 `17.23.2/win32-x64` 一条，别的平台没有"可以失配"的期望值 —— 跳过理由是
+"没有期望值"，不是"这个平台不重要"。
+
+### 验证
+
+```
+单测        104（setup）+ 17（deps）+ 25（host-compat）+ 14（hardening）= 160，0 失败
+顺序契约    inspect() → 早退拒绝 → verify()，用源码位置断言固定
+manifest    audit 24 条 hash-pinned，0 TOFU
+依赖闸门    zod 4.6.7 · minimatch 11.0.5 · glob 14.0.4（单副本）
+宿主兼容    16 releases covered
+verify-branch  ALL CHECKS PASSED
+真机        --reuse：fridaBindings「digest matches the recorded one」，smoke 42 s，exit 0
+```
+
+### 发版清单里仍开着的
+
+- **shim 父进程直接重写 lock**（`bin/rea-shim.mjs` 的 'error' 处理与 PID 交接）：极端时序下的低优先级竞争，
+  审计两轮都判为不阻断。未改。
+- 其他平台的 Frida 受信摘要：只有 win32-x64 一条，其余平台是 `verified: false`（记录，不是验证）。
+- `engines.node` 比桌面宿主自带 Node 严格、`dsh.client.inject` 的 `dsh-client-runtime`、Ghidra 默认 12.1.4 的
+  已知 CVE（**仍不得用于不可信样本**）、硬链接 containment —— 与上轮相同。
+
 ## 2.0.15 — 2026-11-07
 
 **第一版 2.0.14 被外部审计判为「不建议发布」，4 个发版级缺口全部属实：两个是上一轮漏修/描述超实现，
@@ -45,7 +97,10 @@ Frida 结论只写一次、旧闭包在探针之前就被删了。
 - **Frida 原生绑定的哈希：区分「记录」与「验证」（`scripts/setup.mjs`）**。新增 `FRIDA_BINDING_SHA256`
   （`<frida 版本>/<platform>-<arch>` → 摘要），目前**只有一条**——`17.23.2/win32-x64` 的 `32c73230…`，
   2026-11-06 在本机实测。三种结局现在不同：匹配 → `verified: true`；该平台没有受信值 → 可用但 **`verified: false`**，
-  step 行明写「digest recorded, no pinned value for this platform」；**不匹配 → 直接禁用 Frida**，不加载未测量的原生模块。
+  step 行明写「digest recorded, no pinned value for this platform」；**不匹配 → 禁用 Frida**。
+  ⚠️ **第一版 2.0.15 的顺序是反的**：`verify()`（import + 设备枚举）跑在哈希比较之前，所以不匹配的绑定
+  **已经被加载执行过**，"不加载未测量的原生模块"这句当时并不成立；而且只写 `available: false` 并不会让 REA
+  停止加载（shim 不消费该字段）。已在 2.0.16 修正，见该段。
   记录里同时写入 `verified` 字段，`bundle.json` 不再暗示「记录了哈希 = 供应链已验证」。
 
 ### P2

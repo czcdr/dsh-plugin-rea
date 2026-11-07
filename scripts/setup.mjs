@@ -1830,37 +1830,65 @@ function ensureFridaBindings(nodeRuntime, npmCli, installRoot) {
   const expectedBinding = fridaVersion === null
     ? null
     : FRIDA_BINDING_SHA256[`${fridaVersion}/${process.platform}-${process.arch}`] ?? null;
+  const quarantineFile = `${bindingFile}.rejected`;
+
   /**
-   * Compare the binding on disk with the one recorded for this exact target.
+   * Inspect the binding WITHOUT importing it.
    *
-   * Three outcomes, and they are deliberately not the same thing:
-   *   - no expectation for this platform  -> usable, but `verified: false`
-   *   - digest matches                    -> usable and verified
-   *   - digest differs                    -> refuse; do not load an unmeasured
-   *     native module into REA's process just because it imports
+   * Hashing this file is the first thing that happens to it, deliberately: an
+   * `import()` of `frida` executes the native module inside this process, and a
+   * verdict recorded afterwards cannot undo that. 2.0.15 had the order backwards —
+   * `verify()` (import + enumerateDevices) ran first and the digest comparison ran
+   * second — so a mismatched binding was loaded before being rejected, and the
+   * release note's "disabling Frida rather than loading an unverified native
+   * module" described the opposite of what the code did.
    */
-  const judgeBinding = (digest) => {
-    if (digest === null) {
-      return { ok: false, digest: null, verified: false, reason: "the frida binding file is not present after the rebuild" };
-    }
-    if (expectedBinding === null) {
-      return {
-        ok: true,
-        digest,
-        verified: false,
-        reason: `no pinned digest for frida ${fridaVersion ?? "?"} on ${process.platform}-${process.arch}; recorded ${digest} but did not verify it`,
-      };
-    }
-    if (digest !== expectedBinding) {
-      return {
-        ok: false,
-        digest,
-        verified: true,
-        reason: `the frida binding is ${digest}, not the recorded ${expectedBinding} for frida ${fridaVersion} on ${process.platform}-${process.arch}; disabling Frida rather than loading an unverified native module`,
-      };
-    }
-    return { ok: true, digest, verified: true, reason: `binding digest matches the recorded one for frida ${fridaVersion} on ${process.platform}-${process.arch}` };
+  const inspect = () => {
+    if (!existsSync(bindingFile)) return { present: false, digest: null, trusted: null };
+    const digest = sha256File(bindingFile);
+    // `trusted: null` means "no expectation for this platform", not "trusted".
+    if (expectedBinding === null) return { present: true, digest, trusted: null };
+    return { present: true, digest, trusted: digest === expectedBinding };
   };
+
+  /**
+   * Move a distrusted binding off the path anything loads, BEFORE any import.
+   *
+   * Writing `available: false` into `bundle.json` does not stop REA: the shim does
+   * not consume that field, so the next tool that wants Frida imports whatever sits
+   * at `build/frida_binding.node` regardless. Renaming is the only step that
+   * actually removes it from that path; the `.rejected` suffix keeps the file for
+   * inspection instead of destroying the evidence.
+   */
+  const quarantine = () => {
+    try {
+      rmSync(quarantineFile, { recursive: true, force: true });
+      renameSync(bindingFile, quarantineFile);
+      return quarantineFile;
+    } catch {
+      return null;
+    }
+  };
+
+  const rejectBinding = (state, rebuilt) => {
+    const moved = quarantine();
+    return {
+      ok: false,
+      rebuilt,
+      verified: true,
+      digest: state.digest,
+      quarantined: moved,
+      detail:
+        `the frida binding is ${state.digest}, not the recorded ${expectedBinding} for frida ${fridaVersion} ` +
+        `on ${process.platform}-${process.arch}; ` +
+        (moved === null
+          ? `Frida is disabled, but the binding could NOT be moved off ${bindingFile} — remove that file before using Frida`
+          : `moved it to ${moved} before any import, so nothing can load it`),
+    };
+  };
+
+  const bindingOf = () => (existsSync(bindingFile) ? bindingFile : null);
+
   // Device enumeration, not just import(): a binding can load and still be
   // unusable, and `enumerateDevices` is the cheapest call that proves the native
   // side actually runs. String.fromCharCode(10) keeps this free of nested escapes.
@@ -1877,32 +1905,64 @@ function ensureFridaBindings(nodeRuntime, npmCli, installRoot) {
     return { ok: run.status === 0 && text.includes("FRIDA_OK"), detail: line };
   };
 
-  const before = verify();
-  const bindingOf = () => (existsSync(bindingFile) ? bindingFile : null);
-  const digestOf = () => (existsSync(bindingFile) ? sha256File(bindingFile) : null);
-  if (before.ok) {
-    const verdict = judgeBinding(digestOf());
-    if (!verdict.ok) return { ok: false, detail: verdict.reason, verified: true };
-    return { ok: true, rebuilt: false, detail: before.detail, binding: bindingOf(), sha256: verdict.digest, verified: verdict.verified };
+  // 1) Hash FIRST. Only a binding that matches the recorded digest (or has no
+  //    expectation on this platform) is ever imported.
+  const initial = inspect();
+  if (initial.present && initial.trusted === false) return rejectBinding(initial, false);
+
+  let before = null;
+  if (initial.present) {
+    before = verify();
+    if (before.ok) {
+      return {
+        ok: true,
+        rebuilt: false,
+        detail: before.detail,
+        binding: bindingOf(),
+        sha256: initial.digest,
+        verified: initial.trusted === true,
+      };
+    }
+    if (options.offline) {
+      return { ok: false, detail: `offline, and the native binding does not load (${before.detail})` };
+    }
+    log(`       frida native binding does not load (${before.detail}); running its own install script via npm rebuild frida`);
+  } else if (options.offline) {
+    return { ok: false, detail: `offline, and frida has no native binding at ${bindingFile}` };
+  } else {
+    log(`       frida has no native binding at ${bindingFile}; running its own install script via npm rebuild frida`);
   }
-  if (options.offline) {
-    return { ok: false, detail: `offline, and the native binding does not load (${before.detail})` };
-  }
-  log(`       frida native binding does not load (${before.detail}); running its own install script via npm rebuild frida`);
+
   const rebuild = spawnSync(
     nodeRuntime,
     [npmCli, "rebuild", "frida", "--prefix", installRoot, "--loglevel", "error"],
     { cwd: installRoot, encoding: "utf8", timeout: 1800000 },
   );
+
+  // 2) Hash the result BEFORE importing it too — a rebuild can produce a binding
+  //    that is present, loadable, and not the one this build was measured with.
+  const afterBuild = inspect();
+  if (afterBuild.present && afterBuild.trusted === false) return rejectBinding(afterBuild, true);
+  if (!afterBuild.present) {
+    const tail = `${rebuild.stderr ?? ""}${rebuild.stdout ?? ""}`.trim().split(/\r?\n/).filter(Boolean).slice(-2).join(" | ").slice(0, 300);
+    log(`       npm rebuild frida exited ${rebuild.status}${tail ? `: ${tail}` : ""}`);
+    return { ok: false, rebuilt: true, detail: `npm rebuild frida did not produce ${bindingFile}`, binding: null, sha256: null, verified: false };
+  }
+
   const after = verify();
   if (!after.ok) {
     const tail = `${rebuild.stderr ?? ""}${rebuild.stdout ?? ""}`.trim().split(/\r?\n/).filter(Boolean).slice(-2).join(" | ").slice(0, 300);
     log(`       npm rebuild frida exited ${rebuild.status}${tail ? `: ${tail}` : ""}`);
-    return { ok: false, rebuilt: true, detail: after.detail, binding: bindingOf(), sha256: digestOf(), verified: false };
+    return { ok: false, rebuilt: true, detail: after.detail, binding: bindingOf(), sha256: afterBuild.digest, verified: false };
   }
-  const verdict = judgeBinding(digestOf());
-  if (!verdict.ok) return { ok: false, rebuilt: true, detail: verdict.reason, verified: true };
-  return { ok: true, rebuilt: true, detail: after.detail, binding: bindingOf(), sha256: verdict.digest, verified: verdict.verified };
+  return {
+    ok: true,
+    rebuilt: true,
+    detail: after.detail,
+    binding: bindingOf(),
+    sha256: afterBuild.digest,
+    verified: afterBuild.trusted === true,
+  };
 }
 
 /**
