@@ -409,17 +409,33 @@ function openGet(url, { proxy, headers, connectTimeoutMs }) {
     const idleTimeout = options.idleTimeoutMs;
     // Idle, not total: every received chunk pushes the deadline out, so a slow
     // but healthy transfer survives while a stalled one is cut.
-    const touch = (socket) => () => socket.setTimeout(idleTimeout);
     const done = (res, via) => {
-      res.on("data", touch(res.socket));
+      // Pause, do not subscribe. (issue #1, bug 1)
+      //
+      // `res.on("data", …)` starts flowing mode, and Node synchronously flushes any
+      // chunk it has already buffered when that listener is attached. The consumer
+      // (`writeBody`) only reaches `pipe()` a few microtasks later, so on a fast link
+      // — where the headers and the first body bytes arrive in one segment — that
+      // first chunk was emitted to the deadline listener and dropped. Reproduced with
+      // a local server delivering 4 MiB: 4 128 896 bytes arrived, 65 408 short, and
+      // every retry reproduced it, because `Range: bytes=<have>-` asks for exactly
+      // the chunk that is about to be thrown away. `pause()` leaves the decision to
+      // the consumer; `pipe()` resumes it, and the redirect/error paths already call
+      // `resume()` explicitly. The idle deadline is refreshed from `writeBody` now.
+      res.pause();
       resolve({ status: res.statusCode, headers: res.headers, stream: res, via });
     };
 
     if (!useProxy) {
-      const req = httpsRequest(
+      // The scheme picks the module. Every manifest URL is https, so this only
+      // mattered once a test needed to drive this route against a local server —
+      // but pinning https here meant an http URL could never use the direct route
+      // at all, it just failed TLS with "wrong version number".
+      const secure = target.protocol !== "http:";
+      const req = (secure ? httpsRequest : httpRequest)(
         {
           host: target.hostname,
-          port: target.port || 443,
+          port: target.port || (secure ? 443 : 80),
           path: target.pathname + target.search,
           method: "GET",
           headers: requestHeaders,
@@ -565,15 +581,29 @@ async function download(url, destination, expected, label) {
       }
       // Route order differs by design. On Windows the .NET stack is tried first:
       // it honours the system proxy and follows GitHub's release-asset redirect
-      // to release-assets.githubusercontent.com correctly, which is exactly what
-      // the Node routes fail at here (direct = reset/timeout, proxy = a 301 loop
-      // rewriting back to github.com). It also completed nodejs.org's 37 MB zip
-      // where the Node route was truncated by 860 bytes on every attempt
-      // (nodejs.org advertises no accept-ranges, so a resume can never close
-      // that gap). Verified by the same size + checksum gate either way.
+      // to release-assets.githubusercontent.com correctly, which is what the Node
+      // routes struggled with here (direct = reset/timeout, proxy = a 301 loop
+      // rewriting back to github.com).
+      //
+      // The 860-byte shortfall that also argued for PowerShell was NOT the network.
+      // `openGet()` attached a `data` listener before any consumer existed, so the
+      // first buffered chunk was flushed to it and dropped on every attempt — and
+      // nodejs.org advertises no accept-ranges, so a resume could never close that
+      // gap, which made a bug in this file look like a property of the link. Fixed
+      // under issue #1; PowerShell stays first on Windows for the proxy and redirect
+      // reasons, not as a workaround.
+      //
+      // `REA_BUNDLE_DOWNLOAD_ROUTE=node|powershell` pins the order so the route a
+      // platform does not default to can still be exercised — which is exactly how
+      // this defect stayed invisible on Windows for so long.
       let via = null;
       let nodeFailure = null;
-      const tryPowerShellFirst = IS_WINDOWS;
+      const routeOverride = String(process.env.REA_BUNDLE_DOWNLOAD_ROUTE ?? "").trim().toLowerCase();
+      const tryPowerShellFirst = routeOverride === "powershell"
+        ? true
+        : routeOverride === "node"
+          ? false
+          : IS_WINDOWS;
       const viaPowerShell = async () => {
         // Resume through the .NET route as well: it is the Windows default, it
         // honours the system proxy, and the 570 MB Ghidra archive is the transfer
@@ -610,11 +640,12 @@ async function download(url, destination, expected, label) {
 
       if (expected.size && produced !== expected.size) {
         if (produced < expected.size) {
-          // A few bytes missing at the tail is this network's signature (860 and
-          // 15875 bytes observed on otherwise complete transfers). Asking for
-          // the exact remainder is cheaper than re-fetching 37 MB, so the next
-          // attempt resumes from `produced`; a fresh start is forced once the
-          // attempts run out, so a marginal short read cannot accumulate.
+          // A short read is not automatically "this network". Until issue #1 the
+          // first chunk was dropped by our own reader on every attempt, which looked
+          // exactly like a flaky link and was even documented as one. What remains
+          // after that fix is a genuine interruption, so resuming from `produced` is
+          // still the cheaper move — and a fresh start is forced once the attempts
+          // run out, so a marginal short read cannot accumulate.
           if (attempt < attempts) {
             log(`       attempt ${attempt}/${attempts} ended short by ${expected.size - produced} byte(s); resuming`);
             have = produced;
@@ -768,6 +799,13 @@ async function writeBody(stream, headers, temporary, have, status, label) {
   out.on("pipe", (source) => {
     source.on("data", (chunk) => {
       seen += chunk.length;
+      // The idle deadline used to be refreshed by a `data` listener attached in
+      // `openGet()`, before any consumer existed — which is what started flowing
+      // mode and cost the first chunk (issue #1). Refreshing it here keeps the
+      // guarantee (a slow but alive transfer survives, a stalled one is cut)
+      // without running ahead of the pipe: this listener is attached after
+      // `pipe()`, so it only observes bytes the write stream already receives.
+      if (source.socket) source.socket.setTimeout(options.idleTimeoutMs);
       if (total > 0 && seen >= nextMark) {
         const percent = ((seen / total) * 100).toFixed(1);
         if (!options.json) process.stdout.write(`\r       ${label}: ${percent}% (${(seen / 1048576).toFixed(1)} MiB)`);
@@ -1634,6 +1672,19 @@ async function provisionComponent(name, component, context) {
     const entries = readdirSync(effective).filter((entry) => !entry.startsWith("."));
     if (entries.length !== 1 || !statSync(path.join(effective, entries[0])).isDirectory()) break;
     effective = path.join(effective, entries[0]);
+  }
+  // Adoptium's macOS archives are .app-shaped (issue #1, bug 2): the JDK home is
+  // `<root>/Contents/Home`, one level deeper than `stripRootComponents` can express,
+  // and no other platform has that extra level. Making the strip count
+  // platform-aware would then be wrong for any macOS archive that happens to be
+  // flat, so look for the layout instead of counting for it. The `bin/java` test is
+  // what stops this from guessing: only a directory that actually holds the runtime
+  // is treated as the home. Without this the probe looked for `<jdk>/bin/java`,
+  // missed, and took ghidra / apktool / jadx with it through `requires: ["jdk"]`.
+  const appHome = path.join(effective, "Contents", "Home");
+  if (existsSync(path.join(appHome, "bin", `java${EXE}`))) {
+    log(`       ${name}: archive uses the macOS Contents/Home layout; installing that as the root`);
+    effective = appHome;
   }
   // Same contract as the multi-file branch: the previous install is renamed
   // aside, not deleted, and it comes back if the swap or the probe fails.

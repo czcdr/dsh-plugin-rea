@@ -120,7 +120,7 @@ profile 安装插件：
 ```
 dsh plugin --profile <profile> add dsh-plugin-rea
 # 或钉住这个版本，而不是跟着 npm latest 走：
-dsh plugin --profile <profile> add github:czcdr/dsh-plugin-rea#v2.0.16
+dsh plugin --profile <profile> add github:czcdr/dsh-plugin-rea#v2.0.17
 ```
 
 > **Electron 宿主（DeepSeek Harness 桌面版）的 profile 由应用独占。** 那种机器上 `dsh plugin --profile desktop …`
@@ -329,6 +329,40 @@ apktool 3.0.3 / jadx 0.7.1 / Node 24.22.1）。同一条链路重验：`--dry-ru
 `check-updates.ps1` 从「假绿退出 0」变成「如实报告」，本机修完后退出 0。
 
 ## 边界与注意事项
+
+### macOS：请先读这一节
+
+**维护者手上没有 macOS 机器。** 2.0.16 以前，macOS 的供给路径**从未在真机上跑过**，所以两个只在
+darwin 上成立的缺陷被发了出去（issue [#1](https://github.com/czcdr/dsh-plugin-rea/issues/1)）：Node 下载路线
+丢第一个数据块导致每个归档 `size mismatch`；Adoptium 的 macOS JDK 解包后多一层 `Contents/Home`，probe 落空。
+2.0.17 修了这两个，但**修完没有在真实 macOS 上端到端复验过** —— 证据等级见下表，请按它决定要不要先自己验一遍。
+
+| 事项 | 我们验到什么程度 |
+|---|---|
+| 首块丢失 | **硬**：本地 server 复现（4 MiB → 丢 65,408 B）；把修复退回监听器写法，测试立刻红并打印 `ended short by 65112 byte(s); resuming`，与 issue 的现象同形同因 |
+| `.app` 布局 | **硬**：真实 Adoptium 包（200,073,404 B、sha256 与 manifest 一致）解包后 `Contents/Home/bin/java` 存在、`bin/java` 不存在 |
+| 两条修复在真实 macOS 上的效果 | **未验证**：本机出口到 nodejs.org 直连超时、经代理 403、WSL 无外网，因此没有一次真实的 macOS 端到端运行 |
+
+在 macOS 上跑 `node scripts/setup.mjs --reuse` 后，正常应该是：`node` / `platform-tools` 不再 `size mismatch`，
+`jdk` 直接 `[ok]` 且 `<bundle>/vendor/jdk/bin/java` 就位，`ghidra` / `apktool` / `jadxHeadlessMcp` 随
+`requires: ["jdk"]` 一起通过。**如果仍有问题，请把 `logs/setup.log` 贴到 issue 里** —— 那是这个仓库唯一能拿到的
+macOS 现场，没有它下一次也只能靠猜。
+
+### macOS 上的 `smoke` 会失败，那不是供给故障
+
+上游 Ghidra 的公开 zip **不含 macOS 原生反编译器**：`Ghidra/Features/Decompiler/os/` 里只有
+`linux_x86_64` 与 `win_x86_64`（实测扫过 `ghidra_12.1.4_PUBLIC_20260921.zip` 的中央目录）。
+所以 macOS arm64 上最后的 `smoke` 步会报：
+
+```
+Analysis failed (provider_unavailable): The selected analysis provider is unavailable.
+rea doctor → ghidra-native_decompiler: Matching native decompiler for darwin/arm64 was not found
+```
+
+这是**上游的构建限制**，不是本插件供给失败。除了原生反编译，其余 REA 工具照常可用。要补齐需要自己编译
+Ghidra 的 decompiler 并把 `decompile` 放到 `Ghidra/Features/Decompiler/os/mac_arm_64/`（或等上游发布）。
+
+其余注意事项：
 
 - REA 在 6.8.0 有 229 个工具，每个会话的工具列表都会变长。
 - 校验和对得起良心：厂商发布了的就固定并验证；没发布的（jadx-headless-mcp、apktool 包装脚本、

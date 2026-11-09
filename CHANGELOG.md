@@ -2,6 +2,74 @@
 
 本插件遵循语义化版本。版本号变化说明「配置组合」这层的变化，与 REA 自身的版本无关。
 
+## 2.0.17 — 2026-11-09
+
+**修掉 issue [#1](https://github.com/czcdr/dsh-plugin-rea/issues/1)：2.0.16 在 macOS 上根本装不上。**
+两个缺陷都是 darwin 独有的，而且都是"我们的测试矩阵没覆盖到"造成的 —— 我们所有真机验证都在 Windows 上，
+而 Windows 恰好绕开了这两条路径。
+
+### 修复 1：下载丢掉第一个数据块（所有走 Node 路线的平台）
+
+`openGet()` 为了让空闲超时保活，在 `done()` 里挂了 `res.on("data", touch(res.socket))`。**挂 `'data'` 监听器会
+启动 flowing mode，而 Node 会同步 flush 已经缓冲的 chunk**；消费者 `writeBody()` 要几个微任务之后才 `pipe()`，
+于是第一块就发给了那个只刷新超时、不消费数据的监听器，丢了。
+
+后果不是偶发丢字节，是**每次重试都丢同样多**：`Range: bytes=<have>-` 请求的正是"即将被扔掉的那一块"，
+服务器老实返回 206 + 那几百字节，然后再被扔掉。issue 作者那里是 859 B，我在本地复现是 65,408 B（取决于第一个
+TCP 段的大小）。
+
+- **`openGet()` 改为 `res.pause()`**，让消费者决定何时流动；`pipe()` 会 resume，重定向与错误路径本来就显式
+  `resume()` 过，不受影响。
+- **空闲心跳移到 `writeBody()`** 的 pipe 之后，语义不变（慢但活着的不掐断、卡死的掐断），但不再抢在消费者前面。
+- **新增 `REA_BUNDLE_DOWNLOAD_ROUTE=node|powershell`**：两条路线都存在且都出过事故，而平台默认只跑其中一条 ——
+  这个缺陷在 Windows 上藏了这么久，就是因为 `tryPowerShellFirst = IS_WINDOWS`。有了这个开关，非默认路线也能被
+  测试和市场用户钉住。
+- **Node 直连路线按 URL scheme 选模块**：原来写死 `httpsRequest`，一个 `http://` URL 只会得到
+  `SSL: wrong version number`，连不上也不报准。
+
+另外纠正了一条把这事**归错因**的注释。它原来写着"末尾少几个字节是这条网络的签名（观察到 860 与 15875 字节）"——
+那不是网络的签名，就是这个 race；而 nodejs.org 不宣告 accept-ranges，所以 resume 永远补不上。
+
+### 修复 2：macOS 的 JDK 解包多一层（darwin-*）
+
+Adoptium 的 macOS 包是 `.app` 形态：`jdk-21.0.12.1+1/Contents/Home/bin/java`。manifest 里
+`stripRootComponents: 1` 只剥外层目录，剩下 `Contents/Home/…`，而 probe 找的是 `<jdk>/bin/java` —— 落空，
+然后 `ghidra` / `apktool` / `jadxHeadlessMcp` 三个都因 `requires: ["jdk"]` 被跳过（issue 里的"8 unmet steps"
+其实是两个根因叠出来的）。
+
+- 解包后**识别 `.app` 布局并把它当作安装根**：条件是该目录下真有 `bin/java`，所以不会对别的归档误判。
+- 没做"按平台改 strip 数"：那对任何在 macOS 上本来扁平发布的归档就会是错的。
+
+### 文档：macOS 的两条限制写进 README
+
+- 维护者没有 macOS 机器，2.0.16 之前的 darwin 路径从未真机跑过，2.0.17 也**没有在真实 Mac 上端到端复验**；
+  README 用一张表写清每条的**证据等级**，并请用户失败时附 `logs/setup.log`。
+- **macOS 上 `smoke` 会失败**：上游 Ghidra 公开包不含 macOS 原生反编译器（实测扫 `ghidra_12.1.4_PUBLIC` 的中央
+  目录，`Decompiler/os/` 只有 `linux_x86_64` 与 `win_x86_64`）。这是上游限制，不是供给故障，README 已说明。
+
+### 测试
+
+两个回归测试，都先确认过"在修复前会红"：
+
+- **下载字节完整**：本地 server 发 4 MiB，断言落地文件等于 `content-length`。跑测试时钉
+  `REA_BUNDLE_DOWNLOAD_ROUTE=node`（否则 Windows 会走 PowerShell，正好测不到这个 bug）。
+  反向验证：把 `res.pause()` 退回监听器写法，测试立刻红并打印
+  `attempt 1/4 ended short by 65112 byte(s); resuming` —— 与 issue 的现象一致。
+- **`.app` 布局归一化**：构造 `jdk-21/Contents/Home/bin/java` 的 tar.gz，断言安装后 `bin/java` 在根上、
+  `Contents/Home` 不再存在。反向验证：修复前红（`flattened=false nested=true`）。
+
+真实产物交叉验证：下载 issue 里那个 Adoptium 包（200,073,404 B、sha256 `3623232f…`，与 manifest 逐字节一致）
+并解包，确认 `Contents/Home/bin/java` 存在、`jdk-…/bin/java` 不存在。
+
+### 验证
+
+```
+单测        106（setup）+ 17（deps）+ 25（host-compat）+ 14（hardening）= 162，0 失败
+```
+
+**明确未验证的**：真实 macOS 上的端到端运行。本机出口到 nodejs.org 直连超时、经代理 403、WSL 无外网，
+所以两个修复都止于"本地复现 + 真实产物解包 + 反向验证"。macOS 用户若仍失败，README 指到了该怎么报。
+
 ## 2.0.16 — 2026-11-07
 
 **第三轮审计：2.0.15 的 4 个 P0 与无锁 npm fallback 全部验收通过，唯一否决项是 Frida 的哈希门禁

@@ -132,7 +132,7 @@ releases, checksum-verified). Then install the plugin for your profile:
 ```
 dsh plugin --profile <profile> add dsh-plugin-rea
 # or pin this release instead of tracking npm latest:
-dsh plugin --profile <profile> add github:czcdr/dsh-plugin-rea#v2.0.16
+dsh plugin --profile <profile> add github:czcdr/dsh-plugin-rea#v2.0.17
 ```
 
 > **On an Electron host (the DeepSeek Harness desktop app) the profile is owned by the application.**
@@ -365,6 +365,44 @@ the dependency gate at zod 4.6.7 · minimatch 11.0.5 · glob 14.0.4, `host-compa
 on this machine once repaired.
 
 ## Scope and caveats
+
+### macOS: read this first
+
+**The maintainer has no macOS machine.** Until 2.0.16 the darwin provisioning path had **never run on real
+hardware**, which is how two defects that only exist on macOS shipped (issue
+[#1](https://github.com/czcdr/dsh-plugin-rea/issues/1)): the Node download route dropped the first data chunk, so
+every archive failed with `size mismatch`; and Adoptium's macOS JDK unpacks one level deeper (`Contents/Home`), so
+the probe looked for a `bin/java` that was not there. 2.0.17 fixes both, but **the fix has not been re-verified end to
+end on a real Mac** — the table below says how far the evidence goes, so you can decide whether to check first.
+
+| Item | How far we verified it |
+|---|---|
+| First-chunk loss | **Solid**: reproduced against a local server (4 MiB delivered as 4 MiB − 65,408 B); reverting the fix makes the test fail immediately with `ended short by 65112 byte(s); resuming`, the same shape and cause as the report |
+| `.app` layout | **Solid**: the real Adoptium archive (200,073,404 B, sha256 matching the manifest) unpacks to `Contents/Home/bin/java` with no `bin/java` above it |
+| Both fixes on real macOS | **Not verified**: this machine cannot reach nodejs.org directly (timeout), through the proxy (403), and WSL has no egress — so there has been no real macOS end-to-end run |
+
+After `node scripts/setup.mjs --reuse` on a Mac, the expected outcome is: `node` / `platform-tools` no longer report
+`size mismatch`, `jdk` goes `[ok]` with `<bundle>/vendor/jdk/bin/java` in place, and `ghidra` / `apktool` /
+`jadxHeadlessMcp` follow through `requires: ["jdk"]`. **If it still fails, please attach `logs/setup.log` to the
+issue** — that log is the only macOS evidence this repository can get, and without it the next round is guessing
+again.
+
+### The `smoke` step fails on macOS, and that is not a provisioning fault
+
+Upstream's public Ghidra zip **ships no macOS native decompiler**: `Ghidra/Features/Decompiler/os/` contains only
+`linux_x86_64` and `win_x86_64` (measured by scanning the central directory of
+`ghidra_12.1.4_PUBLIC_20260921.zip`). So on macOS arm64 the final `smoke` step reports:
+
+```
+Analysis failed (provider_unavailable): The selected analysis provider is unavailable.
+rea doctor → ghidra-native_decompiler: Matching native decompiler for darwin/arm64 was not found
+```
+
+That is an **upstream build limitation**, not a failure of this bundle. Everything except native decompilation keeps
+working. Closing it means building Ghidra's decompiler yourself and placing `decompile` under
+`Ghidra/Features/Decompiler/os/mac_arm_64/` (or waiting for upstream to publish one).
+
+Everything else:
 
 - REA exposes 229 tools at 6.8.0, so every session's tool list grows.
 - Provisioning is honest about checksums: where a vendor publishes one it is pinned and verified; where none

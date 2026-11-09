@@ -2774,3 +2774,98 @@ test("a mismatched frida binding is moved off the path REA loads", async (t) => 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+/* ---- issue #1 (macOS arm64): download truncation + JDK .app layout ------- */
+
+test("a download keeps every byte the server sent", async (t) => {
+  // Regression for issue #1, bug 1: `openGet()` attached a `data` listener before
+  // any consumer existed, so Node synchronously flushed the first buffered chunk to
+  // it and the bytes were dropped. A local server that sends headers and body in one
+  // burst reproduces it deterministically; on a real link it depends on how the
+  // first segment gets split, which is why Windows (PowerShell route) never saw it.
+  const payload = Buffer.alloc(4 * 1024 * 1024, 0x5a);
+  const server = createServer((req, res) => {
+    req.on("error", () => {});
+    res.on("error", () => {});
+    res.writeHead(200, { "content-type": "application/octet-stream", "content-length": String(payload.length) });
+    res.end(payload);
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = server.address().port;
+  const root = mkdtempSync(path.join(tmpdir(), "rea-download-integrity-"));
+  try {
+    const bundle = path.join(root, "bundle");
+    const setup = makePluginTree(root, (manifest) => {
+      manifest.components.apktool = testComponent(`http://127.0.0.1:${port}/payload.bin`, payload, {
+        moveTo: "apktool",
+        saveAs: "payload.bin",
+      });
+    });
+    const run = await runToCompletion(process.execPath, [setup, "--only", "apktool", "--root", bundle], {
+      encoding: "utf8",
+      timeout: 180000,
+      // Pin the Node route: on Windows PowerShell is tried first, so without this
+      // the test would silently exercise the one route that never had the bug.
+      env: { ...process.env, REA_BUNDLE_DOWNLOAD_ROUTE: "node" },
+    });
+    assert.doesNotMatch(run.stdout, /first route failed/, `the Node route must not need the fallback:\n${run.stdout}`);
+    const landed = path.join(bundle, "vendor", "apktool", "payload.bin");
+    assert.ok(existsSync(landed), `the archive must land:\n${run.stdout}`);
+    assert.equal(
+      statSync(landed).size,
+      payload.length,
+      `the transfer must be byte-exact; a short file means the first chunk was discarded:\n${run.stdout}`,
+    );
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a macOS .app-style archive installs at Contents/Home", async (t) => {
+  // Regression for issue #1, bug 2: Adoptium's macOS tarball is
+  // `jdk-21.../Contents/Home/bin/java`, and `stripRootComponents: 1` only removes
+  // the outer directory, so the probe looked for `<jdk>/bin/java` and found nothing —
+  // taking ghidra, apktool and jadx with it through `requires: ["jdk"]`.
+  const root = mkdtempSync(path.join(tmpdir(), "rea-app-layout-"));
+  try {
+    const src = path.join(root, "src");
+    const home = path.join(src, "jdk-21.0.12.1", "Contents", "Home");
+    mkdirSync(path.join(home, "bin"), { recursive: true });
+    mkdirSync(path.join(home, "lib"), { recursive: true });
+    writeFileSync(path.join(home, "bin", `java${EXE}`), "placeholder\n");
+    writeFileSync(path.join(home, "lib", "modules"), "placeholder\n");
+    const tarPath = path.join(root, "jdk.tar.gz");
+    const built = spawnSync("tar", ["-czf", tarPath, "-C", src, "jdk-21.0.12.1"], { windowsHide: true });
+    if (built.status !== 0 || !existsSync(tarPath)) {
+      t.skip("no tar that can create a .tar.gz on this host");
+      return;
+    }
+    const payload = readFileSync(tarPath);
+    const bundle = path.join(root, "bundle");
+    mkdirSync(path.join(bundle, "cache"), { recursive: true });
+    writeFileSync(path.join(bundle, "cache", "jdk.tar.gz"), payload);
+
+    const setup = makePluginTree(root, (manifest) => {
+      manifest.components.jdk = testArchive("http://127.0.0.1:9/jdk.tar.gz", payload, {
+        format: "tar.gz",
+        moveTo: "jdk",
+        strip: 1,
+        probe: { file: `{vendor}/jdk/bin/java${EXE}` },
+      });
+    });
+    const run = await runToCompletion(process.execPath, [setup, "--only", "jdk", "--offline", "--root", bundle], {
+      encoding: "utf8",
+      timeout: 180000,
+    });
+    const flattened = path.join(bundle, "vendor", "jdk", "bin", `java${EXE}`);
+    const nested = path.join(bundle, "vendor", "jdk", "Contents", "Home", "bin", `java${EXE}`);
+    assert.ok(
+      existsSync(flattened),
+      `the JDK must be installed with bin/java at its root, not under Contents/Home:\nflattened=${existsSync(flattened)} nested=${existsSync(nested)}\n${run.stdout}`,
+    );
+    assert.equal(existsSync(nested), false, "the .app wrapper must not survive as the install root");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
