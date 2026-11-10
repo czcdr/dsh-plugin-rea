@@ -45,6 +45,7 @@
     "scripts/",
     "manifest/",
     "docs/bundle-design.md",
+    "docs/macos-native-decompiler.md",
     "README.md",
     "README.zh-CN.md",
     "LICENSE",

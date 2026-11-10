@@ -372,20 +372,20 @@ on this machine once repaired.
 hardware**, which is how two defects that only exist on macOS shipped (issue
 [#1](https://github.com/czcdr/dsh-plugin-rea/issues/1)): the Node download route dropped the first data chunk, so
 every archive failed with `size mismatch`; and Adoptium's macOS JDK unpacks one level deeper (`Contents/Home`), so
-the probe looked for a `bin/java` that was not there. 2.0.17 fixes both, but **the fix has not been re-verified end to
-end on a real Mac** — the table below says how far the evidence goes, so you can decide whether to check first.
+the probe looked for a `bin/java` that was not there. 2.0.17 fixes both, and a contributor has since run it end to
+end on real macOS arm64 hardware — the table below records that evidence, including what remains an upstream
+limitation.
 
 | Item | How far we verified it |
 |---|---|
 | First-chunk loss | **Solid**: reproduced against a local server (4 MiB delivered as 4 MiB − 65,408 B); reverting the fix makes the test fail immediately with `ended short by 65112 byte(s); resuming`, the same shape and cause as the report |
 | `.app` layout | **Solid**: the real Adoptium archive (200,073,404 B, sha256 matching the manifest) unpacks to `Contents/Home/bin/java` with no `bin/java` above it |
-| Both fixes on real macOS | **Not verified**: this machine cannot reach nodejs.org directly (timeout), through the proxy (403), and WSL has no egress — so there has been no real macOS end-to-end run |
+| Both fixes on real macOS | **Verified on hardware**: a contributor ran `main` on macOS 27.2 arm64 with an empty cache and nothing adoptable (issue [#1](https://github.com/czcdr/dsh-plugin-rea/issues/1)) — every archive arrived at its exact pinned size on the first attempt (zero `ended short by` lines), `jdk` went `[ok]` with `<bundle>/vendor/jdk/bin/java` and no `Contents`, `ghidra` / `apktool` / `jadxHeadlessMcp` followed, `reaAgents` replayed the audited lock, `probe` reported 229 tools and `shim` resolved 6.8.0 |
 
-After `node scripts/setup.mjs --reuse` on a Mac, the expected outcome is: `node` / `platform-tools` no longer report
-`size mismatch`, `jdk` goes `[ok]` with `<bundle>/vendor/jdk/bin/java` in place, and `ghidra` / `apktool` /
-`jadxHeadlessMcp` follow through `requires: ["jdk"]`. **If it still fails, please attach `logs/setup.log` to the
-issue** — that log is the only macOS evidence this repository can get, and without it the next round is guessing
-again.
+The outcome on that machine matched exactly: `node` / `platform-tools` no longer reported `size mismatch`, `jdk` went
+`[ok]` with `<bundle>/vendor/jdk/bin/java` in place, and `ghidra` / `apktool` / `jadxHeadlessMcp` followed through
+`requires: ["jdk"]`. **If a run on another Mac still fails, please attach `logs/setup.log` to the issue** — one more
+real log is worth more than another round of guessing.
 
 ### The `smoke` step fails on macOS, and that is not a provisioning fault
 
@@ -399,8 +399,12 @@ rea doctor → ghidra-native_decompiler: Matching native decompiler for darwin/a
 ```
 
 That is an **upstream build limitation**, not a failure of this bundle. Everything except native decompilation keeps
-working. Closing it means building Ghidra's decompiler yourself and placing `decompile` under
-`Ghidra/Features/Decompiler/os/mac_arm_64/` (or waiting for upstream to publish one).
+working, and it is closable on the machine itself: building the decompiler from the pinned Ghidra tag and installing
+it as `Ghidra/Features/Decompiler/os/mac_arm_64/decompile` needs a C++ compiler and `make` — no `Xcode.app`, cmake or
+gradle. Measured on macOS 27.2 arm64 on 2026-11-09: after that build `rea doctor` reports
+`ghidra-native_decompiler: ok` with the provider `available: true`, and `setup.mjs --reuse` finishes with
+`[ok] smoke — imported java in 7s via ghidra`. Recipe, evidence and caveats:
+[docs/macos-native-decompiler.md](docs/macos-native-decompiler.md).
 
 Everything else:
 

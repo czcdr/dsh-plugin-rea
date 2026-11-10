@@ -335,18 +335,17 @@ apktool 3.0.3 / jadx 0.7.1 / Node 24.22.1）。同一条链路重验：`--dry-ru
 **维护者手上没有 macOS 机器。** 2.0.16 以前，macOS 的供给路径**从未在真机上跑过**，所以两个只在
 darwin 上成立的缺陷被发了出去（issue [#1](https://github.com/czcdr/dsh-plugin-rea/issues/1)）：Node 下载路线
 丢第一个数据块导致每个归档 `size mismatch`；Adoptium 的 macOS JDK 解包后多一层 `Contents/Home`，probe 落空。
-2.0.17 修了这两个，但**修完没有在真实 macOS 上端到端复验过** —— 证据等级见下表，请按它决定要不要先自己验一遍。
+2.0.17 修了这两个，并且已有贡献者在真实 macOS arm64 上跑通了端到端 —— 证据与仍然存在的上游限制见下表。
 
 | 事项 | 我们验到什么程度 |
 |---|---|
 | 首块丢失 | **硬**：本地 server 复现（4 MiB → 丢 65,408 B）；把修复退回监听器写法，测试立刻红并打印 `ended short by 65112 byte(s); resuming`，与 issue 的现象同形同因 |
 | `.app` 布局 | **硬**：真实 Adoptium 包（200,073,404 B、sha256 与 manifest 一致）解包后 `Contents/Home/bin/java` 存在、`bin/java` 不存在 |
-| 两条修复在真实 macOS 上的效果 | **未验证**：本机出口到 nodejs.org 直连超时、经代理 403、WSL 无外网，因此没有一次真实的 macOS 端到端运行 |
+| 两条修复在真实 macOS 上的效果 | **真机已验证**：贡献者在 macOS 27.2 arm64 上以空缓存、无可复用组件运行 `main`（issue [#1](https://github.com/czcdr/dsh-plugin-rea/issues/1)）—— 每个归档首次下载即精确等于 pin 尺寸（全程零 `ended short by`）、`jdk` 为 `[ok]` 且 `<bundle>/vendor/jdk/bin/java` 就位且无 `Contents`、`ghidra` / `apktool` / `jadxHeadlessMcp` 随 `requires` 一起通过、`reaAgents` 复现了审计锁定、`probe` 报 229 个工具、`shim` 解析到 6.8.0 |
 
-在 macOS 上跑 `node scripts/setup.mjs --reuse` 后，正常应该是：`node` / `platform-tools` 不再 `size mismatch`，
-`jdk` 直接 `[ok]` 且 `<bundle>/vendor/jdk/bin/java` 就位，`ghidra` / `apktool` / `jadxHeadlessMcp` 随
-`requires: ["jdk"]` 一起通过。**如果仍有问题，请把 `logs/setup.log` 贴到 issue 里** —— 那是这个仓库唯一能拿到的
-macOS 现场，没有它下一次也只能靠猜。
+实测结果与上述完全一致：`node` / `platform-tools` 不再 `size mismatch`，`jdk` 为 `[ok]` 且
+`<bundle>/vendor/jdk/bin/java` 就位，`ghidra` / `apktool` / `jadxHeadlessMcp` 随 `requires: ["jdk"]` 一起通过。
+**如果别的 Mac 上仍然失败，请把 `logs/setup.log` 贴到 issue 里** —— 多一份真实日志胜过又一轮猜测。
 
 ### macOS 上的 `smoke` 会失败，那不是供给故障
 
@@ -359,8 +358,12 @@ Analysis failed (provider_unavailable): The selected analysis provider is unavai
 rea doctor → ghidra-native_decompiler: Matching native decompiler for darwin/arm64 was not found
 ```
 
-这是**上游的构建限制**，不是本插件供给失败。除了原生反编译，其余 REA 工具照常可用。要补齐需要自己编译
-Ghidra 的 decompiler 并把 `decompile` 放到 `Ghidra/Features/Decompiler/os/mac_arm_64/`（或等上游发布）。
+这是**上游的构建限制**，不是本插件供给失败。除了原生反编译，其余 REA 工具照常可用，而且它可以在本机补齐：
+用固定 pin 的 Ghidra 源码编译出 decompiler，把 `decompile` 放到 `Ghidra/Features/Decompiler/os/mac_arm_64/` ——
+只需要 C++ 编译器与 `make`，不需要 `Xcode.app`、cmake 或 gradle。2026-11-09 在 macOS 27.2 arm64 实测：编译后
+`rea doctor` 报 `ghidra-native_decompiler: ok`、provider `available: true`，`setup.mjs --reuse` 以
+`[ok] smoke — imported java in 7s via ghidra` 结束 `setup complete.`。步骤、证据与注意事项见
+[docs/macos-native-decompiler.md](docs/macos-native-decompiler.md)。
 
 其余注意事项：
 
