@@ -232,7 +232,7 @@ test("a mirrored shim takes its bundle root from its own location, not DSH_HOME"
     copyFileSync(SHIM_SOURCE, path.join(mirror, "bin", "rea-shim.mjs"));
     assert.equal(shimBundleRoot(path.join(mirror, "bin", "rea-shim.mjs"), { DSH_HOME: path.join(root, "elsewhere") }), mirror);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmTreeQuiet(root);
   }
 });
 
@@ -250,7 +250,7 @@ test("a checkout shim resolves the bundle root setup.mjs would write", () => {
       path.join(home, "plugins", "rea-bundle"),
     );
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmTreeQuiet(root);
   }
 });
 
@@ -264,7 +264,7 @@ test("REA_BUNDLE_ROOT still overrides both layouts", () => {
     const forced = path.join(root, "forced");
     assert.equal(shimBundleRoot(path.join(checkout, "bin", "rea-shim.mjs"), { REA_BUNDLE_ROOT: forced }), forced);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmTreeQuiet(root);
   }
 });
 
@@ -317,7 +317,7 @@ test("a bare invocation refuses with a usage error when no terminal is watching"
     assert.match(helped.stdout, /--shim-status/);
     assert.doesNotMatch(helped.stderr, /must pass `mcp`/);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmTreeQuiet(root);
   }
 });
 
@@ -367,7 +367,7 @@ test("--reuse still adopts a compatible node", (t) => {
     assert.equal(run.status, 0, run.stderr);
     assert.match(run.stdout, /reusing existing node from REA_BUNDLE_NODE/);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmTreeQuiet(root);
   }
 });
 
@@ -395,7 +395,7 @@ test("--reuse rejects a candidate the manifest's node probe rejects", () => {
     // ...and it falls through to provisioning rather than giving up.
     assert.match(run.stdout, /\[plan\] node —/);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmTreeQuiet(root);
   }
 });
 
@@ -415,7 +415,7 @@ test("--reuse rejects a candidate that cannot be run at all", () => {
     assert.doesNotMatch(run.stdout, /reusing existing node from REA_BUNDLE_NODE/);
     assert.match(run.stdout, /not reusing REA_BUNDLE_NODE node/);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmTreeQuiet(root);
   }
 });
 
@@ -454,7 +454,7 @@ test("an unavailable optional component is reported, not fatal", () => {
     assert.equal(written.paths.adb, null);
     assert.equal(written.components.androidPlatformTools.unavailable, true);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmTreeQuiet(root);
   }
 });
 
@@ -488,7 +488,7 @@ test("the smoke step is skipped when this run resolved no engine", () => {
     const run = runSmokeSetup(root);
     assert.match(run.stdout, /\[skip\] smoke — this run resolved no ghidra \+ jdk pair/);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmTreeQuiet(root);
   }
 });
 
@@ -498,7 +498,7 @@ test("--skip-smoke turns the smoke step off outright", () => {
     const run = runSmokeSetup(root, ["--skip-smoke"]);
     assert.match(run.stdout, /\[skip\] smoke — disabled by --skip-smoke/);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmTreeQuiet(root);
   }
 });
 
@@ -695,7 +695,7 @@ test("--only keeps the records of the components it did not touch", () => {
     assert.equal(written.paths.adb, null);
     assert.equal(written.components.androidPlatformTools.unavailable, true);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmTreeQuiet(root);
   }
 });
 
@@ -734,7 +734,7 @@ test("--only satisfies a requirement from the record instead of skipping the che
     assert.equal(reaOnly.status, 0, `${reaOnly.stdout}\n${reaOnly.stderr}`);
     assert.doesNotMatch(reaOnly.stdout, /required component "node" is unavailable/);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmTreeQuiet(root);
   }
 });
 
@@ -761,7 +761,7 @@ test("a complete .part is verified and kept instead of re-requested", () => {
     assert.match(run.stdout, /was already complete; verified and kept/);
     assert.deepEqual(readFileSync(path.join(bundle, "vendor", "payload", "payload.bin")), payload);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmTreeQuiet(root);
   }
 });
 
@@ -819,7 +819,7 @@ test("the PowerShell route resumes from the bytes already on disk", async (t) =>
     assert.deepEqual(readFileSync(path.join(bundle, "vendor", "payload", "payload.bin")), payload);
   } finally {
     await new Promise((resolve) => server.close(resolve));
-    rmSync(root, { recursive: true, force: true });
+    rmTreeQuiet(root);
   }
 });
 
@@ -862,7 +862,7 @@ test("a wrapper marked executable lands with the exec bit on POSIX", (t) => {
     assert.notEqual(wrapperMode & 0o111, 0, `the marked wrapper must be executable, mode ${wrapperMode.toString(8)}`);
     assert.equal(plainMode & 0o111, 0, "an unmarked file must keep the mode the archive gave it");
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmTreeQuiet(root);
   }
 });
 
@@ -892,7 +892,7 @@ test("a file probe honours expect.contains", () => {
     assert.equal(wrong.status, 1, `${wrong.stdout}\n${wrong.stderr}`);
     assert.match(wrong.stdout, /does not contain "application\.version="/);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmTreeQuiet(root);
   }
 });
 
@@ -927,7 +927,7 @@ test("a reused component must pass the probe a provisioned copy would face", () 
     assert.doesNotMatch(bad.stdout, /reusing existing ghidra/);
     assert.match(bad.stdout, /not reusing GHIDRA_INSTALL_DIR ghidra/);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmTreeQuiet(root);
   }
 });
 
@@ -945,6 +945,31 @@ function makeBundleTree(root, { marker, lock }) {
   return bundle;
 }
 
+/**
+ * Remove a test tree, tolerating a detached provisioner that is still finishing.
+ *
+ * Several tests below start `setup` in the background on purpose (they assert the
+ * marker appears). The shim detaches that child, so it can still be creating
+ * `logs/` or writing `setup.log` for a few milliseconds after the test returns —
+ * and a bare `rmSync` then throws `ENOTEMPTY: directory not empty`, which is how
+ * `this bundle's own row is not reported as a duplicate` went red on two
+ * consecutive CI runs while passing on Windows.
+ *
+ * Synchronous sleep rather than a promise: these cleanups sit in `finally` blocks
+ * of synchronous tests.
+ */
+function rmTreeQuiet(target) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      rmSync(target, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (attempt >= 20 || error?.code !== "ENOTEMPTY") throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+    }
+  }
+}
+
 function runShim(bundle, args, extraEnv = {}) {
   // A fresh home keeps the duplicate-registration check from reading this
   // machine's real ~/.dsh/cordis.patch.yml and making the suite depend on it.
@@ -956,9 +981,12 @@ function runShim(bundle, args, extraEnv = {}) {
     // would take its `auto` branch and, on a machine that happens to have a REA
     // on PATH, delegate to it instead of exercising the code under test.
     REA_BUNDLE_LAUNCH: "bundle",
-    ...extraEnv,
   };
+  // The developer's shell must not decide this, but the caller must: the delete
+  // used to run AFTER `...extraEnv`, so `{ REA_BUNDLE_AUTO_PROVISION: "0" }` was
+  // silently stripped and no test could turn the background provisioner off.
   delete env.REA_BUNDLE_AUTO_PROVISION;
+  Object.assign(env, extraEnv);
   mkdirSync(env.DSH_HOME, { recursive: true });
   return spawnSync(process.execPath, [path.join(bundle, "bin", "rea-shim.mjs"), ...args], { encoding: "utf8", timeout: 60000, env });
 }
@@ -974,7 +1002,7 @@ test("a malformed bundle.json starts a provisioning run instead of failing forev
     assert.match(run.stderr, /provisioning started in the background/);
     assert.ok(await waitFor(() => existsSync(marker)), "setup was never started for a malformed bundle.json");
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmTreeQuiet(root);
   }
 });
 
@@ -992,7 +1020,7 @@ test("a failed lock is reported as failed, not as provisioning in progress", asy
     assert.doesNotMatch(run.stderr, /provisioning started in the background/);
     assert.equal(existsSync(marker), false, "a fresh failed lock must not trigger another run");
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmTreeQuiet(root);
   }
 });
 
@@ -1009,7 +1037,7 @@ test("a lock whose holder is gone does not block provisioning", async () => {
     assert.match(run.stderr, /provisioning started in the background/);
     assert.ok(await waitFor(() => existsSync(marker)), "a dead lock holder must not suppress the run");
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmTreeQuiet(root);
   }
 });
 
@@ -1035,7 +1063,7 @@ test("an expired lock is cleared instead of wedging provisioning forever", async
       assert.match(run.stderr, /provisioning started in the background/, label);
       assert.ok(await waitFor(() => existsSync(marker)), `${label}: setup was never started`);
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      rmTreeQuiet(root);
     }
   }
 });
@@ -1058,7 +1086,7 @@ test("a read-only bundle root reports unwritable instead of crashing on the stal
       chmodSync(bundle, 0o755);
     }
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmTreeQuiet(root);
   }
 });
 
@@ -1072,7 +1100,7 @@ test("a second REA registration is reported instead of silently duplicated", () 
       path.join(home, "cordis.patch.yml"),
       ["- insert:", "    - id: rea-mcp", "      name: '@deepseek-ai/dsh-mcp-client'", "      config:", "        serverName: rea", "        transport: stdio", ""].join("\n"),
     );
-    const run = runShim(bundle, ["mcp"], { DSH_HOME: home });
+    const run = runShim(bundle, ["mcp"], { DSH_HOME: home, REA_BUNDLE_AUTO_PROVISION: "0" });
     assert.equal(run.status, 78, run.stderr);
     assert.match(run.stderr, /duplicate REA registration/);
     assert.match(run.stderr, /id "rea-mcp"/);
@@ -1102,7 +1130,7 @@ test("a second REA registration is reported instead of silently duplicated", () 
       "a trailing comment must not hide the duplicate row",
     );
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmTreeQuiet(root);
   }
 });
 
@@ -1116,11 +1144,11 @@ test("this bundle's own row is not reported as a duplicate", () => {
       path.join(home, "cordis.patch.yml"),
       ["- insert:", "    - id: mcp-rea", "      name: '@deepseek-ai/dsh-mcp-client'", "      config:", "        serverName: rea", ""].join("\n"),
     );
-    const run = runShim(bundle, ["mcp"], { DSH_HOME: home });
+    const run = runShim(bundle, ["mcp"], { DSH_HOME: home, REA_BUNDLE_AUTO_PROVISION: "0" });
     assert.equal(run.status, 78, run.stderr);
     assert.doesNotMatch(run.stderr, /duplicate REA registration/);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmTreeQuiet(root);
   }
 });
 
@@ -1155,7 +1183,7 @@ test("--offline refuses the npm step instead of going online anyway", () => {
     assert.equal(ok.status, 0, `${ok.stdout}\n${ok.stderr}`);
     assert.match(ok.stdout, /already vendored/);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmTreeQuiet(root);
   }
 });
 
@@ -1181,7 +1209,7 @@ test("a non-numeric numeric override falls back to the default", () => {
     const explicit = run({ REA_BUNDLE_FETCH_RETRIES: "7" });
     assert.match(explicit.stdout, /retries=7\b/);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmTreeQuiet(root);
   }
 });
 
@@ -1265,7 +1293,7 @@ test("a zip still extracts when unzip is absent (POSIX fallbacks)", (t) => {
       }
     }
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmTreeQuiet(root);
   }
 });
 
@@ -1287,7 +1315,7 @@ test("the fallback vendored-REA path matches where setup installs it", () => {
     assert.equal(report.rea.ok, true, JSON.stringify(report.rea));
     assert.match(report.rea.reaEntry, /node_modules/);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmTreeQuiet(root);
   }
 });
 
@@ -1327,7 +1355,7 @@ test("--json releases the lock on success and marks it failed on failure", () =>
     assert.equal(lock.state, "failed");
     assert.equal(lock.exit, 1);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmTreeQuiet(root);
   }
 });
 
@@ -1365,7 +1393,7 @@ test("a run lock held by a live process stops a second setup", () => {
     assert.equal(lock.pid, process.pid);
     assert.equal(lock.state, "running");
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmTreeQuiet(root);
   }
 });
 
@@ -1539,7 +1567,7 @@ function launchFixture() {
     bin: path.join(root, "bin"),
     record: path.join(root, "record.txt"),
     clean() {
-      rmSync(root, { recursive: true, force: true });
+      rmTreeQuiet(root);
     },
   };
 }
@@ -1849,7 +1877,7 @@ function mirrorFixture() {
   mkdirSync(path.join(checkout, "bin"), { recursive: true });
   copyFileSync(path.join(REPO_ROOT, "bin", "rea-shim.mjs"), path.join(bundle, "bin", "rea-shim.mjs"));
   writeFileSync(path.join(bundle, "mirror.json"), JSON.stringify({ schema: 1, pluginRoot: checkout, mirroredAt: "2026-10-18T00:00:00Z" }));
-  return { root, bundle, checkout, clean() { rmSync(root, { recursive: true, force: true }); } };
+  return { root, bundle, checkout, clean() { rmTreeQuiet(root); } };
 }
 
 function checkoutStub(checkout, marker) {
@@ -2066,7 +2094,7 @@ test("a BOM-ed mirror.json still points a mirrored setup at the real checkout", 
     // on a missing manifest.
     assert.match(run.stdout, /\[plan\] node/);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmTreeQuiet(root);
   }
 });
 
@@ -2097,7 +2125,7 @@ test("a BOM-ed bundle.json is read instead of treated as unprovisioned", () => {
     assert.equal(run.status, 0, run.stderr);
     assert.match(run.stdout, new RegExp(`already provisioned \\(${bomNodePin.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\)`), run.stdout);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmTreeQuiet(root);
   }
 });
 
@@ -2142,7 +2170,7 @@ test("a UTF-16 bundle.json is read by setup instead of treated as unprovisioned"
     assert.equal(run.status, 0, run.stderr);
     assert.match(run.stdout, new RegExp(`already provisioned \\(${nodePin.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\)`), run.stdout);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmTreeQuiet(root);
   }
 });
 
@@ -2161,7 +2189,7 @@ test("a UTF-16 bundle.json is read by the shim as provisioned", () => {
     assert.equal(report.rea.ok, true, JSON.stringify(report.rea));
     assert.equal(existsSync(path.join(root, "setup-ran")), false, "a readable record must not start a run");
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmTreeQuiet(root);
   }
 });
 
@@ -2201,7 +2229,7 @@ test("the guide calls a machine with no bundle.json a first install", () => {
     assert.match(state.setupCommand, /scripts[/\\]setup\.mjs/);
     assert.equal(state.pluginVersion, "2.0.11");
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmTreeQuiet(root);
   }
 });
 
@@ -2218,7 +2246,7 @@ test("the guide calls a bundle at the old REA stale, and a matching pin settled"
     assert.equal(settled.state, "ok");
     assert.equal(settled.needsSetup, false);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmTreeQuiet(root);
   }
 });
 
@@ -2230,7 +2258,7 @@ test("the guide reads a UTF-16 bundle.json instead of calling it unreadable", ()
     assert.equal(state.state, "ok");
     assert.equal(state.installedRea, "6.5.0");
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmTreeQuiet(root);
   }
 });
 
@@ -2248,7 +2276,7 @@ test("the guide asks for setup when the record cannot be parsed or names no REA"
     assert.equal(unknown.state, "unknown");
     assert.equal(unknown.needsSetup, true);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmTreeQuiet(root);
   }
 });
 
@@ -2354,7 +2382,7 @@ test("a half-fetched multi-file component fails outright instead of recording a 
     assert.doesNotMatch(second.stdout, /already provisioned/, second.stdout);
   } finally {
     await new Promise((resolve) => server.close(resolve));
-    rmSync(root, { recursive: true, force: true });
+    rmTreeQuiet(root);
   }
 });
 
@@ -2380,7 +2408,7 @@ test("a recorded component is probed at its recorded path, not at a vendor path"
     assert.equal(run.status, 0, run.stderr);
     assert.doesNotMatch(run.stdout, /already provisioned/, run.stdout);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmTreeQuiet(root);
   }
 });
 
@@ -2404,7 +2432,7 @@ test("a record whose version is not the manifest pin is not trusted", () => {
     assert.match(run.stdout, /recorded but out of date/, run.stdout);
     assert.doesNotMatch(run.stdout, /already provisioned/, run.stdout);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmTreeQuiet(root);
   }
 });
 
@@ -2434,7 +2462,7 @@ test("--dry-run creates nothing on disk", () => {
     assert.equal(existsSync(bundle), false, "a dry run must not create the root");
     assert.equal(existsSync(path.join(bundle, "logs", "setup.log")), false, "a dry run must not write a log");
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmTreeQuiet(root);
   }
 });
 
@@ -2453,7 +2481,7 @@ test("an unparseable setup.lock is replaced instead of throwing", () => {
     assert.doesNotMatch(combined, /SyntaxError/, combined);
     assert.match(combined, /setup\.lock is not readable JSON/, combined);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmTreeQuiet(root);
   }
 });
 
@@ -2604,7 +2632,7 @@ test("a failed archive probe puts the previous install back", async (t) => {
     assert.ok(existsSync(path.join(installed, "old-good.txt")), "the previous known-good install must survive a failed probe");
     assert.equal(existsSync(path.join(bundle, "vendor", "apktool.backup")), false, "a successful rollback must not leave the backup behind");
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmTreeQuiet(root);
   }
 });
 
@@ -2640,7 +2668,7 @@ test("a recorded REA whose closure still carries zod 4.4.3 is not reported as pr
     // Offline, so the honest answer is failure — not "healthy" with the old closure.
     assert.equal(run.status, 1, `${run.stdout}\n${run.stderr}`);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmTreeQuiet(root);
   }
 });
 
@@ -2674,7 +2702,7 @@ test("a recorded frida verdict is re-checked instead of trusted forever", async 
     assert.match(run.stdout, /fridaBindings/, run.stdout);
     assert.match(run.stdout, /not in the resolved closure/, run.stdout);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmTreeQuiet(root);
   }
 });
 
@@ -2749,7 +2777,7 @@ test("a mismatched frida binding is never imported", async (t) => {
     assert.match(run.stdout, /before any import/, run.stdout);
     assert.match(run.stdout, /not the recorded/, run.stdout);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmTreeQuiet(root);
   }
 });
 
@@ -2771,7 +2799,7 @@ test("a mismatched frida binding is moved off the path REA loads", async (t) => 
     assert.equal(existsSync(binding), false, "the distrusted binding must not remain where REA would load it");
     assert.ok(existsSync(`${binding}.rejected`), "it is quarantined, not deleted");
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmTreeQuiet(root);
   }
 });
 
@@ -2818,7 +2846,7 @@ test("a download keeps every byte the server sent", async (t) => {
     );
   } finally {
     await new Promise((resolve) => server.close(resolve));
-    rmSync(root, { recursive: true, force: true });
+    rmTreeQuiet(root);
   }
 });
 
@@ -2866,6 +2894,6 @@ test("a macOS .app-style archive installs at Contents/Home", async (t) => {
     );
     assert.equal(existsSync(nested), false, "the .app wrapper must not survive as the install root");
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmTreeQuiet(root);
   }
 });
