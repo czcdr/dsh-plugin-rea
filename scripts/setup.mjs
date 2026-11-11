@@ -35,7 +35,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { appendFileSync, chmodSync, closeSync, copyFileSync, createWriteStream, existsSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, closeSync, copyFileSync, createWriteStream, existsSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { homedir } from "node:os";
@@ -48,10 +48,33 @@ const PLUGIN_ROOT = path.resolve(HERE, "..");
 const IS_WINDOWS = process.platform === "win32";
 const EXE = IS_WINDOWS ? ".exe" : "";
 
+/**
+ * Two spellings of one directory are the same directory, not two.
+ *
+ * `path.resolve` alone is not enough on macOS: Node resolves a module's own URL
+ * through its real path, so `fileURLToPath(import.meta.url)` for a checkout under
+ * `/var/folders/...` (and any other symlinked location) yields `/private/var/...`,
+ * while an explicitly passed `--root /var/folders/...` keeps the spelling it was
+ * given. `samePath` then decided the run was not a mirrored one, ignored
+ * `mirror.json`, and looked for the manifest the mirror step was supposed to
+ * create — the BOM/mirror regression test in scripts/setup.test.mjs failed for
+ * exactly that reason on macOS while passing on Linux, where /tmp is not a symlink.
+ */
+function canonicalPath(value) {
+  const resolved = path.resolve(value);
+  try {
+    return realpathSync(resolved);
+  } catch {
+    // A path that does not exist yet (the bundle root on a first run) has no real
+    // path to compare; the resolved spelling is still the best answer available.
+    return resolved;
+  }
+}
+
 /** Windows treats two spellings of one path as equal; the mirror checks must too. */
 function samePath(left, right) {
-  const a = path.resolve(left);
-  const b = path.resolve(right);
+  const a = canonicalPath(left);
+  const b = canonicalPath(right);
   return IS_WINDOWS ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
@@ -1984,10 +2007,22 @@ function ensureFridaBindings(nodeRuntime, npmCli, installRoot) {
     log(`       frida has no native binding at ${bindingFile}; running its own install script via npm rebuild frida`);
   }
 
+  // `npm rebuild` runs the package's own install script in a shell, and that
+  // script resolves `node` from PATH — not from the interpreter npm itself is
+  // running under. On the machines this bundle exists for there is no `node` on
+  // PATH at all (that is why it vendors one), so the rebuild died with
+  // `npm rebuild frida exited 127: sh: node: command not found` and the binding
+  // was reported unavailable even where prebuild-install could have fetched a
+  // matching prebuilt binary. Put the vendored runtime first for this one spawn.
   const rebuild = spawnSync(
     nodeRuntime,
     [npmCli, "rebuild", "frida", "--prefix", installRoot, "--loglevel", "error"],
-    { cwd: installRoot, encoding: "utf8", timeout: 1800000 },
+    {
+      cwd: installRoot,
+      encoding: "utf8",
+      timeout: 1800000,
+      env: { ...process.env, PATH: `${path.dirname(nodeRuntime)}${path.delimiter}${process.env.PATH ?? ""}` },
+    },
   );
 
   // 2) Hash the result BEFORE importing it too — a rebuild can produce a binding
