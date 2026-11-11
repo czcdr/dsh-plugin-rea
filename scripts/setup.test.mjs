@@ -13,7 +13,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -230,7 +230,16 @@ test("a mirrored shim takes its bundle root from its own location, not DSH_HOME"
     const mirror = path.join(root, "plugins", "rea-bundle");
     mkdirSync(path.join(mirror, "bin"), { recursive: true });
     copyFileSync(SHIM_SOURCE, path.join(mirror, "bin", "rea-shim.mjs"));
-    assert.equal(shimBundleRoot(path.join(mirror, "bin", "rea-shim.mjs"), { DSH_HOME: path.join(root, "elsewhere") }), mirror);
+    // The shim derives its root from its own module URL, which Node resolves
+    // through the real path: on macOS `tmpdir()` is /var/folders/... and that is a
+    // symlink to /private/var/folders/..., so the reported root is the canonical
+    // spelling while the fixture path is not. Compare the same thing the shim
+    // reports rather than failing on the spelling — the other assertions in this
+    // test are about which of the two roots wins, not about how it is spelled.
+    assert.equal(
+      shimBundleRoot(path.join(mirror, "bin", "rea-shim.mjs"), { DSH_HOME: path.join(root, "elsewhere") }),
+      realpathSync(mirror),
+    );
   } finally {
     rmTreeQuiet(root);
   }
