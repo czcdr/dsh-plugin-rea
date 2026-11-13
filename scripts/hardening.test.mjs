@@ -21,7 +21,7 @@
  */
 
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -378,19 +378,55 @@ function makeBundleFixture(t, label) {
 }
 
 /** A registry stub that answers the pin, so these tests never need the network. */
+/**
+ * A registry stub in its OWN process.
+ *
+ * `runPowerShell()` is a `spawnSync`, so while the script that queries the registry
+ * runs, this file's event loop is blocked — and an in-process HTTP server can never
+ * answer. Every lookup therefore fell through to `registry.npmjs.org` after a full
+ * 20 s timeout. That stayed invisible for as long as the real registry happened to
+ * agree with the pin, because the fallback then produced "no update" and the test
+ * passed for the wrong reason. The day `rea-agents` 6.9.0 was published, "a clean
+ * bundle is the only green run" and "a recorded gate override is not drift" turned
+ * red on main with nothing wrong in the bundle. A child process answers regardless
+ * of what this one is doing.
+ */
 async function stubRegistry(t) {
-  const server = createServer((req, res) => {
-    if (req.url === "/rea-agents/latest") {
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ version: PINS.reaAgents }));
-      return;
-    }
-    res.writeHead(404, { "content-type": "application/json" });
-    res.end("{}");
+  const script = `
+    const { createServer } = require("node:http");
+    const server = createServer((req, res) => {
+      if (req.url === "/rea-agents/latest") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ version: process.env.STUB_REA_VERSION }));
+        return;
+      }
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end("{}");
+    });
+    server.listen(0, "127.0.0.1", () => process.stdout.write(String(server.address().port) + "\\n"));
+  `;
+  const child = spawn(process.execPath, ["-e", script], {
+    stdio: ["ignore", "pipe", "inherit"],
+    env: { ...process.env, STUB_REA_VERSION: PINS.reaAgents },
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
-  return `http://127.0.0.1:${server.address().port}`;
+  t.after(() => child.kill());
+  const port = await new Promise((resolve, reject) => {
+    let buffer = "";
+    const timer = setTimeout(() => reject(new Error("stub registry never reported a port")), 15000);
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      buffer += chunk;
+      const line = buffer.split("\n")[0].trim();
+      if (line === "") return;
+      clearTimeout(timer);
+      resolve(Number(line));
+    });
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+  });
+  return `http://127.0.0.1:${port}`;
 }
 
 test("check-updates: a clean bundle is the only green run", async (t) => {
