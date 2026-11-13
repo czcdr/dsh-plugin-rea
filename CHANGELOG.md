@@ -2,7 +2,84 @@
 
 本插件遵循语义化版本。版本号变化说明「配置组合」这层的变化，与 REA 自身的版本无关。
 
-## 2.0.17 — 2026-11-09
+## 2.0.18 — 2026-11-13
+
+**第一个真正装得上 macOS 的版本。** 2.0.17 只到 tag 为止、从未发布，本版包含它的全部内容，外加三组
+后续修复——其中两组来自 issue #1 的报告者，都是他在真机上跑出来的。
+
+### 来自贡献者的两处代码修复（PR
+[#2](https://github.com/czcdr/dsh-plugin-rea/pull/2)，by @bogatkin82-jpg）
+
+**`npm rebuild frida` 在 PATH 上没有 node 的机器上必然失败。** `npm rebuild` 会在 shell 里跑包自己的
+install 脚本，而那个脚本从 PATH 找 `node`——不是从 npm 正在用的解释器。本 bundle 面向的正是"PATH 上
+没有 node"的机器（这正是它要自带一个的理由），于是两次尝试都以
+`npm rebuild frida exited 127: sh: node: command not found` 结束，`fridaBindings` 被跳过。现在只为
+那一个 spawn 把 vendored 运行时前置到 PATH。真机确认修复有效：
+`[ok] fridaBindings — FRIDA_OK 3 (rebuilt by setup)`。
+
+**路径比较改用真实路径。** Node 通过真实路径解析模块 URL，所以 macOS 上 `/var/folders/…` 的 checkout
+拿到的是 `/private/var/…`，而显式传入的 `--root /var/folders/…` 保留原拼写——`samePath` 因此判定为
+"不是镜像运行"，忽略 `mirror.json`，再去找一个本该由 mirror 步骤创建的 manifest。`canonicalPath()`
+用 `realpathSync` 并在这条路径尚不存在时回落到 `path.resolve`。两个调用点（`sourceRoot()` 与镜像步骤）
+都只判断"是不是同一处"，不承担任何边界检查。
+
+### macOS 反编译器的构建配方（PR
+[#3](https://github.com/czcdr/dsh-plugin-rea/pull/3)，by @bogatkin82-jpg）
+
+新增 `docs/macos-native-decompiler.md`：从固定的 Ghidra tag 稀疏克隆、用系统 `clang++` 与 `make`
+在 ~2–3 分钟内编出 `ghidra_opt`，装到 `Ghidra/Features/Decompiler/os/mac_arm_64/decompile`。
+真机实测编译后 `rea doctor` 报 `ghidra-native_decompiler: ok`、provider `available: true`、
+`setup.mjs --reuse` 以 `[ok] smoke — imported java in 7s via ghidra` 收尾。配方要求校验源码 commit
+（`8b6bbb85…`）而不是只信可移动的 tag，并写明产物未签名、未哈希固定。
+
+配套改动：`package.json` 的 `files` 纳入该文档（否则 npm 页面与 Release tarball 里的链接 404）；
+`README.zh-CN.md` 同步四处（不只是证据表——只改表格会让同一份文件自相矛盾）；英文 README 的证据表
+从"未验证"更新为真机已验证。
+
+### 修复：那两条 `check-updates` 测试从未真正测到 stub
+
+`main` 在合并 PR #2 后变红，报错与合并内容无关：
+
+```
+not ok 27 - check-updates: a clean bundle is the only green run
+[上游] 查询失败 http://127.0.0.1:53737 : 操作超时。
+最新版本(https://registry.npmjs.org): 6.9.0
+[注意] 有新版本：6.8.0 → 6.9.0
+```
+
+`stubRegistry()` 是测试文件**内部**的 HTTP server，而 `runPowerShell()` 是 `spawnSync`——脚本一跑，
+本文件的 event loop 就被阻塞，那个 server **一个请求都没能处理过**。于是每次查询都等满 20 秒超时，
+再落到真实 registry。它长期显示绿色，只因为 fallback 恰好无害：registry 还是 6.8.0 时，落到真实
+registry 得到的结论是"无更新"，断言照样成立。上游一发 6.9.0，同一条坏路径就吐出"有新版本"，
+把一个完全干净的 bundle 判死。**本地复现：25 267 ms + 同样的四行输出。**
+
+stub 现在跑在独立子进程里，与主进程是否阻塞无关。修完后同一条测试 2 816 ms 通过——它才第一次真正
+测到 `check-updates` 的绿灯路径。
+
+### 未升级 rea-agents：6.9.0 会破坏依赖控制权
+
+6.9.0 把依赖**打包进 tarball**（`fileCount` 2398 → 10585，unpackedSize 189 MB），而 6.8.0 明确不含
+`node_modules`。npm 的 `bundled` 依赖**无法被 `overrides` 替换**（验证：把 override 写成不存在的
+`99.99.99`，npm 仍 exit 0 静默忽略），于是 `frida` 的 `minimatch 10.2.5` 被原样带进来——它落在
+GHSA-g3hv-75wg-m249 的受影响区间（`>=7.0.0 <11.0.1`，CWE-405 资源放大 DoS），也正是
+`CLOSURE_FLOORS.minimatch = 11.0.1` 的由来。
+
+可选做法各有代价：接受 bundled 版本等于从此对整棵依赖树失去控制权（`overrides` 全面失效，后续上游
+bundle 什么都只能接受）；删掉自带 `node_modules` 再用我们的 lock 重装，需要先证明 6.9.0 在我们的
+zod 4.6.7 / minimatch 11.0.5 下能工作。**本版选择留在 6.8.0**——229 个工具已足够，而"每个进 vendor 的
+版本都由我们钉死并审计"是这套供给设计存在的理由。6.9.0 的升级等上面两条里有一条能给出证据再谈。
+
+### 已知限制（未变）
+
+- macOS 上 `smoke` 仍需自建原生反编译器，现在 README 指向了配方而不是只写"自己编译"。
+- macOS 的 CI workflow 未落地：`macos-14` 在本环境始终分配不到 runner（`runner: ""`、零 step、
+  1 秒 cancelled，`[push]` 与 `pull_request` 都如此），合进 `main` 会挂一个永远红的检查。
+  等能分配到 runner 时单独提交，届时应有首跑日志。
+
+## 2.0.17 — 2026-11-09（未发布）
+
+> 本版只到 tag 为止，npm 与 GitHub Release 都没有它。内容全部包含在 2.0.18 里。
+
 
 **修掉 issue [#1](https://github.com/czcdr/dsh-plugin-rea/issues/1)：2.0.16 在 macOS 上根本装不上。**
 两个缺陷都是 darwin 独有的，而且都是"我们的测试矩阵没覆盖到"造成的 —— 我们所有真机验证都在 Windows 上，
